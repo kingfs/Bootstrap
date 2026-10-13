@@ -807,7 +807,7 @@ eval "$(bs shell init bash)"
 | `https://github.com/kingfs/Bootstrap.git` | 去掉 `.git` |
 | `git@github.com:kingfs/Bootstrap.git` | scp-like 语法解析 |
 | `ssh://git@gitlab.com/group/sub/proj.git` | GitLab 多级 namespace：`owner=group/sub` |
-| `https://github.com/kingfs/Bootstrap/tree/feat/x/internal/foo` | repo=`Bootstrap`, ref=`feat/x`, subpath=`internal/foo` |
+| `https://github.com/kingfs/Bootstrap/tree/feat/x/internal/foo` | repo=`Bootstrap`, ref=`feat`, subpath=`x/internal/foo`（⚠️ 见下方歧义说明） |
 | `https://github.com/kingfs/Bootstrap/blob/main/README.md` | repo 同上, ref=`main`, subpath=`README.md` |
 | `https://github.com/kingfs/Bootstrap/releases/tag/v0.3.0` | ref=`v0.3.0`（tag） |
 | `https://github.com/kingfs/Bootstrap/pull/12` | repo + `pull/12` 元信息（提示可 `--fetch pr/12`） |
@@ -815,6 +815,11 @@ eval "$(bs shell init bash)"
 | `github.com/kingfs/Bootstrap`（无 scheme） | 识别首段含 `.` → 视为 host |
 
 算法：去空白 → 去 query/fragment（`#` 可作 ref 分隔符）→ 去尾部 `/` → 去 `.git` → 处理 scp-like → 切分路径 → 首段含 `.` 或等于已配置 host 视为 host，否则用 `default_host` → 取 `owner`（GitLab 支持多段，以最后一段为 repo）→ 余下段匹配 `tree|blob|commit|releases/tag|pull|compare` 提取 ref/subpath → 校验 owner/repo 字符集。
+
+**分支名含 `/` 的歧义（实现约束）**：`/tree/<a>/<b>/...` 里无法判断 `<a>` 是完整分支名还是
+分支名的第一段，除非查询远端。M1 的实现选择可预期的规则：**紧跟关键字的第一段就是 ref，其余是 subpath**。
+需要精确指向含 `/` 的分支时用 `bs repo get <url> --ref feat/x` 显式覆盖。
+（备选方案"探测远端分支列表"会引入网络请求，破坏 `Plan` 阶段的无副作用特性，故不采用。）
 
 **未知 host 策略**：形状为 `<host>/<owner>/<repo>` 且 host 含 `.` 时宽松接受（写成 `<user_host>/...` 目录）；`repo.hosts` 白名单只用于"简写歧义"和 clone 协议选择。
 
@@ -843,6 +848,15 @@ eval "$(bs shell init bash)"
 
 - 全程注入代理（见 §8），走 HTTPS 时复用系统 git 的 credential helper（用户已经配好的 PAT 继续有效）。
 - `--ssh` 或 `repo.clone.protocol: ssh` 时把 URL 规范化为 `git@<host>:<owner>/<repo>.git`。
+
+**M1 实现现状**（与上面伪代码的差异，均已实测通过）：
+
+- 已实现：不存在→clone（含 `--depth`/`--branch`/`extra_args`）、存在且是 git 仓库→`fetch --all [--prune]` +
+  `status --porcelain` + `pull --ff-only|--rebase|--merge`、脏工作区默认跳过、`--autostash` 走 stash→pull→pop、
+  `bs repo list`（分支/远端/脏状态）、`bs repo sync`（并发，单仓库失败不中断整体）、`--dry-run` 完全不执行命令。
+- 已强化的安全语义：目标目录**非空且不是 git 仓库**时一律 `skip`（不删除、不覆盖任何已有文件），
+  只有目录为空时才 clone 进去——这一条由单测锁定（`TestPlanSkipProtectsPreciousDirectory`）。
+- 推迟：`--print-path`、`--adopt`、`origin` 不一致的校验与 `--repair-origin`、非默认分支的落后/领先计数。
 - `--depth` 支持浅克隆，`--sparse` 后续增强。
 
 ### 9.4 批量能力
