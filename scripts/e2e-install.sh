@@ -122,10 +122,19 @@ for t in $TOOLS; do
   fi
   # 不要 `| head -1`：`set -o pipefail` 下 head 提前关管道会让被测程序吃 SIGPIPE，
   # 整个脚本以 141 退出（k9s 的 --version 输出较长，必现）。
-  # 有的工具不认 --version（k9s 用 `k9s version`），两种都试一下，只为打印好看。
-  ver="$("$WORK/bin/$t" --version 2>&1 || "$WORK/bin/$t" version 2>&1 || true)"
-  ver="${ver%%$'\n'*}"
-  echo "  ok   $t -> $WORK/bin/$t ($ver)"
+  # 有的工具不认 --version（k9s 用 `k9s version`，而且它 --version 失败仍返回 0，
+  # 因此不能靠退出码判断）。这里只为打印好看，探测本身在清单里另有声明。
+  ver="$("$WORK/bin/$t" --version 2>&1 || true)"
+  if [[ "$ver" == *"unknown flag"* || "$ver" == *"unrecognized"* ]]; then
+    ver="$("$WORK/bin/$t" version 2>&1 || true)"
+  fi
+  # 只留一行好看的：优先取形如 x.y.z 的版本号（k9s 的 `version` 会先打一段 ASCII 横幅，
+  # lazygit 会把构建信息全打出来），拿不到就退回第一行。
+  line="${ver%%$'\n'*}"
+  if [[ "$ver" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    line="${BASH_REMATCH[1]}"
+  fi
+  echo "  ok   $t -> $WORK/bin/$t ($line)"
 done
 
 echo
