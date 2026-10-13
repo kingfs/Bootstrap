@@ -38,6 +38,11 @@ type Options struct {
 	Verbose    int
 	LogLevel   string
 
+	// NonInteractive 由 `--non-interactive`、`CI=1` 或"输出不是终端"置位：
+	// 此时绝不阻塞等待输入，破坏性操作必须由 `--yes` 明确授权（ADR-0003）。
+	NonInteractive bool
+
+	In  io.Reader
 	Out io.Writer
 	Err io.Writer
 }
@@ -50,11 +55,15 @@ type Runtime struct {
 
 	// loadErr 记录配置装载失败的原因（容忍模式下用于提示）。
 	loadErr error
+
+	// interactiveOverride 只在测试里注入：真实运行时按终端判定（interactive()）。
+	// 用 pty 造终端在单测里既重又不可靠，直接注入判定结果更诚实。
+	interactiveOverride *bool
 }
 
 // Execute 是 cmd/bs 的唯一入口，返回进程退出码。
 func Execute() int {
-	rt := &Runtime{Opts: &Options{Out: os.Stdout, Err: os.Stderr}}
+	rt := &Runtime{Opts: &Options{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}}
 	return rt.Run(os.Args[1:])
 }
 
@@ -111,6 +120,7 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 	pf.BoolVarP(&rt.Opts.Yes, "yes", "y", false, "对所有确认提示自动回答 yes")
 	pf.BoolVar(&rt.Opts.JSON, "json", false, "以 JSON 输出（便于脚本消费）")
 	pf.BoolVar(&rt.Opts.NoColor, "no-color", false, "禁用彩色输出")
+	pf.BoolVar(&rt.Opts.NonInteractive, "non-interactive", false, "绝不等待输入：破坏性操作需要 --yes，否则以退出码 5 结束")
 	pf.CountVarP(&rt.Opts.Verbose, "verbose", "v", "输出详细日志（可重复：-v 调试，-vv 追踪）")
 	pf.StringVar(&rt.Opts.LogLevel, "log-level", "", "日志级别 debug|info|warn|error（默认取配置）")
 

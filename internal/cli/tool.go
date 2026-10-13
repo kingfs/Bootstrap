@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -308,6 +311,14 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 	if !planHasWork(plan) {
 		return nil
 	}
+	// 真会动系统之前先要一句明确同意（安装/升级/卸载都算破坏性操作）。
+	if err := rt.confirmDestructive(fmt.Sprintf("即将%s %d 个工具，继续？",
+		install.OpLabel(op), plannedCount(plan))); err != nil {
+		if errors.Is(err, errCancelled) {
+			return nil
+		}
+		return err
+	}
 	report, err := rt.app().ToolApply(cmd.Context(), plan, op)
 	if rt.Opts.JSON {
 		if emitErr := rt.emit(report); emitErr != nil {
@@ -481,6 +492,50 @@ func (rt *Runtime) renderToolDetail(d *app.ToolDetail) error {
 	return nil
 }
 
+// confirmDestructive 在执行破坏性操作前请求确认（docs/design.md §7.5 的 [4] Confirm）。
+//
+// 三条语义，缺一不可：
+//   - `--yes`：直接通过（脚本与 CI 的正规做法）；
+//   - 非交互（stdin/输出不是终端、`--json`、`--non-interactive`、`CI=1`）：
+//     **绝不阻塞等待输入**，而是以退出码 5 告诉调用方"这里需要授权"；
+//   - 交互：打印提示并读一行，只有 y/yes 才继续（默认回车＝拒绝）。
+func (rt *Runtime) confirmDestructive(prompt string) error {
+	if rt.Opts.Yes {
+		return nil
+	}
+	if !rt.interactive() {
+		return coded(ExitNeedsInteraction, errors.New(
+			"需要确认但当前是非交互模式：请加 --yes 明确授权（或用 --dry-run 先看计划）"))
+	}
+	fmt.Fprintf(rt.Opts.Err, "%s [y/N] ", prompt)
+	line, err := bufio.NewReader(rt.Opts.In).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return failf("读取确认输入失败：%v", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return nil
+	}
+	fmt.Fprintln(rt.out(), "已取消，未做任何修改。")
+	return errCancelled
+}
+
+// errCancelled 表示"用户主动取消"：不是失败，调用方转成退出码 0。
+var errCancelled = errors.New("cancelled by user")
+
+// interactive 报告当前是否可以进行交互式提问。
+func (rt *Runtime) interactive() bool {
+	if rt.Opts.JSON || rt.Opts.NonInteractive || os.Getenv("CI") != "" {
+		return false
+	}
+	if rt.interactiveOverride != nil {
+		return *rt.interactiveOverride
+	}
+	// 输入输出都得是终端：重定向到文件/管道的场景不能阻塞等待输入。
+	in, ok := rt.Opts.In.(io.Writer)
+	return ok && app.IsTerminalWriter(in) && app.IsTerminalWriter(rt.Opts.Out)
+}
+
 // renderPlan 渲染计划。banner 是首行提示（空表示不提示）——
 // 由调用方说明"为什么不会执行"，比在渲染函数里猜调用场景更清楚。
 func (rt *Runtime) renderPlan(plan install.Plan, banner string) error {
@@ -599,6 +654,18 @@ func opLabel(op install.Op) string {
 	default:
 		return "安装"
 	}
+}
+
+// plannedCount 数出计划里真正要执行的步骤数（用于确认提示）。
+func plannedCount(plan install.Plan) int {
+	n := 0
+	for _, s := range plan.Steps {
+		switch s.Status {
+		case install.StepInstall, install.StepUpgrade, install.StepUninstall:
+			n++
+		}
+	}
+	return n
 }
 
 // planHasWork 报告计划里是否有真正要执行的动作。

@@ -515,3 +515,102 @@ func TestToolInstallSkipsInstalled(t *testing.T) {
 		t.Error("nothing should be executed for an installed tool")
 	}
 }
+
+// TestToolInstallRequiresConfirmation：破坏性操作在没有 --yes 的非交互环境里
+// 必须拒绝执行并以退出码 5 结束，绝不能静默安装、也不能阻塞等输入。
+func TestToolInstallRequiresConfirmation(t *testing.T) {
+	rt, _, _, root := sandboxWithManifest(t)
+	logPath := filepath.Join(root, "fake-g.log")
+	t.Setenv("FAKE_G_LOG", logPath)
+	writeFakeBin(t, filepath.Join(root, "bin"), "g", "#!/bin/sh\necho \"$@\" >> \"$FAKE_G_LOG\"\n")
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "golang")
+	if code != ExitNeedsInteraction {
+		t.Fatalf("exit = %d, want %d\nstdout=%s\nstderr=%s", code, ExitNeedsInteraction, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "--yes") {
+		t.Errorf("错误信息要告诉用户怎么办：\n%s", stderr)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("未确认时不能执行任何安装命令")
+	}
+
+	// --non-interactive 与 --json 同理（后者是脚本消费，更不该弹提示）
+	code, _, _ = run(t, rt, "tool", "install", "golang", "--non-interactive")
+	if code != ExitNeedsInteraction {
+		t.Errorf("--non-interactive exit = %d", code)
+	}
+	code, _, _ = run(t, rt, "tool", "install", "golang", "--json")
+	if code != ExitNeedsInteraction {
+		t.Errorf("--json exit = %d", code)
+	}
+}
+
+// TestToolInstallInteractiveConfirm：交互式下只有明确回答 y 才执行，
+// 回车或 n 都算拒绝（默认拒绝比默认执行安全）。
+func TestToolInstallInteractiveConfirm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假命令用 POSIX shell 脚本实现")
+	}
+	for _, tc := range []struct {
+		name     string
+		answer   string
+		executed bool
+	}{
+		{"回答 y", "y\n", true},
+		{"回答 yes", "yes\n", true},
+		{"回答 n", "n\n", false},
+		{"直接回车", "\n", false},
+		{"回答别的", "maybe\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, _, _, root := sandboxWithManifest(t)
+			logPath := filepath.Join(root, "fake-g.log")
+			t.Setenv("FAKE_G_LOG", logPath)
+			writeFakeBin(t, filepath.Join(root, "bin"), "g", "#!/bin/sh\necho \"$@\" >> \"$FAKE_G_LOG\"\n")
+
+			yes := true
+			rt.interactiveOverride = &yes
+			rt.Opts.In = strings.NewReader(tc.answer)
+
+			code, stdout, stderr := run(t, rt, "tool", "install", "golang")
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %s", code, stderr)
+			}
+			if !strings.Contains(stderr, "继续？") {
+				t.Errorf("交互式下应打印确认提示：\n%s", stderr)
+			}
+			_, err := os.Stat(logPath)
+			switch {
+			case tc.executed && err != nil:
+				t.Errorf("回答 y 后应该执行安装：%v\nstdout=%s", err, stdout)
+			case !tc.executed && err == nil:
+				t.Errorf("拒绝后不该执行任何安装命令\nstdout=%s", stdout)
+			case !tc.executed && !strings.Contains(stdout, "已取消"):
+				t.Errorf("拒绝后应明确说明已取消：\n%s", stdout)
+			}
+		})
+	}
+}
+
+// TestInteractiveDetection：interactive() 的判定必须是"任一条件不满足就不交互"。
+func TestInteractiveDetection(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	rt.Opts.In = strings.NewReader("y\n")
+	if rt.interactive() {
+		t.Error("非终端输入不应判定为交互")
+	}
+	rt.Opts.In = os.Stdin
+	if rt.interactive() {
+		t.Error("测试进程的输出不是终端，不应判定为交互")
+	}
+	rt.Opts.NonInteractive = true
+	if rt.interactive() {
+		t.Error("--non-interactive 必须强制非交互")
+	}
+	rt.Opts.NonInteractive = false
+	rt.Opts.JSON = true
+	if rt.interactive() {
+		t.Error("--json 必须强制非交互")
+	}
+}

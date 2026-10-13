@@ -31,6 +31,18 @@ type (
 type Op string
 
 // 动作类型枚举。
+// OpLabel 返回操作的中文名（用于确认提示等面向用户的文案）。
+func OpLabel(op Op) string {
+	switch op {
+	case OpUpgrade:
+		return "升级"
+	case OpUninstall:
+		return "卸载"
+	default:
+		return "安装"
+	}
+}
+
 const (
 	OpInstall   Op = "install"
 	OpUpgrade   Op = "upgrade"

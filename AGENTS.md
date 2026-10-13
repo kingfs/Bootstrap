@@ -119,6 +119,9 @@ make cross     # 交叉编译 6 个平台组合
    另外它**不执行** `go version`：Go 工具链会借此往 `~/.config/go/telemetry` 写计数文件
    （`GOTELEMETRY=off` / `GOTELEMETRYDIR` 都拦不住），这与"只读"冲突。
 5. 新增破坏性命令时，必须在 `--dry-run` 下走通，并在 README/`--help` 里说明。
+6. **破坏性操作必须先拿到明确同意**（`internal/cli` 的 `confirmDestructive`）：
+   交互终端问一句（默认拒绝），非交互（管道/CI/`--json`/`--non-interactive`）**绝不阻塞**，
+   没有 `--yes` 就以退出码 5 结束。新增这类命令时照抄 `bs tool install` 的做法。
 
 ## 9. 提交与文档
 
