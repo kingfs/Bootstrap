@@ -162,3 +162,9 @@ make cross     # 交叉编译 6 个平台组合
   真 httpx + 真解压），改 release 路径时优先扩充这条测试。
 - 下载**没有断点续传**：中途断线要从头再来（`httpx.do` 只重试建连阶段），
   慢网络上限速代理下体验不好。
+- 代理注入的语义见 `internal/proxy.Service.NetworkEnv`：`override_existing=false` 时
+  **同一组变量用 shell 里的值**，绝不能"这一组就不注入"——`httpx` 把注入的 env 当权威，
+  缺键即等于直连。改动这块务必跑 `internal/proxy` 的单测与 `make e2e`。
+- `make e2e` 走网络，**默认依赖 `build`**（脚本自己不做构建）；它会在沙箱里真下载
+  release 归档并校验 sha256，因此既能验证网络路径，也最容易暴露清单里的
+  `strip_components`/asset 名写错。

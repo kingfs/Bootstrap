@@ -102,7 +102,7 @@ ui: {...}
 | --- | --- | --- | --- |
 | `default_profile` | 字符串 | 空（不使用代理） | 未显式 `use` 时采用的 profile；必须存在于 `profiles` |
 | `auto_apply` | 布尔 | `true` | `bs` 自己发起的网络操作是否自动带代理 |
-| `override_existing` | 布尔 | `false` | 是否覆盖父进程已有的 `*_PROXY`；`false` 表示尊重当前 shell 的设置 |
+| `override_existing` | 布尔 | `false` | 是否覆盖父进程已有的 `*_PROXY`。`false`（默认）表示**尊重当前 shell 的设置**：同一组变量（http/https/all/no，大小写算一组）用 shell 里那份值，profile 里其余的照常注入。注意"尊重"不等于"这一组就不注入了"——那样 bs 自己的 HTTP 请求（`httpx` 把注入的 env 当权威）会变成直连，而子进程仍走 shell 的代理，同一台机器两种行为 |
 | `profiles.<名字>.http_proxy` | URL | — | 支持 `http`/`https`/`socks5(h)`/`socks4` |
 | `profiles.<名字>.https_proxy` | URL | — | 通常与 `http_proxy` 相同 |
 | `profiles.<名字>.all_proxy` | URL | — | 可选 |

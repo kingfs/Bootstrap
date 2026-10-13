@@ -174,15 +174,43 @@ func (s *Service) NetworkEnv() (map[string]string, error) {
 	if s.cfg.Proxy.OverrideExisting {
 		return env, nil
 	}
-	existing := map[string]bool{}
+	// 「尊重用户当前 shell 的设置」= 同一组代理变量用 shell 里那份值，
+	// 而不是把这一组**删掉**。
+	//
+	// 曾经的实现是直接 delete：于是注入给 httpx 的 map 缺了 HTTPS_PROXY，
+	// 而 httpx 把注入 map 当权威（不再回退进程环境），结果是"用户 shell 里明明有代理，
+	// bs 自己下载却全部直连、慢慢超时"，而子进程（继承进程环境）却正常——
+	// 同一台机器上两种行为，极难排查。
+	//
+	// 按组处理（http/https/all/no 各算一组）是为了避免大小写分裂：
+	// curl 认小写 `https_proxy`、Go 认大写 `HTTPS_PROXY`，只替换其中一种会让
+	// 两边走不同的代理。
+	processEnv := map[string]string{}
 	for _, kv := range s.environ() {
-		if k, _, ok := strings.Cut(kv, "="); ok {
-			existing[k] = true
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			processEnv[k] = v
 		}
 	}
-	for k := range env {
-		if existing[k] {
-			delete(env, k)
+	for _, group := range [][]string{
+		{"HTTP_PROXY", "http_proxy"},
+		{"HTTPS_PROXY", "https_proxy"},
+		{"ALL_PROXY", "all_proxy"},
+		{"NO_PROXY", "no_proxy"},
+	} {
+		value, fromProcess := "", false
+		for _, k := range group {
+			if v, ok := processEnv[k]; ok && strings.TrimSpace(v) != "" {
+				value, fromProcess = v, true
+				break
+			}
+		}
+		if !fromProcess {
+			continue
+		}
+		for _, k := range group {
+			if _, inProfile := env[k]; inProfile {
+				env[k] = value // 用户 shell 的值优先
+			}
 		}
 	}
 	return env, nil

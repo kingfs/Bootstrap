@@ -121,8 +121,13 @@ func TestNetworkEnvRespectsOverrideExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NetworkEnv: %v", err)
 	}
-	if _, ok := env["HTTPS_PROXY"]; ok {
-		t.Error("HTTPS_PROXY must not be overridden when override_existing=false")
+	// override_existing=false：用 shell 里的值，但**不能缺席**——
+	// 缺了就等于"用户明明配了代理，bs 自己的请求却全直连"。
+	if env["HTTPS_PROXY"] != "http://user-set:1" {
+		t.Errorf("HTTPS_PROXY = %q, want the shell value (not dropped)", env["HTTPS_PROXY"])
+	}
+	if env["https_proxy"] != "http://user-set:1" {
+		t.Errorf("https_proxy = %q, want the same value as HTTPS_PROXY（大小写不能分裂）", env["https_proxy"])
 	}
 	if env["HTTP_PROXY"] == "" {
 		t.Error("HTTP_PROXY should still be injected")
