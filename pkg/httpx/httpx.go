@@ -36,6 +36,12 @@ const DefaultDownloadTimeout = 15 * time.Minute
 // maxBody 是 GetBytes 的默认上限（防止把大文件读进内存）。
 const maxBody = 8 << 20
 
+// dialTimeout 是建立单条 TCP 连接（含连代理）的预算。
+//
+// 必须明显小于上层给整次请求的预算，否则"第一次尝试卡到超时"会把预算吃光，
+// `Retries` 就永远只是重放一次立即失败——这正是"元数据偶尔查不到"的根因。
+const dialTimeout = 10 * time.Second
+
 // Client 是一个带代理感知的 HTTP 客户端。
 type Client struct {
 	HTTP *http.Client
@@ -58,7 +64,11 @@ func New(timeout time.Duration, env map[string]string) *Client {
 	}
 	c := &Client{Env: env, UserAgent: "bootstrap", Retries: 1, Timeout: timeout, DownloadTimeout: DefaultDownloadTimeout}
 	transport := &http.Transport{
-		Proxy:                 c.proxyFunc,
+		Proxy: c.proxyFunc,
+		DialContext: (&net.Dialer{
+			Timeout:   dialTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,
 		IdleConnTimeout:       30 * time.Second,
@@ -110,7 +120,15 @@ func (c *Client) getenv(key string) string {
 }
 
 func (c *Client) proxyFunc(req *http.Request) (*url.URL, error) {
-	return ProxyFor(func(k string) string { return c.getenv(k) }, req.URL)
+	u, err := ProxyFor(func(k string) string { return c.getenv(k) }, req.URL)
+	// 把"这次请求走不走代理、走哪个"记进调试日志：网络问题排查时这是第一个要看的事实
+	// （曾经出现"日志说代理没问题，实际请求却在直连"的情况，靠肉眼是看不出来的）。
+	if c.Env == nil {
+		c.logf("proxy for %s: %v (env from process)", req.URL.Host, u)
+	} else {
+		c.logf("proxy for %s: %v (env injected)", req.URL.Host, u)
+	}
+	return u, err
 }
 
 // GetBytes 取回一个较小的响应体（用于 API 与 checksums 文件）。

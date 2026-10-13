@@ -178,3 +178,26 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 		t.Error("empty destination must fail")
 	}
 }
+
+// TestNewUsesPerConnectionDialTimeout：单条连接的预算必须小于整体预算，
+// 否则第一次尝试卡到超时就吃光全部时间，Retries 形同虚设。
+func TestNewUsesPerConnectionDialTimeout(t *testing.T) {
+	c := New(DefaultTimeout, nil)
+	tr, ok := c.HTTP.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T", c.HTTP.Transport)
+	}
+	if tr.DialContext == nil {
+		t.Fatal("DialContext 未设置：连接阶段会一直等到整体超时")
+	}
+	if dialTimeout <= 0 || dialTimeout >= DefaultTimeout {
+		t.Errorf("dialTimeout = %s，应当 >0 且 < %s", dialTimeout, DefaultTimeout)
+	}
+	if tr.Proxy == nil {
+		t.Error("Proxy 未设置：代理配置会失效")
+	}
+	// http.Client 不能设全局 Timeout（会把下载和元数据绑成同一个约束）。
+	if c.HTTP.Timeout != 0 {
+		t.Errorf("http.Client.Timeout = %s，应当为 0（超时由各操作预算控制）", c.HTTP.Timeout)
+	}
+}

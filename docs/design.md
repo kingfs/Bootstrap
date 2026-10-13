@@ -806,7 +806,7 @@ type ExecEnv interface {
   `params.checksum: none` 是唯一的显式放弃开关。实测各家习惯不同（g 用 `sha256sum.txt`、
   k9s 用 `checksums.sha256`、uv/ripgrep 每个产物配 `<asset>.sha256`），逐个试比强制清单作者
   记住某个项目的习惯更可靠。
-  这些"元数据查询"（最新 tag、校验和文件、版本文本）共用 `install.LookupTimeout = 15s`
+  这些"元数据查询"（最新 tag、校验和文件、版本文本）共用 `install.LookupTimeout = 60s`
   的单次上限，而真正的下载用 `httpx.DefaultDownloadTimeout = 15min`（通用 GET 是 60s）——
   **下载慢是正常的，查元数据慢不是**；把两者绑在同一个 60s 上，会出现"能下完却永远装不上"。
 - **`extract` 决定"目录型"还是"单文件型"**：默认从归档里挑出 `binary`（缺省是 repo 名）
@@ -1286,7 +1286,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 关注点 | 方案（当前实现） |
 |---|---|
 | 错误处理 | `fmt.Errorf("...: %w", err)` 逐层包装；领域错误用 Sentinel + `errors.Is/As`；`internal/cli/exit.go` 是**唯一**把 error 映射成退出码的地方（`codedError` + cobra 文案识别） |
-| 上下文 | 所有 IO 首参 `context.Context`；超时集中在四处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、元数据查询 15s（`install.LookupTimeout`，只用于"最新 tag / 校验和文件 / 版本文本"）、通用 GET 60s 与下载 15min（`httpx.DefaultTimeout` / `DefaultDownloadTimeout`）。全局 `--timeout` **尚未实现** |
+| 上下文 | 所有 IO 首参 `context.Context`；超时集中在四处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、元数据查询 60s（`install.LookupTimeout`，只用于"最新 tag / 校验和文件 / 版本文本"）、通用 GET 60s 与下载 15min（`httpx.DefaultTimeout` / `httpx.DefaultDownloadTimeout`）、单条连接 10s（`httpx.dialTimeout`）。全局 `--timeout` **尚未实现** |
 | 并发 | `errgroup` 只用在两处：工具探测（`min(8, NumCPU)`）与 `repo sync`（`repo.sync.jobs`）；安装执行是**串行**的（依赖顺序优先，暂不并行） |
 | 配置注入 | 依赖显式构造（`app.New` 装配 `Runtime`/`App`），**没有 `init()` 副作用**——安装器注册表也由 `install.NewRegistry()` 显式构建 |
 | 平台分支 | 平台差异收敛在 `pkg/hostinfo`（探测）与 `internal/config/paths.go`（目录策略）；业务代码里不散落 `runtime.GOOS` |
@@ -1432,7 +1432,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | Windows 工具清单与 `repo.root` | 首批不含（ADR-0014）：`tools/windows.yaml` 目前是占位文件，只保证能加载不报错；`D:/src` 约定与 scoop/winget 清单待单独设计 | M5+ |
 | `bs doctor --fix` | 是否让 doctor 自动修复（补 PATH、重建受管块、清理缓存），还是只诊断 | M4 |
 | 跨工具并行安装 | `bs tool install` 目前严格串行（依赖顺序优先）；同层无依赖的工具并行需要先解决日志与确认交互的交错问题 | 安装变慢时 |
-| 全局 `--timeout` | 现在超时是写在四处的常量（命令 10min / 探测 5s / 元数据 15s / 通用 GET 60s / 下载 15min），需要一个统一的 flag 时才加 | M4 |
+| 全局 `--timeout` | 现在超时是写在四处的常量（命令 10min / 探测 5s / 元数据 60s / 通用 GET 60s / 下载 15min / 单连接 10s），需要一个统一的 flag 时才加 | M4 |
 | `bs tool list` 的探测成本 | 目前每个条目都真起一次 `--version`（并发 8、TTL 10 分钟）；清单长到几百条时需要"只探测相关的"或懒惰探测 | 清单规模上来后 |
 
 ### 18.4 缺陷修复记录
@@ -1455,6 +1455,14 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 |---|---|---|
 | 8 | 探测用 runner 的 PATH 查找、安装用 `extra_path`/`path_dirs`，两边不一致 → 刚装进 `~/.local/bin` 的工具被复核判为 missing | 探测改用 `install.OSEnv` 的查找规则；`extraPathDirs` 与 `bs env path` 同一份来源 |
 | 9 | 探测用 `LookPath` 找到完整路径，执行时却退回裸命令名 → "找得到却执行不了" | 用解析出的路径执行版本探测 |
+
+第三轮（真实下载的 `make e2e` 抓到，前两轮都以为"是网络慢"）：
+
+| # | 现象 | 修复 |
+|---|---|---|
+| 10 | `proxy.override_existing=false`（默认）时，`NetworkEnv()` 把 shell 里**已存在**的那组代理变量直接 `delete` 掉。`httpx` 把注入的 env 当权威（不再回退进程环境），于是**用户 shell 里明明配了代理，`bs` 自己下载却全部直连**——直连 github.com 的 release 资产既慢又常超时，而子进程（继承进程环境）却正常 | 改为"同一组变量用 shell 里那份值"（大小写一组，避免 curl 认小写、Go 认大写导致两边走不同代理）。修复后同一台机器上元数据请求从"20s 超时"变成 1.3s，两个 release 工具 9s 装完 |
+| 11 | `tools/common.yaml` 里 `g`/`lazygit`/`k9s` 都误写了 `strip_components: 1`，而这三个归档**没有**外层目录，结果把二进制本身剥没了（只有真下载才暴露） | 删掉这三处（uv/ripgrep/ruff 确实有外层目录，保留）；`archive` 解出 0 个文件时立即报"nothing left after stripping"，找不到 binary 时把归档顶层条目列出来 |
+| 12 | `make e2e` 不依赖 `build`，脚本用的是**过期的 `bin/bs`**——"测试通过/失败"都可能是上一版代码的结论 | `e2e: build`；脚本头部写明"自己不做构建"；PATH 收敛为沙箱 bin + `/usr/bin:/bin`（宿主已装的同名工具会让安装被跳过，e2e 就什么都验证不到），并在计划阶段就断言不是 skip |
 
 仍未接线（刻意保留，属 M3）：`ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy`
 四个配置项、`--interactive` 显式开关、`huh` 交互式勾选、自更新。

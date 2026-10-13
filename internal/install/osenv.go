@@ -111,11 +111,14 @@ func (e *OSEnv) Download(ctx context.Context, d Download) (string, error) {
 	return e.client.Download(ctx, d.URL, d.Dest, d.SHA256, d.Mode)
 }
 
-// LookupTimeout 是"元数据查询"（最新 tag、校验和文件、版本文本）的单次超时。
+// LookupTimeout 是"元数据查询"（最新 tag、校验和文件、版本文本）的超时。
 //
-// 刻意比下载超时（httpx 默认 60s）短得多：新机器上网络往往还没配好，
-// 让 `bs tool plan` 每个工具卡一分钟是不可接受的——宁可快速失败并说清原因。
-const LookupTimeout = 15 * time.Second
+// 比下载超时短得多（下载动辄几十 MB，见 httpx.DefaultDownloadTimeout），
+// 但要**装得下 httpx 的两次尝试**：单次最长 30s（响应头超时），两次正好 60s。
+// 实测在限速代理下，一个几百字节的校验和文件也可能要十几秒才有响应——
+// 元数据查询只在真正安装时发生（`bs tool plan` 是离线的），所以宁可多等两次，
+// 也不要让"网慢一点就装不上"。
+const LookupTimeout = 60 * time.Second
 
 // FetchText 实现 ExecEnv。
 //
@@ -124,7 +127,12 @@ const LookupTimeout = 15 * time.Second
 func (e *OSEnv) FetchText(ctx context.Context, url string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, LookupTimeout)
 	defer cancel()
-	return e.client.GetString(ctx, url)
+	start := time.Now()
+	text, err := e.client.GetString(ctx, url)
+	// 记一条耗时日志：网络问题排查时，"哪个请求慢/失败、花了多久"是最关键的信息，
+	// 而下载之外（tag、校验和）原本没有任何痕迹。
+	e.log.Debug("http", "get", url, "elapsed", time.Since(start).Round(time.Millisecond), "err", err)
+	return text, err
 }
 
 // LatestRelease 实现 ExecEnv。
@@ -134,7 +142,10 @@ func (e *OSEnv) LatestRelease(ctx context.Context, repo string) (string, error) 
 	}
 	ctx, cancel := context.WithTimeout(ctx, LookupTimeout)
 	defer cancel()
-	return ghrelease.LatestTag(ctx, e.client, repo)
+	start := time.Now()
+	tag, err := ghrelease.LatestTag(ctx, e.client, repo)
+	e.log.Debug("http", "latest", repo, "tag", tag, "elapsed", time.Since(start).Round(time.Millisecond), "err", err)
+	return tag, err
 }
 
 // LookPath 实现 ExecEnv：先在注入的 PATH 里找，再看 extra_path。
