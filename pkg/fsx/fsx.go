@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -63,6 +64,21 @@ func IsDir(path string) bool {
 func IsFile(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.Mode().IsRegular()
+}
+
+// IsExecutable 报告路径是否是"可执行文件"。
+//
+// Windows 没有 POSIX 权限位，普通文件即视为可执行；其余平台要求可执行位。
+// 用于判断"工具是否通过 release/source 方式装到了某个 provides 路径上"。
+func IsExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
 }
 
 // EnsureDir 创建目录（含父目录），已存在时是 no-op。
