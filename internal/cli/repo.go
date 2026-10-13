@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kingfs/Bootstrap/internal/app"
+	"github.com/kingfs/Bootstrap/internal/gitrepo"
 )
 
 func (rt *Runtime) repoCmd() *cobra.Command {
@@ -95,7 +97,16 @@ func (rt *Runtime) repoSyncCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			views, err := rt.app().RepoSync(cmd.Context(), jobs, opts)
 			if err != nil {
+				// 全新机器上根目录还不存在，这不是"失败"而是"还没开始"：
+				// 用前置条件退出码（4）并直接给出下一步该做什么。
+				if errors.Is(err, gitrepo.ErrNoRoot) {
+					return preconditionErrf("%v（先运行 `bs repo get <owner/repo>` 拉取第一个仓库）", err)
+				}
 				return failf("%v", err)
+			}
+			if len(views) == 0 {
+				fmt.Fprintln(rt.out(), "没有需要更新的仓库")
+				return nil
 			}
 			renderRepoStatuses(rt, views)
 			for _, v := range views {

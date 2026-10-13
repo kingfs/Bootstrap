@@ -320,7 +320,8 @@ func Discover(root string, maxDepth int) ([]string, error) {
 		maxDepth = 6
 	}
 	if !fsx.IsDir(root) {
-		return nil, fmt.Errorf("repository root %s does not exist", root)
+		// 用 %w 包住哨兵错误，调用方（CLI）才能把它映射成"前置条件不满足"而不是一般失败。
+		return nil, fmt.Errorf("%w: %s", ErrNoRoot, root)
 	}
 	var found []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

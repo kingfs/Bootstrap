@@ -399,6 +399,33 @@ func TestRepoGetDryRunThroughCLI(t *testing.T) {
 	}
 }
 
+// TestRepoSyncStatesMissingRootAsPrecondition 断言"根目录还不存在"被当作
+// 前置条件（退出码 4）而不是失败（退出码 1），并给出下一步提示。
+func TestRepoSyncStatesMissingRootAsPrecondition(t *testing.T) {
+	rt, _, errOut, _ := sandbox(t)
+	code, _, _ := run(t, rt, "repo", "sync")
+	if code != ExitPrecondition {
+		t.Fatalf("exit = %d, want %d (stderr=%s)", code, ExitPrecondition, errOut)
+	}
+	if !strings.Contains(errOut.String(), "bs repo get") {
+		t.Errorf("stderr should point at the next step:\n%s", errOut)
+	}
+}
+
+func TestRepoSyncOnEmptyRootSucceeds(t *testing.T) {
+	rt, out, _, root := sandbox(t)
+	if err := os.MkdirAll(filepath.Join(root, "home", "src"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	code, _, _ := run(t, rt, "repo", "sync")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "没有需要更新的仓库") {
+		t.Errorf("out = %q", out.String())
+	}
+}
+
 func TestRepoGetRejectsGarbageInput(t *testing.T) {
 	rt, _, _, _ := sandbox(t)
 	code, _, _ := run(t, rt, "repo", "get", "not a repo at all", "--dry-run")

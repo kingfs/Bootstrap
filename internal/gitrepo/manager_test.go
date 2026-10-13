@@ -2,6 +2,7 @@ package gitrepo
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -356,8 +357,22 @@ func TestDiscoverFindsRepos(t *testing.T) {
 }
 
 func TestDiscoverMissingRoot(t *testing.T) {
-	if _, err := Discover(filepath.Join(t.TempDir(), "nope"), 0); err == nil {
-		t.Error("Discover on a missing root should fail")
+	_, err := Discover(filepath.Join(t.TempDir(), "nope"), 0)
+	if err == nil {
+		t.Fatal("Discover on a missing root should fail")
+	}
+	// 必须是哨兵错误：CLI 依赖 errors.Is 把它映射成"前置条件不满足"（退出码 4），
+	// 而不是一般失败（退出码 1）。
+	if !errors.Is(err, ErrNoRoot) {
+		t.Errorf("err = %v, want it to wrap ErrNoRoot", err)
+	}
+}
+
+func TestSyncMissingRootWrapsSentinel(t *testing.T) {
+	cfg := config.Defaults()
+	m := &Manager{Cfg: &cfg, Runner: &fakeRunner{}}
+	if _, err := m.Sync(context.Background(), filepath.Join(t.TempDir(), "nope"), 0, Options{}); !errors.Is(err, ErrNoRoot) {
+		t.Errorf("Sync err = %v, want it to wrap ErrNoRoot", err)
 	}
 }
 

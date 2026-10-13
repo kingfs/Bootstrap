@@ -184,6 +184,14 @@ assert_contains "env export 同时含 PATH 与代理" "export PATH=" "$out"
 step "仓库计划（dry-run，无网络无写入）"
 out="$("$BIN" repo root)"
 assert_contains "repo root 默认 ~/src" "$WORK/home/src" "$out"
+# 根目录不存在时，sync 应报告"前置条件"（退出码 4）并指向下一步，而不是一般失败
+set +e
+out="$("$BIN" repo sync 2>&1)"
+code=$?
+set -e
+assert_eq "repo sync 缺根目录退出码为 4" "4" "$code"
+assert_contains "repo sync 提示下一步" "bs repo get" "$out"
+
 out="$("$BIN" repo get kingfs/Bootstrap --dry-run 2>&1)"
 assert_contains "dry-run 显示 clone" "github.com/kingfs/Bootstrap" "$out"
 assert_contains "dry-run 打印将执行的命令" "git clone" "$out"
