@@ -11,14 +11,14 @@
 # 不写 $HOME、不碰系统包管理器、不修改任何 rc 文件。可反复运行。
 #
 # 用法：
-#   scripts/e2e-install.sh            # 默认装 k9s + lazygit
-#   TOOLS="k9s" scripts/e2e-install.sh
+#   scripts/e2e-install.sh              # 默认装 g（4MB，校验文件是 sha256sum.txt）
+#   TOOLS="k9s lazygit" scripts/e2e-install.sh
 #
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${BS_BIN:-$ROOT/bin/bs}"
-TOOLS="${TOOLS:-k9s lazygit}"
+TOOLS="${TOOLS:-g}"
 WORK="${BS_E2E_DIR:-$ROOT/.cache/e2e}"
 PROXY="${BS_E2E_PROXY:-http://127.0.0.1:7890}"
 
@@ -52,10 +52,22 @@ proxy:
       no_proxy: 127.0.0.1,localhost
 EOF
 
-# 把两个工具的落点改到沙箱目录（其余字段继承内置清单）。
+# 把工具的落点改到沙箱目录。这里必须与内置清单的字段保持一致：
+# 这三个仓库的归档**没有**外层目录（实测：根下直接是 g / lazygit / k9s），
+# 写了 strip_components 会把文件本身剥掉。
 cat > "$WORK/config/tools/e2e.yaml" <<EOF
 version: 1
 tools:
+  - id: g
+    install:
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: voidint/g
+          asset: "g{{version}}.{{os}}-{{arch}}.tar.gz"
+          binary: g
+          dest: "$WORK/bin"
+          checksum_file: sha256sum.txt
   - id: k9s
     install:
       - via: release
@@ -63,7 +75,6 @@ tools:
         params:
           repo: derailed/k9s
           asset: "k9s_{{os|osmap:linux=Linux,darwin=Darwin}}_{{arch}}.tar.gz"
-          strip_components: 1
           binary: k9s
           dest: "$WORK/bin"
           checksum_file: checksums.sha256
@@ -74,7 +85,6 @@ tools:
         params:
           repo: jesseduffield/lazygit
           asset: "lazygit_{{version}}_{{os}}_{{arch|archmap:amd64=x86_64,arm64=arm64}}.tar.gz"
-          strip_components: 1
           binary: lazygit
           dest: "$WORK/bin"
 EOF
@@ -83,11 +93,20 @@ export HOME="$WORK/home"
 export BS_CONFIG_HOME="$WORK/config"
 export BS_STATE_HOME="$WORK/state"
 export BS_CACHE_HOME="$WORK/cache"
-export PATH="$WORK/bin:$PATH"
+# PATH 只保留沙箱 bin + 系统目录：宿主自己装过的同名工具（比如 ~/.g/bin/g）
+# 若可见，安装就会被判成"已安装、跳过"，这条 e2e 也就什么都验证不了了。
+export PATH="$WORK/bin:/usr/bin:/bin"
 export NO_COLOR=1
 
 echo "==> 计划（离线预览，应为 release 方式）"
-"$BIN" tool plan $TOOLS
+out="$("$BIN" tool plan $TOOLS)"
+printf '%s\n' "$out"
+# 计划里就是 skip 的话，这条 e2e 什么都没验证到（多半是 PATH 没隔离干净），
+# 必须当场失败，而不是让后面的"安装成功"变成假象。
+if printf '%s' "$out" | grep -q "skip"; then
+  echo "  FAIL 计划里已经跳过（沙箱里为何已安装？检查 PATH 隔离）"
+  exit 1
+fi
 echo
 echo "==> 真实安装（下载 + 校验 sha256 + 解压）"
 "$BIN" tool install $TOOLS --yes
