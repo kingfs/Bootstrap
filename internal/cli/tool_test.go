@@ -66,6 +66,20 @@ tools:
     install:
       - via: brew
         params: {formula: btop}
+  # 只走 release 的工具：用来验证 plan 不联网（联网解析会卡住/报错）
+  - id: dash
+    stack: infra
+    kind: cli
+    description: 只从 release 安装
+    tags: [dash]
+    verify: {command: dash}
+    install:
+      - via: release
+        params:
+          repo: example/dash
+          asset: dash-{{version}}-{{os}}-{{arch}}.tar.gz
+          binary: dash
+          dest: ~/.local/bin
 profiles:
   base:
     description: 基础
@@ -160,7 +174,7 @@ func TestToolListJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, stdout)
 	}
-	if len(rows) != 3 {
+	if len(rows) != 4 {
 		t.Fatalf("rows = %d", len(rows))
 	}
 	if rows[0]["id"] != "g" || rows[0]["stack"] != "golang" {
@@ -513,6 +527,27 @@ func TestToolInstallSkipsInstalled(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath); err == nil {
 		t.Error("nothing should be executed for an installed tool")
+	}
+}
+
+// TestToolPlanIsOffline：plan 只做预览，因此不联网解析"最新版本"，
+// 也不该在磁盘上留下任何东西（缓存/工作目录都不行）。
+func TestToolPlanIsOffline(t *testing.T) {
+	rt, _, _, root := sandboxWithManifest(t)
+	before := snapshotTree(t, root)
+
+	code, stdout, stderr := run(t, rt, "tool", "plan", "dash", "-v")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "<latest>") {
+		t.Errorf("plan 应保留版本占位符（不联网解析）：\n%s", stdout)
+	}
+	if strings.Contains(stdout, "example/dash/releases/download/v") {
+		t.Errorf("plan 不该解析出真实 tag：\n%s", stdout)
+	}
+	if diff := diffTree(t, before, root); diff != "" {
+		t.Errorf("plan 必须什么都不留下，但有变化：\n%s", diff)
 	}
 }
 

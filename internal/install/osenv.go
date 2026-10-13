@@ -110,11 +110,19 @@ func (e *OSEnv) Download(ctx context.Context, d Download) (string, error) {
 	return e.client.Download(ctx, d.URL, d.Dest, d.SHA256, d.Mode)
 }
 
+// LookupTimeout 是"元数据查询"（最新 tag、校验和文件、版本文本）的单次超时。
+//
+// 刻意比下载超时（httpx 默认 60s）短得多：新机器上网络往往还没配好，
+// 让 `bs tool plan` 每个工具卡一分钟是不可接受的——宁可快速失败并说清原因。
+const LookupTimeout = 15 * time.Second
+
 // FetchText 实现 ExecEnv。
 //
 // 这是只读请求，干跑时也照常进行：plan 需要真实的校验和才能在预览里
 // 显示"将下载什么、校验什么"，而读取本身不会改变系统状态。
 func (e *OSEnv) FetchText(ctx context.Context, url string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, LookupTimeout)
+	defer cancel()
 	return e.client.GetString(ctx, url)
 }
 
@@ -123,6 +131,8 @@ func (e *OSEnv) LatestRelease(ctx context.Context, repo string) (string, error) 
 	if e.dryRun {
 		return "", ErrDryRun
 	}
+	ctx, cancel := context.WithTimeout(ctx, LookupTimeout)
+	defer cancel()
 	return ghrelease.LatestTag(ctx, e.client, repo)
 }
 

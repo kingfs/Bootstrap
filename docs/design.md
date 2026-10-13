@@ -225,11 +225,16 @@ Bootstrap/
   → 系统级  <system>/config.yaml
   → 用户级  <config>/config.yaml
   → 项目级  $PWD/.bootstrap.yaml（仅当存在于当前目录树，用于按项目覆盖 repo_root）
-  → 环境变量 BS_*（viper AutomaticEnv + KeyReplacer "." → "_"）
+  → 环境变量：**逐个显式绑定**的表（`internal/config/load.go` 的 `envBindings`），不是 AutomaticEnv
   → 命令行 flag（viper.BindPFlag）
 ```
 
 实现：**viper 只负责"配置"这一件事**。工具清单是数据而非配置，用 `gopkg.in/yaml.v3` 直接解析（避免 viper 的大小写折叠、类型猜测带来的坑）。viper 装载后用 `Unmarshal(&Config{})` 落到**强类型结构体**，随后走 `Validate()`；业务代码永远只读结构体，不读 `viper.Get("x.y")`。
+
+环境变量之所以用固定映射表而不是 `AutomaticEnv`/`SetEnvKeyReplacer`：后两者在
+`Unmarshal` 路径上行为不可靠（大小写与键名折叠的坑），而显式绑定让"哪些变量被支持"
+一眼可查、可测试（`config.ResolvePathsWith` + 注入的 `EnvFunc`）。变量清单见
+[configuration.md](./configuration.md) §1。
 
 ### 5.3 配置示例
 
@@ -332,205 +337,296 @@ ui:
 
 以此支持：`bs tool list --stack golang`、`bs tool install --kind devdep`、`bs tool install --profile golang`。
 
-### 6.2 工具条目 Schema（节选）
+### 6.2 工具条目 Schema
+
+清单是**声明式**的：条目只说"要什么、怎么判断装没装、按什么顺序委托谁装"，
+不说"怎么解压、怎么切 PATH"（ADR-0005/0006）。下面摘自当前内置清单 `tools/common.yaml`：
 
 ```yaml
 version: 1
+
 tools:
-  # ── ① 先装版本管理器：它自己用 release/brew/goinstall 装，属于"一次性"成本 ──
-  - id: g                           # 你的习惯：voidint/g
+  # ── ① 版本管理器：它自己用 release/brew/goinstall 装，属于"一次性"成本 ──
+  - id: g
     name: g (Go version manager)
     stack: golang
     kind: versionmgr
-    description: Go 多版本管理器
+    description: Go 多版本管理器（golang 条目由它落地）
     homepage: https://github.com/voidint/g
-    when: {os: [linux, darwin]}     # Windows 暂不纳入首批清单（ADR-0014）
-    verify: {command: g, version_args: [--version], version_regex: 'g version (?P<v>[\d.]+)'}
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: g, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
     install:
-      - via: release                # 首选：官方 release 下二进制，最可控
+      # 官方 release 用 sha256sum.txt（不是 goreleaser 默认的 checksums.txt）
+      - via: release
+        when: {os: [linux, darwin]}
         params:
           repo: voidint/g
-          asset: "g{{version}}-{{os}}.tar.gz"
-          version_source: latest-release
+          asset: "g{{version}}.{{os}}-{{arch}}.tar.gz"
+          strip_components: 1
+          binary: g
           dest: "~/.local/bin"
-          checksum: sha256
       - via: brew
-        when: {os: [darwin, linux]}
+        when: {os: [darwin]}
         params: {formula: g}
-      - via: goinstall              # 机器上已有 go 时最省事
+      - via: goinstall
         when: {has: [go]}
         params: {module: github.com/voidint/g@latest}
 
-  # ── ② 运行时：只声明"交给哪个管理器装哪个版本"，bootstrap 不碰解压与 PATH ──
+  # ── ② 运行时：只声明"交给哪个管理器装哪个版本"，bs 不碰解压与 PATH ──
   - id: golang
     name: Go
     stack: golang
     kind: runtime
     description: Go 工具链（由 g 管理）
     homepage: https://go.dev/dl/
-    depends_on: [g]                 # 依赖声明：先确保 g 就位，再执行本条目
-    when: {os: [linux, darwin], arch: [amd64, arm64]}   # Windows 暂缓（ADR-0014）
-    provides: ["~/.g/versions"]     # 纳入 bs env 的 PATH
+    depends_on: [g]
+    when: {os: [linux, darwin]}
     verify:
       command: go
       version_args: [version]
-      version_regex: 'go version go(?P<v>\d+\.\d+(\.\d+)?)'
-      min_version: "1.22"           # 可选：低于则视为需升级
+      version_regex: 'go version go(?P<v>\d+\.\d+(?:\.\d+)?)'
+      min_version: "1.22"
     install:
-      - via: manager                # 首选且通常唯一：委托 g
-        params: {manager: g, action: install, version: "{{versions.golang}}"}
-      - via: manager                # 机器上已有 mise 时的等价路径
+      - via: manager
+        params: {action: install, version: "{{versions.golang}}"}
+      - via: manager
         when: {has: [mise]}
         params: {manager: mise, action: use, version: "go@{{versions.golang}}", global: true}
-      - via: release                # 可选兜底：不想依赖管理器时启用（默认注释掉，保持"薄"）
-        enabled: false
-        params:
-          repo: golang/go
-          asset: "go{{version}}.{{os}}-{{arch}}.tar.gz"
-          version_source: https://go.dev/VERSION?m=text
-          strip_components: 1
-          dest: "~/.local/go"
-          symlink: {from: "~/.local/go/bin/go", to: "~/.local/bin/go"}
-          checksum: sha256
-    update:
-      via: manager
-      params: {manager: g, action: upgrade}
-    uninstall:
-      - via: manager
-        params: {manager: g, action: uninstall, version: "{{versions.golang}}"}
+      # 全新机器上连 g 都没有时的引导路径：先装发行版自带的 go
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [golang-go], allow_system: true}
 
-  - id: nodejs                      # 同一套范式：Node 交给 fnm/nvm，而不是自己下载
-    name: Node.js
-    stack: nodejs
-    kind: runtime
-    description: Node.js（由 fnm/nvm 管理）
-    depends_on: [fnm]               # 若用户 managers.nodejs = nvm，则依赖自动换成 nvm
-    when: {os: [linux, darwin]}     # Windows 暂缓（ADR-0014）
-    verify: {command: node, version_args: [--version], version_regex: 'v(?P<v>\d+\.\d+\.\d+)'}
-    install:
-      - via: manager
-        params: {manager: fnm, action: install, version: "{{versions.nodejs}}"}
-      - via: manager
-        when: {has: [nvm]}          # nvm 是 shell 函数而非二进制 → 注册表里带 source 脚本
-        params: {manager: nvm, action: install, version: "{{versions.nodejs}}", source: "~/.nvm/nvm.sh"}
-
-  - id: fnm
-    name: fnm
+  # ── ③ 没有稳定可执行文件的工具：shell 函数型用 verify.file ──
+  - id: nvm
     stack: nodejs
     kind: versionmgr
-    homepage: https://github.com/Schniz/fnm
-    when: {os: [linux, darwin]}
+    provides: ["~/.nvm/nvm.sh"]
+    verify: {file: "~/.nvm/nvm.sh"}
+    install:
+      # 仓库即安装物：按 tag 克隆到 ~/.nvm（git 自身保证完整性）
+      - via: source
+        params: {repo: nvm-sh/nvm, ref: v0.40.8, dest: "~/.nvm"}
+
+  # ── ④ 目录型发布物：extract 整包落盘，symlinks 把可执行文件暴露到 PATH ──
+  - id: uv
+    stack: python
+    kind: versionmgr
+    path_dirs: ["~/.local/bin"]
+    verify: {command: uv, version_args: [--version], version_regex: 'uv (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: release
+        when: {os: [linux], arch: [amd64, arm64]}
+        params:
+          repo: astral-sh/uv
+          asset: "uv-{{arch|archmap:amd64=x86_64,arm64=aarch64}}-unknown-linux-gnu.tar.gz"
+          strip_components: 1
+          extract: true
+          dest: "~/.local/share/uv"
+          symlinks:
+            - {from: "~/.local/share/uv/uv", to: "~/.local/bin/uv"}
+            - {from: "~/.local/share/uv/uvx", to: "~/.local/bin/uvx"}
+
+  # ── ⑤ 保留但默认禁用的方法：加 enabled: false，用户覆盖时可一键启用 ──
+  - id: fnm
+    stack: nodejs
+    kind: versionmgr
     verify: {command: fnm, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
     install:
       - via: brew
         when: {os: [darwin]}
         params: {formula: fnm}
-      - via: script
-        when: {os: [linux]}
-        params: {url: "https://fnm.vercel.app/install", sha256: "<固化>"}
+      # fnm 的 release 只有 zip、没有校验和文件，因此默认关闭
       - via: release
-        when: {os: [windows]}
-        params: {repo: Schniz/fnm, asset: "fnm-windows.zip", dest: "~/.local/bin", checksum: sha256}
-
-  - id: btop
-    name: btop
-    stack: base
-    kind: cli
-    description: 资源监控 TUI
-    when: {os: [linux, darwin]}     # windows 不支持 → 自动从清单隐藏
-    verify: {command: btop, version_args: [--version], version_regex: 'btop version (?P<v>[\d.]+)'}
-    install:
-      - via: brew
-        when: {os: [darwin]}
-        params: {formula: btop}
-      - via: apt
-        when: {os: [linux], distro: [ubuntu, debian]}
-        params: {packages: [btop], needs_root: true}
-      - via: dnf
-        when: {os: [linux], distro: [fedora, rhel]}
-        params: {packages: [btop], needs_root: true}
-      - via: source
+        enabled: false
         when: {os: [linux]}
-        params: {repo: aristocratos/btop, build: "make -j$(nproc) && sudo make install"}
-
-  - id: codex
-    name: Codex CLI
-    stack: agent
-    kind: agent
-    when: {os: [linux, darwin, windows]}
-    verify: {command: codex, version_args: [--version]}
-    install:
-      - via: bun                    # 首选：已有 bun 就极快
-        when: {has: [bun]}
-        params: {package: "@openai/codex", global: true}
-      - via: npm
-        when: {has: [npm]}
-        params: {package: "@openai/codex", global: true}
-      - via: script                 # 官方脚本兜底
-        when: {os: [linux, darwin]}
-        params: {url: "https://example.com/install.sh", sha256: "..." }
+        params: {repo: Schniz/fnm, asset: "fnm-linux.zip", binary: fnm, dest: "~/.local/bin"}
 ```
 
-**新增的四个 Schema 元素**（都服务于"薄实现 + 管理器优先"）：
+**工具级字段**（`internal/manifest/types.go` 的 `Tool`；`yaml.Decoder.KnownFields(true)`，
+拼错字段名会直接报错）：
 
-| 元素 | 位置 | 作用 |
-|---|---|---|
-| `kind: versionmgr` | 工具级 | 标记"这是一个版本管理器"，可被 runtime 条目 `depends_on` |
-| `depends_on: [g]` | 工具级 | 显式依赖；安装按 DAG 拓扑排序，`golang` 会先触发 `g` 的安装 |
-| `via: manager` | 方法级 | 委托已安装的管理器执行；params 是**语义化的**：`{manager, action: install\|use\|upgrade\|uninstall, version, global}`，不写具体命令行 |
-| `enabled: false` | 方法级 | 保留但默认禁用某种方法（如"不想要 release 兜底"），用户覆盖时可一键启用 |
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `id` | 字符串 | 是 | 唯一；`^[a-z0-9][a-z0-9._-]*$` |
+| `name` | 字符串 | 否 | 展示名；与 id 不同时 `bs tool info` 才额外显示 |
+| `stack` | 枚举 | 是 | `base` `golang` `python` `nodejs` `rust` `cpp` `java` `shell` `containers` `cloud` `infra` `editor` `agent` |
+| `kind` | 枚举 | 是 | `runtime` `versionmgr` `pkgmgr` `cli` `devdep` `service` `gui` `agent` |
+| `description` / `homepage` | 字符串 | 否 | 展示与溯源 |
+| `tags` | 数组 | 否 | `--tag` 过滤，多个 tag 需全部命中 |
+| `depends_on` | id 数组 | 否 | 安装按拓扑序；`runtime → versionmgr` 不许跨 stack |
+| `when` | 条件对象 | 否 | 见下 |
+| `provides` | 路径数组 | 否 | 安装后的**产出路径**，可以是文件（如 `~/.nvm/nvm.sh`） |
+| `path_dirs` | 路径数组 | 否 | 要加进 PATH 的**目录**（`bs env path` 的两个来源之一，另一个是配置 `tool.extra_path`） |
+| `verify` | 对象 | 是 | 见下 |
+| `install` | 方法数组 | 是 | **书写顺序即优先级**（§7.2） |
+| `update` / `uninstall` | 方法 / 方法数组 | 否 | 不写就复用 `install` 链（installer 按 `op` 换成对应命令） |
+| `disabled` | 布尔 | 否 | 整条禁用；禁用条目只校验 id/stack/kind，允许"半成品" |
+| `manager_optional` | 布尔 | 否 | 允许 `kind: runtime` 没有 `via: manager`（默认**不允许**） |
+| `+install` `+uninstall` `+tags` `+provides` `+path_dirs` | 追加语法 | 否 | 只在用户覆盖文件里有意义（§6.3） |
 
-**`via: manager` 的实现方式**：`internal/install/manager/registry.go` 维护一张小表——
+`provides` 与 `path_dirs` 刻意分开：前者回答"东西装在哪、装没装"，后者回答"PATH 要加哪个目录"。
+早期草案拿 `provides` 去拼 PATH，碰到 `~/.nvm/nvm.sh` 这种**文件**就只能猜是文件还是目录；
+现在让清单把意图写清楚，代码不再猜。
 
-```go
-// 每个管理器就是一组命令模板，没有任何下载/解压/切换逻辑（这才是"薄"）。
-type Manager struct {
-    Name        string   // g / fnm / nvm / uv / rustup / mise
-    Bin         string   // 探测用的可执行文件名
-    NeedsShell  bool     // nvm 是 shell 函数 → 需要 source 脚本后执行
-    Source      string   // 例："~/.nvm/nvm.sh"
-    Install     string   // "g install {{version}}" / "fnm install {{version}}"
-    Use         string   // "fnm use {{version}}" / "mise use -g {{version}}"
-    Upgrade     string   // "g upgrade" / "rustup update"
-    Uninstall   string   // "g uninstall {{version}}"
-    ListRemote  string   // "g ls-remote"（用于 latest 解析）
-}
-```
+**条件 `when`**：`os` `os_not` `arch` `distro` `distro_not` `has` `has_not`。
+`has`/`has_not` 是**命令存在性**条件（`has: [bun]` 表示"机器上已有 bun 才走这条路"），
+需要调用方注入 `LookPath`；无法判断时视为不匹配。工具级与方法级条件都必须满足。
 
-- `managers.<stack>`（配置）决定同名工具的 `depends_on` 自动改写与 `via: manager` 的落地目标：写 `nodejs: nvm` 就把 Node 条目的依赖从 `fnm` 换成 `nvm`，**清单无需分叉**。
-- `version: latest` 由 `ListRemote` 解析为具体版本，模板再渲染命令。
-- 需要一条清单里表达不了的怪命令时，用 `params: {command: "..."}` 逃生口，但仍属于该 `manager` 的语义范围。
-- **禁止**在 `manager` 里实现版本下载、镜像、PATH 切换——那是管理器自己的事；`bs` 只负责"确保管理器在、把命令发出去、验证结果"。
+**`verify`（决定"装没装、版本多少"）**：
+
+| 字段 | 说明 |
+| --- | --- |
+| `command` | 探测用的可执行文件名；与 `file` 互斥（同时写时以 `command` 为准，校验期报错） |
+| `file` | 用"文件是否存在"判断（shell 函数型工具，如 nvm 的 `~/.nvm/nvm.sh`） |
+| `version_args` | 版本查询参数，如 `[--version]` |
+| `version_regex` | **必须含命名组 `(?P<v>...)`**；加载期编译，写错立即报错 |
+| `min_version` / `exact_version` | 语义化版本约束；低于 `min_version` 判为 `outdated` |
+
+`kind: versionmgr` 必须声明 `command` 或 `file`——`depends_on` 排序与 `via: manager`
+的可用性判断都靠它探测。
+
+**方法级字段**（`Method`）：`via`（必填）、`when`（与方法级条件叠加）、`enabled`（缺省 true）、
+`params`。
+
+`params` 是**强类型**结构体而不是 `map[string]any`：字段名拼错在加载期就报错，而不是等安装时
+被静默忽略。每个 `via` 只关心自己那几个字段，由各自的 Installer 校验必需项：
+
+| via | 用到的 params |
+| --- | --- |
+| `manager` | `manager`（缺省取 `tool.managers.<stack>`）、`action`、`version`、`source`、`global`、`command` |
+| `bun` `npm` `pnpm` | `package`、`global`（缺省 true）、`prefix`、`version` |
+| `pipx` `uvpm` | `package`、`python`、`version` |
+| `cargo` | `crate`、`features`、`git`、`version` |
+| `goinstall` | `module`（可自带 `@version`）、`version`（缺省 `latest`） |
+| `brew` | `formula` 或 `cask`、`tap` |
+| `apt` `dnf` `yum` `pacman` `zypper` `apk` | `packages`、`needs_root`、`allow_system` |
+| `winget` `scoop` `choco` | `id`（Windows 三件套）或 `packages`、`allow_system` |
+| `script` | `url`、`sha256`（或 `insecure: true`）、`args`、`shell` |
+| `release` | `repo`、`asset`、`version_source`、`version`、`dest`、`binary`、`strip_components`、`extract`、`symlink(s)`、`checksum`、`checksum_file`、`sha256` |
+| `source` | `repo` 或 `url`、`ref`、`dest`、`build`、`install`、`command` |
+
+**`via: manager` 的落地方式**：`internal/install/managers.go` 里每个管理器就是一组命令模板
+（`ManagerSpec.Actions`），**没有**任何下载、解压、切 PATH 的逻辑（这才是"薄"）：
+
+| 管理器 | bin | install / use / upgrade / uninstall | 备注 |
+| --- | --- | --- | --- |
+| `g` | `g` | `g install` / `g use` / `g upgrade` / `g uninstall` | |
+| `fnm` | `fnm` | `fnm install` / `fnm use` / `fnm install` / `fnm uninstall` | |
+| `nvm` | `nvm` | `nvm install` / `nvm use` / `nvm install` / `nvm uninstall` | shell 函数：先 `. ~/.nvm/nvm.sh` |
+| `uv` | `uv` | `uv python install` / `uv python pin` / `uv python install --reinstall` / `uv python uninstall` | |
+| `rustup` | `rustup` | `rustup toolchain install` / `rustup default` / `rustup update` / `rustup toolchain uninstall` | |
+| `mise` | `mise` | `mise install` / `mise use -g` / `mise upgrade` / `mise uninstall` | |
+| `pyenv` | `pyenv` | `pyenv install -s` / `pyenv global` / `pyenv install -s` / `pyenv uninstall -f` | 已注册，内置清单暂未使用 |
+
+- 命令模板统一渲染 `{{version}} {{os}} {{arch}} {{tag}} {{versions.<name>}}` 等变量
+  （过滤器与完整变量表见 §7.3）。
+- `version: latest`（或 `lts`）只在**真要安装时**用该管理器的 `list-remote` 解析成具体版本；
+  `--dry-run` 只留占位符，预览阶段不打网络。
+- 清单里写 `via: manager` 而不写 `params.manager` 时，落地目标由配置 `tool.managers.<stack>`
+  决定：把 `nodejs: fnm` 改成 `nodejs: nvm` 后，`depends_on: [fnm]` 会被自动改写成 `nvm`，
+  **清单无需分叉**（引擎的 `normalize` 步骤，见 §7.5）。
+- 需要一条清单表达不了的怪命令时用 `params.command` 逃生口，但仍属于该管理器的语义范围。
+- **禁止**在管理器表里实现版本下载、镜像、PATH 切换——那是管理器自己的事；`bs` 只负责
+  "确保管理器在、把命令发出去、验证结果"。
 
 ### 6.3 清单分层与合并
 
-加载顺序（后者覆盖前者，按 `id` 合并、按字段深合并）：
+加载顺序（`internal/manifest/load.go` 的 `Load`，后者覆盖前者）：
 
 ```
-① 二进制内置（go:embed，只读）
-   tools/common.yaml         ← 跨平台公共条目（满足"有些工具无系统限制"）
-   tools/<GOOS>.yaml         ← 系统专属条目
-② 用户覆盖（可读写，按顺序后覆盖前）
-   <config>/tools/*.yaml     ← 改参数 / 新增工具 / disabled: true 禁用
+① 二进制内置（go:embed，只读）         tools/common.yaml
+                                      → tools/<GOOS>.yaml（linux/darwin/windows）
+                                      → tools/profiles.yaml
+② 用户覆盖（可读写，按文件名排序后覆盖） <config>/tools/*.yaml
 ```
 
 > **ADR-0002（已决策）**：清单来源 = **内置 embed + 用户本地覆盖目录**，不实现远程清单仓库。
-> 理由：离线可用、无网络与缓存一致性负担，二进制即"已知良好清单"的快照；新增/修正工具走本仓库 PR 或本地覆盖文件。远程清单若未来需要，作为独立增量能力（M5+）评估，不预留半成品开关。
+> 理由：离线可用、无网络与缓存一致性负担，二进制即"已知良好清单"的快照；新增/修正工具走本仓库 PR
+> 或本地覆盖文件。远程清单若未来需要，作为独立增量能力（M5+）评估，不预留半成品开关。
 
-- `tools/profiles.yaml` 定义"套装"：`base: [git, curl, jq, rg, fd, ...]`、`golang: [g, golang, gopls, dlv, golangci-lint]`、`nodejs: [fnm, nodejs, pnpm]`、`python: [uv, python3-dev]`、`rust: [rustup, cargo-tools]`……profile 也可由用户覆盖扩展。
-- 合并规则明确：**数组类型的字段（`install`、`tags`）整体替换而非追加**，除非用显式 `+install:` 追加语法；这样用户覆盖不会产生"意料之外的半合并"。`disabled: true`（整条禁用）与 `enabled: false`（单个方法禁用）是最常用的覆盖手段。
-- `bs tool list` 默认只显示当前平台**可见**的条目；`--all` 显示全部并标注"不适用于当前平台"。
+`<config>/tools` 目录默认由 `tool.manifest.user_dirs` 决定（空则该目录即 `<config>/tools`）；
+`tool.manifest.builtin: false` 可以只用自己的清单。
 
-### 6.4 校验（`bs manifest validate`，CI 中必跑）
+**合并规则**（按 `id` 合并；`bs tool manifest path` 能看出实际加载了哪几个文件）：
 
-- `id` 唯一、命名合法；`stack`/`kind` 在枚举内；
-- `verify` 必须有 `command` 或 `version_regex` 之一；
-- 每个 `via` 有对应 Installer 实现且 `params` 通过该 Installer 的 schema 校验；
-- `via: manager` 的 `manager` 必须在注册表中存在，且该管理器支持所声明的 `action`；
-- `depends_on` 引用的 id 存在、**无环**（DAG 校验），且版本管理器依赖不会跨 stack 乱指；
-- `when` 的 os/arch/distro 值合法；
-- 引用的 profile 中的 id 均存在；
-- 每个 `runtime` 条目至少有一条 `via: manager` 路径，或显式标注 `manager_optional: true`（防止有人悄悄退回"自己下载解压"的重实现）。
+- **标量字段**（`name`/`stack`/`kind`/`description`/`homepage`）：覆盖文件里**非空**才覆盖，
+  空字符串视为"没写"。
+- **数组字段**（`tags`/`depends_on`/`provides`/`path_dirs`/`install`/`uninstall`）：
+  **整体替换**，不做半合并。要追加就用显式语法 `+install` / `+uninstall` / `+tags` /
+  `+provides` / `+path_dirs`；追加统一发生在**所有覆盖文件处理完之后**，语义稳定。
+  例如"在内置 git 上再加一条 apt 路径"：
+
+  ```yaml
+  tools:
+    - id: git
+      +install:
+        - via: apt
+          params: {packages: [git]}
+  ```
+
+- **`when`**：按子字段合并（只覆盖写了的那几个维度），不会因为只想加一个 `arch` 条件而丢掉 `os`。
+- **`verify`**：同样按子字段合并。
+- **`disabled: true`**：一旦被覆盖文件置为 true 就会保持（覆盖只能禁用，不能重新启用）。
+- **profile**：同名 profile **整体替换**，需要组合时用 `extends`（避免"半合并"的意外结果）。
+- 每个条目记录 `Origin`（最终由哪个文件定义/覆盖），校验报错与 `bs tool manifest diff` 都用它定位。
+- 同一个文件里出现重复 `id`、或字段名拼错，都在加载期直接报错（`KnownFields(true)`）。
+- `bs tool list` 默认只显示当前平台**可见**的条目（`when` 匹配且未 `disabled`）；
+  `--all` 显示全部并标注"不适用于当前平台"/"已禁用"。
+
+`profiles.yaml` 只放**跨平台**套装（`base`/`golang`/`nodejs`/`python`/`rust`/`editor`/`infra`/
+`agent`/`managers`）；带平台差异的套装（`cpp`/`containers`/`full`）写在 `tools/<os>.yaml` 里——
+"cpp 要装哪些包"在 Linux 与 macOS 上不同，用 `when` 硬凑会把清单写成一团浆糊。
+profile 可以写成纯列表简写，也可以是完整形式：
+
+```yaml
+profiles:
+  base: [git, jq, ripgrep]                  # 简写
+  golang:
+    description: Go 工具链与开发工具
+    extends: [base]                         # 继承（环会被校验拦住）
+    tools: [g, golang, gopls, dlv, staticcheck]
+```
+
+### 6.4 校验（`bs tool manifest validate`，CI 中必跑）
+
+校验的目的是**一次把错找全**（`manifest.Problems` 聚合，逐条列出），而不是让作者改一个跑一次。
+`--os linux|darwin|windows` 可以按指定系统交叉校验（`bs tool manifest validate --os windows`）。
+
+加载期（`Load`/`compileTool`）就会失败的：
+
+- 清单 `version` 不是 `1`；
+- YAML 里出现**未知字段**（`KnownFields(true)`，拼错 `vesion` 之类不会被静默忽略）；
+- 同一个文件里**重复 `id`**；
+- `verify.version_regex` 编译失败，或**没有命名组 `(?P<v>...)`**；
+- `verify.min_version` / `exact_version` 不是合法版本号。
+
+校验期逐条检查（`Validate`）：
+
+- `id` 必填且匹配 `^[a-z0-9][a-z0-9._-]*$`；`stack`/`kind` 必填且在枚举内；
+- `disabled: true` 的条目只查上面三项，其余允许"半成品"；
+- `verify` 至少要有 `command` / `file` / `version_regex` 之一；
+  `verify.file` 与 `verify.command` 互斥；`kind: versionmgr` 必须声明 `command` 或 `file`；
+- `install` 不能为空；每个方法（含 `update`/`uninstall`）的 `via` 必须在安装器注册表里，
+  `params` 必须过该 Installer 的 schema 校验；
+- `params` 里所有模板字段都会用真实的 `tool.versions` 预渲染一遍，
+  因此 `{{verison}}` 这类拼写错误、不存在的过滤器、未定义的 `{{versions.xxx}}`
+  都会在 validate 阶段被拦住，而不是等真正安装时才失败；
+- `via: manager`：`params.manager` 必须在管理器表里（不写则取 `tool.managers.<stack>`，
+  该配置也没有就报错），`params.action` 必填且该管理器要支持；
+- `kind: runtime` 必须有一条启用的 `via: manager` 路径，除非显式 `manager_optional: true`
+  ——这条护栏就是"管理器优先"（ADR-0005）不被悄悄绕过的保证；
+- **系统包管理器护栏**：`apt`/`dnf`/`yum`/`pacman`/`zypper`/`apk`/`winget`/`choco`
+  只允许用于 `tool.allow_system_for` 列出的 `kind`（默认 `devdep`/`service`/`cli`），
+  或该方法显式写 `params.allow_system: true`；否则报错。
+  `brew`/`scoop` 不在护栏内——它们是用户态、无 sudo 的包管理器；
+- `depends_on` 引用的 id 必须存在；`runtime → versionmgr` 的依赖不许跨 stack；
+  `depends_on` 必须无环（环会打印出完整路径 `a → b → a`）；
+- profile 里引用的 tool id 必须存在，`extends` 必须存在且**无环**。
+
+`bs tool manifest diff <文件>` 用来预览"某份覆盖文件会让当前合并结果发生什么变化"
+（新增了哪些工具、哪些字段/参数不同），改清单后先 diff 再 validate 是最省事的顺序。
 
 ---
 
@@ -538,139 +634,281 @@ type Manager struct {
 
 ### 7.1 端口（domain 层接口）
 
+`internal/install/ports.go` 定义安装引擎的全部对外契约：
+
 ```go
-// Installer 是"一种安装机制"的抽象实现（bun / brew / apt / script / release / source ...）。
+type Op string // install | upgrade | uninstall
+
+// Installer 是"一种安装机制"（manager/bun/brew/apt/script/release/source …）。
 type Installer interface {
-    // Name 与 YAML 中 method.via 对应。
-    Name() string
-    // Available 判断该机制在当前机器上是否可用（二进制存在、包管理器存在等）。
-    Available(ctx context.Context, p Platform) bool
-    // Plan 只做"将要发生什么"的静态计算，不产生副作用。
-    Plan(ctx context.Context, t Tool, m InstallMethod, p Platform) (Action, error)
-    // Execute 执行 Action，返回原始输出与错误。
+    Name() string                                     // 与清单里的 method.via 对应
+    Available(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method) bool
+    Plan(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, op Op) (Action, error)
     Execute(ctx context.Context, a Action, e ExecEnv) error
-    // Uninstall / Upgrade 可选实现，通过能力接口探测（见下）。
 }
+
+// 可选能力：用类型断言探测，避免接口膨胀。
+type ValidateParams interface{ Validate(p manifest.Params) error }
+// 一个实现覆盖多个 via 时（apt/dnf/pacman…共用一份实现）用这个。
+type ValidateParamsFor interface{ ValidateFor(via string, p manifest.Params) error }
 
 type Action struct {
-    ToolID   string
-    Via      string
-    Commands []Command   // 人类可读 + 可执行
+    ToolID    string
+    Via       string
+    Op        Op
+    Reason    string     // 为什么选中它（plan 输出用）
+    Summary   string     // 给表格看的一句话
+    Commands  []Command  // 可读 + 可执行
     Downloads []Download
     NeedsRoot bool
-    Network   bool       // 是否需要代理注入
-    Reason    string     // 为什么选择这个方法（plan 输出用）
+    Network   bool       // 需要代理注入
+    // resolved 保存 Plan 算出来的中间结果（release 的 download/dest/symlink 等），
+    // 由 WithResolved/Resolved 存取，避免把 installer 私有结构塞进公共字段。
 }
 
-// 可选能力，用类型断言探测，避免接口膨胀：
-type Uninstaller interface { Uninstall(ctx, Tool, InstallMethod, ExecEnv) error }
-type Upgrader    interface { Upgrade(ctx, Tool, InstallMethod, ExecEnv) error }
+type Download struct {
+    URL, SHA256, Dest string
+    Mode              os.FileMode
+}
 ```
 
-**核心执行接口**（唯一允许碰系统的出口）：
+`Plan` 只做"将要发生什么"的静态计算（可联网解析版本与校验和，但**不落盘**）；
+`Execute` 才真正动手。两者分开是 `bs tool plan` 与 `--dry-run` 能成立的前提。
+
+**唯一允许碰系统的出口**是 `ExecEnv`（真实实现 `install.OSEnv`）：
 
 ```go
 type ExecEnv interface {
     Run(ctx context.Context, c Command) (Result, error)
     Download(ctx context.Context, d Download) (string, error)
-    FS() fsx.FS
-    Env() map[string]string    // 已注入 proxy/PATH
+    FetchText(ctx context.Context, url string) (string, error) // 只读，干跑也照常
+    LatestRelease(ctx context.Context, repo string) (string, error)
+    LookPath(name string) (string, bool) // 先看 PATH，再看 extra_path
+    Env() map[string]string
     DryRun() bool
+    IsRoot() bool
+    OS() string
+    Arch() string
+    Distro() string
+    HomeDir() string
+    Versions() map[string]string
+    WorkDir() string // 只是拼接路径，不创建目录
     Log() *slog.Logger
 }
 ```
 
-真实现：`cmdx.OSExecEnv`；测试实现：`cmdx.FakeExecEnv`（记录命令、可编排返回）。所有 installer 的单元测试都用 Fake，无需网络与特权。
+`OSEnv` 的三条"不越界"约定（都有单测锁定）：
+
+- `Run`/`Download`/`LatestRelease` 在 `DryRun` 时直接返回 `ErrDryRun`，不产生任何副作用；
+  只有 `FetchText` 例外——它是只读请求，plan 需要真实的校验和才能在预览里显示将校验什么；
+- `WorkDir()` 只算出 `<cache>/work/<pid>-<纳秒>`，**不建目录**：`bs tool plan` 不该因为要展示一个
+  临时路径就在磁盘上留下东西；
+- `LookPath` 先查注入的 `PATH`，再查配置 `tool.extra_path` 与 `~/.local/bin`、`~/bin`、
+  `~/.g/versions/current/bin`——这些目录不写进 PATH 也能被探测到。
+
+**注册表**（`Registry`）持有全部 Installer 与版本管理器定义：`Get(via)`、`KnownVias()`、
+`IsSystemVia(via)`、`Managers()`、`ValidateMethod`、`ValidateManagerAction`。
+系统包管理器是"一份实现、多个 via"（apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco 各自
+`RegisterAs`），`manifest.ValidateOptions.Vias` 接的就是它。
+
+错误类型都实现了 `errors.As`：`ErrUnsupported`（该 via 不支持这个 op）、
+`ErrMethodNotFound`、`ErrViaUnavailable{Declared}`、`ErrNoMethod`（聚合全部候选的失败原因）、
+`UnknownViaError`、`UnknownManagerError`、`UnsupportedActionError`——退出码映射见 §10/§11。
 
 ### 7.2 方法链选择与降级（需求 8）
 
-选择算法（`install.chain.Resolve`）：
+选择算法（`internal/install/chain.go` 的 `ResolveChain`）：
 
-1. 用户显式指定 `--via <name>`（或配置 `tool.default_via`）：只在链中匹配该方法；不存在则报错并列出可用方法。
-2. 否则**严格按清单里 `install` 的书写顺序**自上而下遍历（顺序即策略，不在代码里硬编码优先级）：
-   - `enabled: false` → 跳过；
-   - `when` 条件不匹配 → 跳过并记录原因（`--verbose`/`plan -v` 展示）；
-   - `when.has: [bun]` 这类**工具存在性条件**不满足 → 跳过；
-   - Installer 的 `Available()` 为 false（如无 brew、`manager` 对应的管理器未安装）→ 跳过；
-   - 命中第一个可用方法 → 选中，并把"为什么是它"写进 `Action.Reason`。
-3. 若选中方法执行失败：
-   - **`--fallback` / `--no-fallback`（ADR-0013）**：默认值随场景变化——**交互式终端默认开**（能自救就自救），**非交互（管道/CI/`--json`/`--non-interactive`）默认关**（绝不静默换安装方式，避免"本想用 bun 装，结果悄悄用 apt 装了个旧版本"）。`--fallback` / `--no-fallback` 可显式覆盖该默认。
-   - 降级发生时**必须在 Report 里显著标注**："bun 安装失败 → 已改用 npm"，`--json` 输出含 `fallback_from`/`fallback_reason` 字段。
-4. 全部方法失败 → 该工具失败，汇总**每个方法各自的失败原因**（而不是只报最后一个）。
+1. `--via <name>`（或配置 `tool.default_via`）只作用于**用户显式点名的工具**：自动补进来的依赖
+   仍按自己的清单声明安装（否则 `bs tool install golang --via apt` 会把版本管理器也塞给 apt）。
+   - 清单里没声明这个 via → `ErrMethodNotFound`（退出码 2，用法错误）；
+   - 声明了但当前机器不可用 → `ErrViaUnavailable{Declared: true}`（退出码 2）——
+     用户明确指定的方式不可用，必须整体失败而不是悄悄降级。
+2. 否则**严格按清单里 `install` 的书写顺序**遍历（顺序即策略，不在代码里硬编码优先级）：
+   - `enabled: false` → 跳过（不进候选表）；
+   - 方法级 `when` 不匹配 → 跳过，并把**原因**记进 `Candidate.Note`
+     （`bs tool plan`/`report.Steps[].skipped` 都能看到"为什么没用 brew"）；
+   - Installer 的 `Available()` 为 false（没有 brew、管理器没装、`has: [bun]` 不满足）→ 跳过；
+   - 命中第一个可用方法 → 选中，把"为什么是它"写进 `Action.Reason`。
+3. 一个候选都没有时返回 `ErrNoMethod`，它**聚合每个候选各自的原因**（而不是只报最后一个），
+   退出码 4（前置条件不满足）。
 
-**推荐书写顺序**（`bs manifest validate` 会按此给出 lint 警告，不强制）：
+**降级（ADR-0013）**：选中方法执行失败后，只有 `Fallback` 为真才按顺序试链上其余候选
+（`Chain.Fallbacks()` 只含当时 `Available()` 的候选）。降级必须显式留痕：
+
+- 终端：`bs tool install` 的 Report 里标注 `bun 安装失败 → 已改用 npm`；
+- `--json`：步骤上带 `fallback_from` / `fallback_reason` / `tried_methods`，
+  顶层 `fallbacks: [{tool_id, from, to, reason}]`。
+
+`Fallback` 的默认值随场景变化（`internal/app/tool.go` 的 `fallbackEnabled`）：
+
+| 场景 | 默认 |
+| --- | --- |
+| `--fallback` / `--no-fallback` | 显式指定优先 |
+| `--json`、`--yes`、非交互（stdout 不是终端） | **关**（绝不静默换安装方式） |
+| 其它（交互式终端），以及 `--dry-run` | **开**（能自救就自救） |
+
+**推荐书写顺序**（`bs tool manifest validate` 不强制，但内置清单照此写）：
 
 ```
 ① manager        → 版本管理器（g / fnm / nvm / uv / rustup / mise），runtime 的首选
-② 专用包管理器   → bun / npm / pnpm / pipx / cargo / goinstall（装 CLI 工具与 agent）
-③ script         → 官方安装脚本（必须固化 sha256）
+② 专用包管理器   → bun / npm / pnpm / pipx / uvpm / cargo / goinstall（装 CLI 与 agent）
+③ brew           → macOS 的主力（用户态、无 sudo、可回退）
 ④ release        → 官方 release 下二进制（管理器自身、无包管理器的工具）
-⑤ 系统包管理器   → brew / apt / dnf / pacman / winget / scoop（只用于不常升级的基础依赖）
-⑥ source         → 源码编译（最后兜底，尽量少用）
+⑤ 系统包管理器   → apt / dnf / pacman / winget（只用于不常升级的基础依赖，需要显式放行）
+⑥ source         → 源码编译 / "仓库即安装物"（最后兜底）
 ```
 
-**系统包管理器的护栏**：默认只允许 `apt`/`dnf`/`winget` 等系统包管理器用于 `kind ∈ {devdep, service, cli}`；若把 `runtime` 交给它们（例如用 apt 装 go，版本往往很旧），validate 会报错，需要 `tool.allow_system_for` 或该方法的 `allow_system: true` 显式放行。这条护栏就是"不期望有沉重实现"的另一面——**也不期望用错机制**。
+> 内置清单里**不使用** `via: script`：官方脚本没有稳定哈希，固化 sha256 无从谈起，
+> 用 `insecure: true` 等于放弃校验（AGENTS.md §8.3）。
 
-**依赖顺序**：`depends_on` 构成 DAG，`Apply` 阶段按拓扑序执行（例：`g → golang → gopls`）。DAG 校验在清单加载期完成，环依赖直接报错。
+**系统包管理器护栏**：默认只允许用于 `kind ∈ {devdep, service, cli}`（`tool.allow_system_for`）；
+把 `runtime` 交给它们需要该方法的 `params.allow_system: true`（内置清单里 `golang` 的
+`apt` 引导路径就是这么放行的），否则 validate 报错。`brew`/`scoop` 不在护栏内——用户态包管理器
+用它们装 versionmgr（如 macOS 上的 `fnm`）是正常做法。
 
+**依赖顺序**：`depends_on` 构成 DAG，`selectTools` 用 `manifest.ExpandDeps` 做拓扑排序
+（同层保持清单书写顺序），例：`g → golang → gopls`。环在加载期就被 `manifest.TopoOrder`
+拦截并打印完整路径。
 
-### 7.3 Installer 实现清单（首批）与体量预算
+### 7.3 Installer 实现与参数
 
-| via | 平台 | 参数要点 | 体量预算 | 备注 |
-|---|---|---|---|---|
-| `manager` | 全 | `manager`, `action`, `version`, `global`, `source` | ~120 行（含注册表） | **委托版本管理器**，runtime 的首选；不含下载/切换逻辑 |
-| `bun` | 全 | `package`, `global` | ~40 行 | 首选安装 agent 类 CLI |
-| `npm` / `pnpm` | 全 | `package`, `global`, `prefix` | ~50 行 | 非 root 全局安装走 `prefix` |
-| `pipx` / `uvpm` | 全 | `package`, `python` | ~50 行 | Python CLI 隔离安装（`uv tool install`） |
-| `cargo` | 全 | `crate`, `features`, `git` | ~40 行 | Rust 工具 |
-| `goinstall` | 全 | `module`, `version` | ~40 行 | Go CLI |
-| `brew` | mac/linux | `formula`/`cask`, `tap` | ~60 行 | 不用 `sudo` |
-| `apt` / `dnf` / `pacman` | linux | `packages`, `repo`, `needs_root` | ~180 行（共享基类） | 基础 devdep、btop 之类 |
-| `winget` / `scoop` / `choco` | windows | `id`/`package` | ~120 行（共享基类） | Windows 主路径 |
-| `script` | 全 | `url`, `sha256`, `args`, `shell` | ~80 行 | `curl … \| bash` 类官方脚本；**必须固化 sha256** 或显式 `--insecure-script` |
-| `release` | 全 | `repo`, `asset` 模板, `version_source`, `dest`, `strip_components`, `symlink`, `checksum` | ~150 行 | 从 GitHub Release 下载解压；管理器自身与无包管理器工具用 |
-| `source` | 全 | `repo`/`url`, `build`, `install` | ~60 行 | 最后兜底 |
+`internal/install` 里的实现分成三族，共 14 个 via（`NewRegistry` 注册；系统包管理器一份实现
+覆盖 9 个 via）。整包（引擎 + 链 + 注册表 + 全部 installer）约 2950 行，含注释，最大单文件
+654 行——"薄"靠的是**共用实现 + 表驱动**，而不是每个 via 一个文件。
 
-> 预算合计约 1000–1200 行，这是**整个安装引擎的上限**，也是"薄实现"的可度量约束：任何单个 Installer 明显超出预算，说明该抽象选错了层级（应该改成 `via: manager`，或者把通用部分下沉 `pkg/`）。
+| via | 平台 | params | 实际行为 |
+| --- | --- | --- | --- |
+| `manager` | 全 | `manager` `action` `version` `source` `global` `command` | 查管理器命令模板表，渲染后执行；`latest`/`lts` 用 `list-remote` 解析（只在真要装时） |
+| `bun` `npm` `pnpm` | 全 | `package` `global` `prefix` `version` | `global` 缺省 true → 加 `-g`；`prefix` 用于非 root 全局安装 |
+| `pipx` `uvpm` | 全 | `package` `python` `version` | `pipx install` / `uv tool install`（天生用户级，不加 `-g`） |
+| `cargo` | 全 | `crate` `features` `git` `version` | `--features` 逗号拼接；升级用 `install --force` |
+| `goinstall` | 全 | `module` `version` | `module@version`；`version` 缺省或升级时用 `latest`；不支持卸载 |
+| `brew` | mac/linux | `formula` `cask` `tap` | `tap` 先于 `install`；`cask` 时加 `--cask` |
+| `apt` `dnf` `yum` `pacman` `zypper` `apk` | linux | `packages` `needs_root` `allow_system` | apt 先 `update`；需要 root 时自动加 `sudo` 前缀 |
+| `winget` `scoop` `choco` | windows | `id` `packages` `allow_system` | winget 用 `--id`，其余用包名；升级一律不支持 |
+| `release` | 全 | `repo` `asset` `version_source` `version` `dest` `binary` `strip_components` `extract` `symlink(s)` `checksum` `checksum_file` `sha256` | GitHub Release 下载 → 校验 sha256 → 解压/取二进制 → 落盘 + 软链 |
+| `source` | 全 | `repo` 或 `url` `ref` `dest` `build` `install` `command` | `git clone --depth 1 [--branch ref]`；`dest` 直指目标目录（nvm 这类"仓库即安装物"） |
+| `script` | 全 | `url` `sha256` `args` `shell` `insecure` | 下载固化哈希的官方脚本再执行；**必须**有 `sha256` 或显式 `insecure: true` |
 
-模板渲染：`asset: "g{{version}}-{{os}}.tar.gz"` 支持 `{{os}} {{arch}} {{version}} {{tag}}`、配置引用 `{{versions.golang}}`、以及过滤器 `{{arch|archmap:amd64=x86_64,arm64=aarch64}}`（不同项目命名差异巨大，映射能力必须有；`osmap` 同理）。
+几处刻意的取舍：
+
+- **`release` 拿不到校验和就中止**（AGENTS.md §8.3）。查找顺序：`params.sha256` 固化 →
+  `params.checksum_file` 指定的文件名 → 常见文件名 `checksums.txt` / `sha256sum.txt` /
+  `checksums.sha256` / `SHA256SUMS` → `<asset>.sha256`（Rust 生态习惯，文件里通常只有一个裸哈希）。
+  `params.checksum: none` 是唯一的显式放弃开关。实测各家习惯不同（g 用 `sha256sum.txt`、
+  k9s 用 `checksums.sha256`、uv/ripgrep 每个产物配 `<asset>.sha256`），逐个试比强制清单作者
+  记住某个项目的习惯更可靠。
+- **`extract` 决定"目录型"还是"单文件型"**：默认从归档里挑出 `binary`（缺省是 repo 名）
+  复制到 `dest`；`extract: true` 则整棵解压到 `dest`（Go 工具链、uv 这类目录型发布物），
+  再用 `symlinks` 把要暴露的可执行文件链到 PATH 目录。
+- **`script` 与 `release` 都不写系统目录**：只写 `dest`/`symlink` 指定的用户目录，绝不静默 `sudo`。
+- **`source` 固定 `ref`** 比跟 HEAD 可控；`dest` 为空时克隆到 `<cache>/work/src-<id>`。
+
+**模板渲染**（`internal/install/render.go`，与 Go 的 `text/template` 无关，只是 `{{...}}` 占位符）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `{{version}}` / `{{tag}}` | 解析出的版本 / tag（`v` 前缀保留在 `tag` 里） |
+| `{{os}}` `{{arch}}` | 目标系统与架构（`--dry-run` 时也按本机算） |
+| `{{package}}` `{{crate}}` `{{module}}` `{{formula}}` `{{python}}` `{{manager}}` `{{action}}` | 各 via 的语义参数 |
+| `{{versions.<name>}}` | 配置 `tool.versions` 里的值（如 `{{versions.golang}}`） |
+
+过滤器：`{{arch|archmap:amd64=x86_64,arm64=aarch64}}`、`{{os|osmap:linux=unknown-linux-musl}}`、
+`{{version|trimv}}`、`{{x|default:y}}`、`{{x|lower}}`、`{{x|upper}}`。
+**未知变量或未知过滤器直接报错**，不会静默留下 `{{...}}` 字面量；
+清单校验期会用 `tool.versions` 的真实值（缺省栈用样例值兜底）把所有模板预渲染一遍，
+所以拼写错误在 `bs tool manifest validate` 阶段就能发现。
 
 ### 7.4 探测（需求 3 的"已安装/未安装"）
 
-`detect.Detector`：
+`internal/detect.Detector` 只有一个公开入口 `Detect(ctx, tools, Options{Refresh, UseCache, Only})`
+和 `Probe(ctx, tool)`（单工具、不走缓存）。判定顺序：
 
-- **存在性**：`exec.LookPath` 优先；`release`/`source` 类另做"路径存在 + 可执行"检查（`provides` 路径）。
-- **版本**：执行 `verify.version_args`，用带命名组的 `version_regex` 抽取版本（正则编译在清单加载期完成）。
-- **约束**：`min_version` / `exact_version` 用语义化比较（自实现轻量 semver 比较，不引重依赖）。
-- **结果三态**：`Installed` / `Outdated` / `Missing`，外加 `Unknown`（命令存在但版本解析失败，不阻塞安装，只警告）。
-- 并发探测（默认 `min(8, NumCPU)`），带 per-command 超时（默认 5s），避免某个卡死的 `--version` 拖慢整体。
-- 结果缓存到 state 目录（TTL 短，如 10 分钟），`--refresh` 强制重探；**缓存只加速显示，判定前若结果影响动作（要跳过安装）则强制重探**。
+1. `verify.command` 在 PATH（含 `extra_path`）里 → 执行 `version_args`，
+   用带命名组 `(?P<v>...)` 的 `version_regex` 抽版本；
+2. `verify.file` 存在 → `installed`（nvm 这类 shell 函数没有可执行文件）；
+3. 都没有，但 `provides` 里有可执行文件 → `unknown` + 说明"命令不在 PATH，但 provides 路径存在"
+   （这正是 `bs env path` 该被 eval 的信号）；
+4. 什么都不在 → `missing`。
 
-### 7.5 执行流水线（`bs init` / `bs tool install`）
+状态四态：`installed` / `outdated`（版本不等于 `exact_version`，或低于 `min_version`）/
+`missing` / `unknown`（命令在但版本解析不出来——**不阻断安装**，只提示）。
+只声明了 `command` 而没有 `version_regex`/`version_args` 时，命令存在即算 `installed`
+（detail 写"命令存在（未声明版本探测）"）。
+`Result` 带 `tool_id`/`status`/`command`/`version`/`detail`/`checked_at`，还有 `Present()`、
+`Installed()`、`Label()` 等便捷方法。
+
+工程约束：
+
+- **并发探测**，默认 `min(8, NumCPU)`（`MaxConcurrency`），单个工具的探测超时 5s
+  （`ProbeTimeout`）——某个卡死的 `--version` 不会拖慢整体；
+- 结果缓存到 `<cache>/probe.json`（`paths.CacheDir`，TTL 10 分钟）。缓存只服务**显示**：
+  10 分钟内重复 `bs tool list` 不必反复起子进程；
+- **要据此跳过安装的决定必须强制重探**（ADR-0010/0011）：`PlanTools` 在 `op == install` 时
+  传 `Refresh: true`，`bs tool list --refresh` 同理；
+- `--dry-run` 时 `UseCache: false`——干跑的语义是"磁盘上什么都不留下"，连缓存也不写；
+  缓存写入用 `WriteFileIfChanged`，内容没变就不碰 mtime（"重复 list 不写盘"是可断言的性质）；
+- 缓存文件损坏或过期只当作"没有缓存"，不报错；`ErrNoExecutor` 防止"既没有执行器也没有
+  PATH 查找"时静默给出满屏 `missing`。
+
+### 7.5 执行流水线（`bs tool plan` / `bs tool install`）
+
+引擎的 `PlanTools` 与 `Apply` 严格分开（`internal/install/engine.go`），
+`bs tool plan` 只跑前三步，`--dry-run` 跑到 Apply 前停下：
 
 ```
-[1] Preflight
-     · 平台/发行版/Shell 探测                       · 必需基础命令检查（git, curl）
-     · 网络与代理可达性（可选 --check-network）      · 权限模式（是否需要 sudo，能否免密）
-     · 目标路径可写
-[2] Select        按 profile / stack / kind / 交互勾选 → []Tool
-[3] Plan          逐工具 Resolve 方法链 → []Action
-[4] Confirm       表格：工具 | 状态 | 将用方式 | 命令摘要；支持 a=全选 n=全不选 1,3,5=选择
-                  --yes 跳过；--dry-run 到此结束并打印命令
-[5] Apply         按 **依赖顺序** 串行执行（工具可声明 depends_on），工具之间默认串行，
-                  同层无依赖可并行（--jobs）
-[6] Verify        执行后重新探测，失败则该工具标记 FAIL 并给出日志路径
-[7] Report        成功/跳过/失败 汇总；失败项给出"下一步建议"；退出码 1
+[1] Preflight   依赖检查：depends_on 指向的工具不在本次选择里 → 记进 plan.Problems
+                （"可能已安装"，只提示不阻断）
+[2] Select      ExpandDeps 拓扑排序（含依赖自动补全）→ 过滤 disabled 与 when 不匹配的工具
+[3] Plan        逐工具 ResolveChain → 选中的 Installer.Plan()
+                · install：已安装（installed）→ skip；uninstall：未安装 → skip；upgrade 从不跳过
+                · 方法链全部不可用 → 该步 status=failed 并带上聚合原因
+                · ErrUnsupported（如用 apt 卸载）→ status=unsupported（不算失败）
+                · 探测：install 且非 dry-run 时强制重探，其余用缓存
+[4] Confirm     `bs tool install/upgrade/uninstall` 在**真正动手前**要一句明确同意
+                （CLI 层，不在引擎里）：
+                · --yes 直接通过；
+                · 非交互（stdin/输出不是终端、--json、--non-interactive、CI=1）
+                  绝不阻塞等待输入，以退出码 5 结束并提示加 --yes；
+                · 交互式：提示打在 stderr，只有 y/yes 继续（回车＝拒绝），
+                  拒绝后打印"已取消，未做任何修改。"并以退出码 0 结束。
+[5] Apply       按拓扑序**串行**执行（工具之间有依赖，暂不提供 --jobs）
+                · dry-run：把 install/upgrade/uninstall 改成 planned 回显，一行都不执行
+                · 每个 Action 由 Installer.Execute 执行；失败且有 --fallback 时试链上其余候选
+[6] Verify      装完立刻重探（Probe，不走缓存）：仍然 missing → 该步 failed，
+                错误是"命令已执行，但验证失败"——不相信命令的退出码
+[7] Report      逐步状态 + 耗时 + 降级记录；`installed.yaml` 落盘（audit）；
+                有失败项 → 退出码 1；既有成功又有失败 → 退出码 3
 ```
 
-失败策略：默认 `--keep-going`（单个工具失败不中断整体），最终汇总非零退出；`--fail-fast` 可选。
+`normalize` 是 Plan 前的一个隐式步骤：把配置 `tool.managers.<stack>` 落到清单上——
+`via: manager` 缺 `params.manager` 时补上，`depends_on: [fnm]` 在该 stack 的管理器换成 `nvm` 时
+自动改写依赖指向（**清单无需分叉**）。没用到配置映射时不复制清单。
 
-**日志与审计**：每条命令的 stdout/stderr 落到 `<state>/logs/<ts>-<toolid>.log`，终端只显示摘要；`bs tool install --verbose` 实时透传。安装成功写 `<state>/installed.yaml`（`id, version, via, at, commands`）作为审计与 `bs doctor` 依据。
+`bs tool plan` 与 `--dry-run` 的区别：`plan` 是"只看不做"的正规入口（永远不执行）；
+`--dry-run` 是给 `install/upgrade/uninstall` 的演练开关，两者都可能在解析版本时联网
+（`release` 要查 latest release，`manager` 的 `latest` 要查 list-remote），
+因为预览必须显示真实版本号。
+
+**日志与审计**：`<state>/installed.yaml` 记录 `{version, tools.<id>.{via, version, installed_at}}`，
+只写成功（`done`）的步骤，内容不变时不写盘；它**不是**"是否已安装"的依据（ADR-0010/0011），
+只用于 `bs tool info` 展示历史与将来的升级提示。命令输出目前走 `slog`
+（`-v` 可见完整 argv 与退出码）；`install.LogPath(stateDir, toolID, now)` 已给出
+`<state>/logs/<时间>-<工具>.log` 的路径约定并有单测，但引擎尚未把每条命令的输出落进该文件。
 
 ### 7.6 卸载与升级
 
-- `upgrade`：先检测，`Outdated` 才动作；按 `tool.update.via`（缺省复用 install 链）执行；对包管理器类走 `brew upgrade` / `bun update -g` / `cargo install --force` 等原生语义；`apt` 类标记 `managed: system`，默认**不主动升级**（符合"不需要及时升级"的定位），除非 `--include-system`。
-- `uninstall`：仅对通过非系统包管理器（bun/npm/cargo/goinstall/release/source）安装的工具提供；`apt/brew/winget` 类交给原生包管理器，`bs` 只做提示或 `--allow-system-uninstall` 透传。
+- **upgrade 不做"只有 outdated 才动"的闸门**：探测只用于展示，实际的"要不要装/要不要升"
+  交给各自的包管理器（`cargo install --force`、`go install x@latest`、`brew upgrade`、
+  `g upgrade`、`rustup update`…）。`tool.update` 没写就复用 `install` 链，installer 按 `op`
+  换成对应的升级命令；`release` 的"升级"就是重新取最新 release 并覆盖。
+- **系统包管理器的升级一律 `unsupported`**（"不需要及时升级"的定位），要用系统工具自己升。
+- **uninstall 只对"用户态装法"提供**：`bun/npm/pnpm/pipx/uvpm/cargo/manager/brew` 可以；
+  `goinstall`/`release`/`script`/`source` 与 `pacman`/`winget` 返回 `unsupported`，
+  提示交给原生包管理器。`unsupported` 只是"这条不做"，不算失败（不影响退出码）。
+- `bs tool uninstall` 会跳过本来就没装的工具（探测到 `missing` → `skip`），
+  所以重复执行是安全的。
 
 ---
 
@@ -899,107 +1137,185 @@ type Platform struct {
 
 ## 11. CLI 命令全集
 
+> 这一节是**已实现**的命令表面（`bs <cmd> --help` 即权威参考）。规划中但尚未实现的命令
+> 集中列在末尾的"尚未实现"，避免把设计意图误读成既有能力。
+
 ```
-bs [--config FILE] [--dry-run] [--yes] [--json] [-v|-vv] [--no-color] <command>
+bs [--config FILE] [--repo-root DIR] [--dry-run] [--yes] [--json] [--no-color]
+   [--non-interactive] [-v|-vv] [--log-level LEVEL] <command>
 
-init                 交互式初始化：探测环境 → 选 profile → 展示工具清单(已装/未装) → 勾选 → plan → 安装
-                     （结束时可选执行 bs shell install，把 shell 受管块一次装好）
-doctor               环境自检：平台信息、必需命令、包管理器/版本管理器、代理状态、PATH、rc 受管块、配置健康度
-version              版本信息（--json），含 commit/date/build tags
-self-update          从 GitHub Release 自更新（校验 sha256）
+version              版本信息（--json：version/commit/date/go_version/os/arch）
+doctor               环境自检（只读）：平台、必需命令、包管理器、配置、清单、代理、PATH、rc 受管块、仓库根
 
-config path          打印所有配置/状态/缓存路径与实际来源
-config show|get|set|edit|init|validate
+config path          打印各配置/状态/缓存目录的实际路径及来源
+config show          打印合并后的生效配置
+config validate      校验配置文件合法性
+config init          生成默认配置文件（已存在时不覆盖）
 
-proxy  list|show|on|use|off|status|env[--apply|--print]|exec|test|add|remove
+proxy  list | status | on | use [名字] | off
+proxy  env [--apply|--off] [--profile 名字] [--shell bash|zsh|fish|pwsh|cmd|dotenv|json]
+proxy  exec <命令...>      在带代理的子进程里执行
+proxy  test                分别测直连与走代理（**唯一会发真实网络请求的命令**）
+proxy  add                 新增 profile（默认只打印 YAML 片段，不写文件）
 
-repo   get <url...> | list | sync | root | info <url>
-repo   get 别名：clone、pull（`bs clone x/y` 等价 `bs repo get x/y`）
+repo   get <url...> [--root DIR] [--ref R] [--depth N] [--protocol https|ssh] [--autostash] [--force]
+repo   list | root
+repo   sync [--root DIR] [-j/--jobs N] [--autostash]
 
-tool   list [--stack S] [--kind K] [--profile P] [--installed|--missing] [--all]
-tool   info <id>
-tool   search <keyword>
-tool   plan [--profile P] [--stack S] [-v]
-tool   install [id...] [--profile P] [--stack S] [--kind K] [--via V] [--no-fallback] [--jobs N] [-i]
-tool   upgrade [id...|--all] [--include-system]
-tool   uninstall <id...> [--allow-system]
-tool   manifest path|validate|diff        # 清单已随二进制发布，故无 update
+tool   list  [--stack S] [--kind K] [--profile P] [--tag T]... [--installed|--missing] [--all]
+             [--refresh] [--no-probe]
+tool   search <关键词>      （别名 find；与 list 同一套过滤参数）
+tool   info <工具> [--refresh]
+tool   plan  [工具...] [--profile P] [--stack S] [--kind K] [--tag T]... [--missing]
+             [--via V] [--fallback|--no-fallback]
+tool   install   （同上参数）
+tool   upgrade   （同上参数）
+tool   uninstall （同上参数）
+tool   manifest path | validate [--os linux|darwin|windows] | show [工具...] | diff <文件>
 
-env    show|export|path [--shell ...]     # 汇总 proxy + PATH（含各工具 provides 的 bin 目录）
-shell  init <bash|zsh|fish|pwsh|cmd>      # 渲染受管内容（bs 包装函数 + 片段 + PATH/代理装配）
-shell  install|uninstall|status|update    # rc 受管块的写入/移除/自检/刷新
-shell  snippet list|new|edit|show|path|remove
-shell  [--profile P]                      # 不改 rc，直接开一个已装配环境的子 shell
+env    show           显示将被装配的 PATH 条目（含来源与是否存在）与代理状态
+env    path [--shell S]     输出把工具目录加入 PATH 的 shell 语句（供 eval，幂等）
+env    export [--shell S]   输出 PATH + 代理的完整 shell 语句（供 eval）
+
+shell  init <bash|zsh|fish|pwsh|cmd>   输出受管块内容（片段 + bs 包装函数），供 rc 里 eval
+shell  install                          把受管块幂等写入 rc（写前备份）
+shell  uninstall                        移除受管块（块外内容字节级不变）
+shell  status                           显示受管块安装状态
+shell  snippet list|new|path            查看/创建 shell 片段
+shell  [命令...]                        开一个已装配环境的子 shell（不改 rc）
+
+completion <shell>   由 cobra 提供
 ```
 
-**退出码约定**（Agent 与 CI 友好）：`0` 成功；`1` 一般失败；`2` 用法/参数错误（cobra 默认）；`3` 部分成功（keep-going 下有失败项）；`4` 前置条件不满足（如缺 git、目标不可写）；`5` 需要交互但处于非交互模式。
+**退出码约定**（Agent 与 CI 友好，映射集中在 `internal/cli/exit.go`）：
 
-**脚本化约定**：非 TTY 时自动 `--json` + `--yes`（除非显式 `--interactive`），绝不阻塞等待输入。
+| 码 | 含义 | 例子 |
+| --- | --- | --- |
+| `0` | 成功（含"没东西要做"与用户主动取消） | `bs tool install` 全部 skip |
+| `1` | 一般失败 | 所有步骤都失败、未知错误 |
+| `2` | 用法/参数错误 | 工具名不存在、`--via` 写了一个清单里没有的方式、`--fallback` 与 `--no-fallback` 同时给 |
+| `3` | 部分成功 | 3 个工具装了 2 个 |
+| `4` | 前置条件不满足 | 方法链全部不可用、仓库根未初始化（`bs repo get` 前的 `ErrNoRoot`） |
+| `5` | 需要交互但处于非交互模式 | 破坏性操作没给 `--yes` |
+
+**非交互约定**：输出不是终端、`--json`、`--non-interactive` 或 `CI=1` 时不提问、不阻塞；
+破坏性操作改为要求 `--yes`，否则以退出码 5 结束。`bs tool install/upgrade/uninstall`
+在交互终端会问一句（默认拒绝），拒绝后打印"已取消，未做任何修改。"并以 0 结束。
+
+**尚未实现**（设计意图，不在当前二进制里；写在这里以免误读）：
+`bs init` 向导（ADR-0003）、`bs self-update`（ADR-0009）、`config get|set|edit`、
+`tool install -i` 交互勾选、`tool upgrade --all`、`tool uninstall --allow-system`、
+`proxy remove`、`repo info`、`shell snippet edit|show|remove`、`shell update`、
+跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、全局 `--timeout`。
 
 ---
 
 ## 12. 输出与人机交互
 
-- **人类**：彩色表格（工具 | 状态 | 版本 | 安装方式 | 备注），进度条式步骤计数，失败时给出可复制粘贴的修复命令。
-- **机器**：`--json` 输出稳定 schema（`{"version":1,"command":"tool.plan","data":{...}}`），字段命名 snake_case，方便 Agent 解析。
-- **交互多选**（**ADR-0003，已决策**）：采用 `charmbracelet/huh` 实现 `bs init` 向导与 `bs tool install -i` 的搜索/多选/确认（含分组展示、方向键与空格勾选）。约束：
-  - 依赖只允许出现在 `internal/ui`，`domain`/`app` 不得 import；UI 通过 `ui.Prompter` 接口注入，`app` 只认接口；
-  - 同时保留**纯文本降级模式**：非 TTY、`--json`、`NO_COLOR`、`--non-interactive` 或 `CI=1` 时不用 huh，改为打印计划并要求 `--yes`，绝不在非交互环境阻塞；
-  - `--yes` / `--dry-run` 时完全旁路交互层。
-- **日志**：`slog` 结构化日志，默认 stderr，`debug` 模式含每条外部命令的完整 argv 与退出码；文件日志始终写全量。
+**人类可读输出**：
+
+- 列表类用 `text/tabwriter` 对齐的表格（`tool list`：工具/技术栈/类型/状态/方式/说明），
+  没有"进度条动画"这类花活；
+- `bs tool plan` 首行固定提示"（只展示计划，不会执行任何操作）"，`--dry-run` 提示
+  "（dry-run：以下操作都不会被执行）"——**先说清会不会动手，再展示要做什么**；
+- 计划与执行结果都逐工具一行（`工具 / 动作 / 方式 / 说明`），执行完再打一行汇总
+  `共 N 个工具，其中 X 装好、Y 跳过…（耗时 …）`；
+- 有工具被真正改动时补一句"提示：新装的工具可能需要重开 shell 或执行
+  `eval "$(bs env path)"` 才能进入 PATH"——把"命令成功"和"当前 shell 可用"这两件事分开说；
+- 错误与提示写 stderr（含确认提示），数据/表格写 stdout，所以 `bs tool list | grep x` 是干净的。
+
+**机器可读输出（`--json`）**：
+
+- **没有信封**。`--json` 直接输出该命令的数据结构本身（`bs tool list --json` 是数组，
+  `bs tool plan --json` 是 `Plan` 对象，`bs tool install --json` 是 `Report` 对象），
+  不套 `{"version":1,"command":"...","data":{...}}`。理由有二：
+  1. 少一层解包——调用方（脚本、Agent）本就按命令知道自己在请求什么；
+  2. `bs env path` / `bs shell init` 这类命令的**正常输出就是给 `eval` 用的 shell 代码**，
+     信封会直接破坏 `eval "$(bs env path)"` 的组合能力。约定比"统一形状"更重要。
+- 成功/失败不写在 JSON 里，而是由**退出码**表达（§11）。需要细节时看 `report.steps[].status`
+  与 `report.steps[].error`；部分成功是退出码 3 而不是某个布尔字段。
+- 字段命名以 snake_case 为主（`ToolRow`/`Plan`/`Step`/`Report`/`EnvReport` 都有显式 `json` tag），
+  但 `bs tool manifest show --json` 直接序列化 `manifest.Tool`，用的是 Go 字段名
+  （`ID`/`Name`/`Stack`/`Install`…）——那是"给人对比合并结果"的调试视图，不承诺稳定 schema。
+  需要稳定消费面的用 `tool list` / `tool info` / `tool plan`。
+- `--json` 同时隐式进入非交互模式：不提问、不阻塞，`fallback` 默认关闭（ADR-0013）。
+
+**交互（ADR-0003）**：`charmbracelet/huh` 的多选向导属于 M3 的 `bs init`，**当前还没引入**
+（`go.mod` 里没有这个依赖）。今天唯一的交互是破坏性操作前的一句确认（`confirmDestructive`）：
+
+- 提示打在 stderr，`[y/N]`，默认回车＝拒绝；拒绝不是错误（退出码 0）；
+- `--yes` 是脚本与 CI 的正规授权方式；
+- 非交互环境（stdin/输出不是终端、`--json`、`--non-interactive`、`CI=1`）**绝不阻塞**，
+  没有 `--yes` 就以退出码 5 明确拒绝执行（AGENTS.md §8.6）；
+- 将来引入 huh 时，`internal/ui` 是它唯一的落点，且必须保留上述纯文本降级路径。
+
+**日志**：`log/slog` 结构化日志，默认 stderr，级别取 `log.level`（`-v` debug、`-vv` trace）。
+外部命令的完整 argv 与退出码在 debug 级可见；`*_PROXY` 值一律脱敏（保留 host:port，
+userinfo 换成 `***`）。文件日志（`<state>/logs/`）只有路径约定
+（`install.LogPath`），引擎还没接线（§7.5）。
 
 ---
 
 ## 13. 工程化约定
 
-| 关注点 | 方案 |
+| 关注点 | 方案（当前实现） |
 |---|---|
-| 错误处理 | `fmt.Errorf("...: %w", err)` 包装；领域错误用 Sentinel + `errors.Is/As`；CLI 边界统一转用户可读消息 + 退出码 |
-| 上下文 | 所有 IO 函数首参 `context.Context`；全局 `--timeout`（默认命令 10min、探测 5s、HTTP 60s） |
-| 并发 | 探测/同步用 `errgroup`，并发度可配；共享状态用 mutex 或 channel，禁用裸 goroutine |
-| 配置注入 | 依赖显式构造（构造函数注入），不用 `init()` 副作用；唯一 `init()` 用于 installer 注册表 |
-| 测试 | 表驱动单测 + `cmdx.FakeExecEnv`；`testdata/golden` 校验 plan 输出；`pkg/giturl.Parse` 用大表覆盖 URL 变体；集成测试用 `//go:build integration` 在 Docker(ubuntu/debian/fedora/arch) 中跑真实安装 |
-| 静态检查 | `golangci-lint`（govet, staticcheck, errcheck, revive, gocritic, gosec, misspell, gofumpt）；`govulncheck`；`go test -race` |
-| 依赖策略 | 新增依赖需在 PR 说明理由；优先标准库；UI 类依赖不得进入 `domain`/`app`；`pkg/*` 不得 import `internal/*`（CI 用 `go list` 检查） |
-| 提交规范 | Conventional Commits（`feat(proxy): ...`），中文正文允许；每 PR 附"如何验证" |
-| 版本管理 | `ldflags -X main.version/commit/date`；`bs version --json` 暴露 |
-| 幂等与安全 | 脚本安装必须校验 sha256（清单里固化）；文件写入用原子替换（tmp + rename）；state 写入加文件锁 |
+| 错误处理 | `fmt.Errorf("...: %w", err)` 逐层包装；领域错误用 Sentinel + `errors.Is/As`；`internal/cli/exit.go` 是**唯一**把 error 映射成退出码的地方（`codedError` + cobra 文案识别） |
+| 上下文 | 所有 IO 首参 `context.Context`；超时集中在三处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、HTTP 60s（`httpx.DefaultTimeout`）。全局 `--timeout` **尚未实现** |
+| 并发 | `errgroup` 只用在两处：工具探测（`min(8, NumCPU)`）与 `repo sync`（`repo.sync.jobs`）；安装执行是**串行**的（依赖顺序优先，暂不并行） |
+| 配置注入 | 依赖显式构造（`app.New` 装配 `Runtime`/`App`），**没有 `init()` 副作用**——安装器注册表也由 `install.NewRegistry()` 显式构建 |
+| 平台分支 | 平台差异收敛在 `pkg/hostinfo`（探测）与 `internal/config/paths.go`（目录策略）；业务代码里不散落 `runtime.GOOS` |
+| 外部命令 | 一律走 `pkg/cmdx`（超时、干跑、脱敏、日志都在那里），业务代码不直接 `os/exec` |
+| 测试 | 表驱动单测；安装引擎用 `internal/install/fake_test.go` 的 `fakeEnv`/`fakeDetector`（记录命令、可编排返回值），探测用注入的 `Executor`/`LookPath`；CLI 层用进程内 `Runtime.Run` + 临时 `BS_CONFIG_HOME`/`BS_STATE_HOME`/`BS_CACHE_HOME` + 缓冲区输出；端到端用 `scripts/smoke.sh`（POSIX）与 `scripts/smoke.ps1`（Windows） |
+| 无副作用测试（硬要求） | 全部读写都在 `t.TempDir()`；`--dry-run` 断言"目标路径不存在/文件数不变"；幂等断言"第二次执行 mtime 不变"（`fsx.WriteFileIfChanged`/`state`）；涉及用户文件的逻辑断言"内容字节级未变"（`shellsnip`）；单测与 smoke **都不发网络请求** |
+| 静态检查 | `make check` = `gofmt -l` + `go vet ./...` + `go test ./...` + `go test -race ./...`；CI 在 ubuntu/macos/windows 三个 runner 上跑同样的四件事 + 冒烟。**尚未接入** `golangci-lint` / `govulncheck`（设计里提过，属 M4 打磨） |
+| 依赖策略 | 目前只有 4 个直接依赖：`spf13/cobra`、`spf13/viper`、`gopkg.in/yaml.v3`、`golang.org/x/sync`；UI 依赖（`huh`）在 M3 引入且只允许出现在 `internal/ui`；`pkg/*` 不 import `internal/*` |
+| 提交规范 | Conventional Commits（`feat(tool): ...`），正文写动机与影响；每个提交都要"可编译、可发布、可用" |
+| 版本管理 | `internal/buildinfo.{Version,Commit,Date}`，由 `-ldflags -X` 注入（`Makefile` 与 `.goreleaser.yaml` 各一份）；`bs version --json` 暴露 |
+| 幂等与安全 | 文件写入用 `pkg/fsx` 的 `AtomicWriteFile`（tmp+rename）与 `WriteFileIfChanged`（内容不变不碰 mtime）；改用户 rc 前先 `fsx.BackupFile`；下载必须校验 sha256（拿不到就中止） |
 
-**首批依赖基线**（超出此列表的新增必须在 PR/ADR 说明理由）：
-
-| 依赖 | 用途 |
-|---|---|
-| `github.com/spf13/cobra` | 命令树、flag、completion、help |
-| `github.com/spf13/viper` | 分层配置装载、env/flag 绑定 |
-| `gopkg.in/yaml.v3` | 工具清单与 state 文件解析（不经 viper） |
-| `golang.org/x/sync` | `errgroup`（并发探测/同步） |
-| `github.com/charmbracelet/huh` `lipgloss` | 交互向导与终端样式（仅 `internal/ui`，ADR-0003） |
-| `log/slog` | 结构化日志（标准库，非第三方） |
-
-明确**不引入**：`go-git`（用系统 git）、`docker client`、完整 TUI 框架（bubbletea 仅在确有需求时评估）、任何需要 cgo 的库。
+**没有的东西**（设计稿里出现过，别照抄）：`cmdx.FakeExecEnv`（假实现统一放在各包的
+`*_test.go` 里）、`testdata/golden` 快照、`//go:build integration` 标签、Docker 集成测试矩阵。
 
 ---
-
 ## 14. 构建与发布
 
-> **ADR-0008（已决策）**：**唯一分发渠道是 GitHub Release 的二进制包**，不做 deb/rpm、不做 Homebrew tap、不做 scoop/winget 清单发布。理由：你的流程是"Release 下载二进制 → 跑 bootstrap"，中间商只会增加维护面。
+> **ADR-0008（已决策）**：**唯一分发渠道是 GitHub Release 的二进制包**，不做 deb/rpm、
+> 不做 Homebrew tap、不做 scoop/winget 清单发布。理由：流程是"Release 下二进制 → 跑 bootstrap"，
+> 中间商只会增加维护面。
 
-- **目标产物**：`linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`，`windows/arm64` 视需要构建。`CGO_ENABLED=0` 纯静态、体积小、交叉编译零负担。
-- **GoReleaser**（`.goreleaser.yaml`）——只保留必要项：
-  - `builds`：六目标矩阵 + `ldflags -X main.version/commit/date`；
-  - `archives`：`bs_<version>_<os>_<arch>.tar.gz`（unix）/ `.zip`（windows），内含 `bs(.exe)`、`LICENSE`、`README.md`；
-  - `checksum`：`checksums.txt`（sha256），供引导脚本与 `bs self-update` 校验；
-  - `changelog`：按 Conventional Commits 分组；
-  - **不配置** `nfpm`、`brews`、`scoop`、`winget`。
+- **目标产物**：`linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、
+  `windows/amd64`、`windows/arm64`（6 个组合，`Makefile` 的 `PLATFORMS` 与 goreleaser 的
+  `goos`×`goarch` 矩阵一致）。`CGO_ENABLED=0` 纯静态、交叉编译零负担；统一带 `-trimpath`。
+- **版本注入**：`-X github.com/kingfs/Bootstrap/internal/buildinfo.{Version,Commit,Date}`，
+  `Makefile` 用 `git describe`/`git rev-parse`/当前时间，goreleaser 用 `{{.Version}}`/
+  `{{.Commit}}`/`{{.CommitDate}}`。
+- **goreleaser**（`.goreleaser.yaml`，`version: 2`，`project_name: bootstrap`）：
+  - `archives`：`bootstrap_<version>_<os>_<arch>.tar.gz`（Windows 覆盖为 `.zip`），
+    内含 `bs`(`.exe`) 以及 `README.md`、`docs/design.md`、`scripts/install.sh`、
+    `scripts/install.ps1`（**没有 LICENSE 文件**——仓库里就没有，所以别写进产物清单）；
+  - `checksum`：`checksums.txt`（sha256），供引导脚本校验；
+  - `changelog`：来自 GitHub，按提交信息排序，排除 `docs:`/`test:`/`chore:`/`style:`；
+  - **不配置** `nfpm`/`brews`/`scoop`/`winget`。
 - **GitHub Actions**：
-  - `ci.yaml`：lint → unit test(race) → `bs manifest validate` → 三 OS 原生构建（确保 Windows/macOS 代码路径被真正编译与测试）；
-  - `release.yaml`：`v*` tag 触发 goreleaser，产出 Release + 附件。
+  - `.github/workflows/ci.yaml`：在 `ubuntu-latest`/`macos-latest`/`windows-latest` 三个原生
+    runner 上跑 `gofmt -l`（仅 ubuntu）、`go vet`、`go test -race`、冒烟
+    （POSIX 跑 `scripts/smoke.sh`，Windows 跑 `scripts/smoke.ps1`）；另有一个 job 跑
+    `make cross` 并上传 `dist/**` 作为产物——**这保证 Windows/macOS 代码路径真的被编译与测试**；
+  - `.github/workflows/release.yaml`：`v*` tag 触发，先跑单测与冒烟，再 `goreleaser release --clean`。
+- **Makefile**：`build` `install` `fmt` `fmt-check` `vet` `test` `race` `cover` `smoke`
+  `check` `cross` `snapshot` `clean`。所有 Go 命令都经 `scripts/devenv.sh` 包裹
+  （把 `GOPATH`/`GOMODCACHE`/`GOCACHE` 指到仓库内 `.cache/`，受限环境也能构建）。
+  `make snapshot` 需要本机装 goreleaser，日常 CI 用不到。
 - **引导安装**（鸡生蛋闭环）：
-  - `scripts/install.sh`：`curl -fsSL .../install.sh | bash` —— 探测 OS/Arch、下载对应产物、比对 `checksums.txt`、装到 `~/.local/bin`（可 `BS_BIN_DIR` 覆盖）、提示 `eval "$(bs shell init bash)"`；
-  - `scripts/install.ps1`：`irm .../install.ps1 | iex` —— 装到 `%USERPROFILE%\.local\bin` 并写入用户 PATH。
-  - 两个脚本都要能"重跑即升级"（幂等），并支持 `--version vX.Y.Z` 指定版本。
-- **`bs self-update`**：从 Release 拉 `checksums.txt` → 下载当前平台产物 → 校验 sha256 → 原子替换自身二进制（Windows 上先重命名旧文件再替换）→ 打印新版本。**仅 sha256，不引入 cosign**（ADR-0009）。
-- **Makefile**：`make build|test|lint|snapshot|release|run`（`snapshot` = `goreleaser release --snapshot --clean`）。
+  - `scripts/install.sh`：`curl -fsSL .../install.sh | sh` —— 探测 OS/Arch、
+    解析版本（`--version vX.Y.Z` 或 `BS_VERSION`，缺省查 latest）、下载归档、
+    **必须**从 `checksums.txt` 取到 sha256 并校验（拿不到就中止）、解压后装到
+    `~/.local/bin`（`--dir` / `BS_INSTALL_DIR` 可覆盖），最后提示 `eval "$(bs env path)"`；
+  - `scripts/install.ps1`：Windows 侧同款（下载 zip、校验、装到用户目录并写 PATH）；
+  - 两个脚本都可重复执行（重跑即升级）。
+- **`bs self-update`（ADR-0009：只校验 sha256）尚未实现**，属 M3；在那之前升级就是重跑
+  `install.sh`。
 
 ---
 
@@ -1026,14 +1342,22 @@ shell  [--profile P]                      # 不改 rc，直接开一个已装配
 
 策略：**先把整条 CLI 主干打通并能自举，再持续往清单里补工具**。每个阶段结束都必须"可编译、可发布、可用"。
 
-| 阶段 | 目标 | 交付 | 完成判据 |
+| 阶段 | 目标 | 交付 | 状态 |
 |---|---|---|---|
-| **M0 骨架** | 能发布一个"什么都不能干但装得上"的 `bs` | go.mod 定版、目录结构、cobra root、`config path/show`、`version`、goreleaser + CI、`install.sh`/`install.ps1` | 六平台产物可下载；新机器一行命令装上 `bs version` |
-| **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/snippet`；`repo get/list/sync`；`env export`；`doctor`（基础版） | 新机器 `bs shell install` → `bs proxy on` 当前 shell 立即生效；`bs repo get kingfs/xxx` 可 clone/pull |
-| **M2 工具引擎** | 清单驱动安装 | 清单 schema + 加载/合并/校验；`detect`；`plan`；首批 Installer：`manager`(g/fnm/uv/rustup/mise)、`brew`、`apt`、`winget`、`script`、`release`、`bun`、`npm`、`cargo`、`goinstall`、`source`；`tool list/info/plan/install` | `bs tool list` 能看到三平台差异；`bs tool install golang` 走 `g` 装好并可用 |
-| **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`profiles.yaml`；首批清单 `base/golang/nodejs/python`；`self-update`；`upgrade`/`uninstall` | linux/arm64 与 darwin/arm64（可加 amd64）空机器上跑完 `bs init` 后 go/node/python 均可用 |
-| **M4 打磨** | 长期好用 | `--json` 全覆盖、集成测试矩阵（Docker）、并发 `repo sync`、`proxy test`、shell completion、README/AGENTS.md/ADR 定稿 | 文档与命令 --help 一致；CI 全绿 |
-| **M5+ 持续补全** | 你不断把喜欢的工具链补进来 | ① Windows 清单（`windows.yaml`：scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ `bs tool manifest diff` 辅助发现本地覆盖漂移 | 每个新工具只改 YAML + 一条测试 |
+| **M0 骨架** | 能发布一个"什么都不能干但装得上"的 `bs` | go.mod 定版、目录结构、cobra root、`config path/show/validate/init`、`version`、goreleaser + CI、`install.sh`/`install.ps1` | ✅ 完成 |
+| **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
+| **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
+| **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256）；交互式多选 | ⏳ 未开始 |
+| **M4 打磨** | 长期好用 | `golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、`bs doctor --fix`、shell completion 覆盖、README/AGENTS/ADR 定稿 | ⏳ 未开始 |
+| **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
+
+**M2 完成判据的自查**：
+
+- `bs tool list` 能看到三平台差异 ✅（`when` 过滤 + `--all` 标注"不适用于当前平台"）；
+  `bs tool manifest validate --os linux|darwin|windows` 三种系统都能通过 ✅；
+- `bs tool install golang` 是否"走 g 装好并可用" ❌——**当前不成立**：`g install {{versions.golang}}`
+  里的模板没有被渲染（§18.4 缺陷 #1），清单里所有 `via: manager` + `{{versions.*}}` 的
+  runtime 条目都受影响。修掉它 M2 才真正闭环。
 
 ---
 
@@ -1062,14 +1386,33 @@ shell  [--profile P]                      # 不改 rc，直接开一个已装配
 
 先前列出的待确认问题（状态权威源、`repo.root` 缺省、是否发 deb/rpm/brew、自更新签名、首批清单范围、shell 片段归宿、fallback 默认、Windows 首批范围）已全部拍板，见 ADR-0008 ~ ADR-0014。设计评审到此收敛，可进入 M0。
 
-### 18.3 后续可评估（非阻塞，不影响 M0–M3）
+### 18.3 后续可评估（非阻塞）
 
 | 议题 | 说明 | 何时再看 |
 |---|---|---|
 | dotfiles 集成 | 是否让 `bs` 顺带 symlink/拉取 dotfiles 仓库（目前明确不做，只受管 shell 片段，且片段主要随仓库走） | M4 之后 |
 | 远程清单 | ADR-0002 明确不做；若将来多机同步清单痛点明显再评估 | M5+ |
 | 系统代理自动跟随 | 读取 macOS `scutil --proxy` / Windows 注册表 / Linux gsettings，让 `bs proxy` 支持 `--follow-system` | M4 |
-| `mise` 作为统一兜底 | 若某些语言你不想为它单独配管理器，`mise` 可一个工具管多语言 | 补清单时按需 |
-| Windows 工具清单与 `repo.root` | 首批不含；`D:/src` 约定与 scoop/winget 清单待 M5+ 单独设计 | M5+ |
-| Windows arm64 产物 | 目前列为可选；若你有 arm64 Windows 机器再加入矩阵 | 需求出现时 |
+| `mise` 作为统一兜底 | 管理器表里已注册 `mise`（`mise install/use -g`），清单里 `golang` 也已有 `has: [mise]` 的等价路径；要不要让它接管更多语言再看 | 补清单时按需 |
+| Windows 工具清单与 `repo.root` | 首批不含（ADR-0014）：`tools/windows.yaml` 目前是占位文件，只保证能加载不报错；`D:/src` 约定与 scoop/winget 清单待单独设计 | M5+ |
 | `bs doctor --fix` | 是否让 doctor 自动修复（补 PATH、重建受管块、清理缓存），还是只诊断 | M4 |
+| 跨工具并行安装 | `bs tool install` 目前严格串行（依赖顺序优先）；同层无依赖的工具并行需要先解决日志与确认交互的交错问题 | 安装变慢时 |
+| 全局 `--timeout` | 现在超时是写在三处的常量，需要一个统一的 flag 时才加 | M4 |
+| `bs tool list` 的探测成本 | 目前每个条目都真起一次 `--version`（并发 8、TTL 10 分钟）；清单长到几百条时需要"只探测相关的"或懒惰探测 | 清单规模上来后 |
+
+### 18.4 待修缺陷（代码与设计不一致，已知且未修）
+
+这些是**当前代码的真实行为**，写在这里免得文档比代码乐观：
+
+| # | 位置 | 现象 | 影响 |
+|---|---|---|---|
+| 1 | `internal/install/managers.go`（`Plan`）、`pkgmanagers.go`（`Plan`） | `params.version` 里的模板（`"{{versions.golang}}"`）**从来没有被渲染**：它被当作字面值塞进命令模板的 `{{version}}` 变量，于是产物是 `g install {{versions.golang}}`（已用假 `g` 实测复现） | `tools/common.yaml` 里全部 4 个 runtime 条目（golang/nodejs/python/rust）的 `via: manager` 首选路径都会失败；`bs tool manifest validate` 反而能通过（校验期确实预渲染了 `params.version`，见 `manifest.TemplateFields`） |
+| 2 | `internal/install/osenv.go`（`NewOSEnv`） | `OSEnvOptions.Versions` 没有赋给结构体的 `versions` 字段，`ExecEnv.Versions()` 永远返回 nil | 与 #1 同根因的另一半：任何依赖 `{{versions.*}}` 的 renderOr 都会静默保留字面模板（`renderOr` 吞掉渲染错误） |
+| 3 | `internal/manifest/load.go`（`mergeVerify`） | 合并 `verify` 时忽略 `over.File` | 用户覆盖文件无法新增/修改 `verify.file`（nvm 这类 shell 函数型工具）；`disabled` 同样只能置 true、不能撤回 |
+| 4 | `internal/cli/manifest.go`（`manifestShowCmd`） | `bs tool manifest show` 只调用 `rt.emit`，没有非 JSON 分支 | 不带 `--json` 时**什么都不打印**却返回 0 |
+| 5 | `internal/install/engine.go` | `LogPath` 已定义且有单测，但没有任何调用点 | §7.5 承诺的"每条命令输出落到 `<state>/logs/<时间>-<工具>.log`"没有兑现；命令输出目前只在 slog（`-v`）里 |
+| 6 | `internal/install/pkgmanagers.go` | 摘要文案是 `label + " " + args...`，而 `label` 已含动词 | `bs tool plan` 里会出现 `cargo install install fnm` 这种重复（纯观感问题） |
+
+修 #1/#2 的最小方案：在引擎 `PlanTools` 调 `Installer.Plan` 之前，用 `RenderData{Versions: e.Versions()}`
+把方法参数里的模板统一渲染一遍（或至少在 `managerInstaller.Plan`/`pkgManager.Plan` 里先渲染
+`m.Params.Version`），并给 `NewOSEnv` 补上 `versions: opt.Versions`。

@@ -199,10 +199,18 @@ func (rt *Runtime) toolPlanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plan [工具...]",
 		Short: "只展示将要执行的安装步骤，不做任何修改",
+		Long: `只展示将要执行的安装步骤，不做任何修改。
+
+plan 是**离线**预览：不联网解析"最新版本"，因此 URL 里显示 {{version}} 的占位符，
+并且连探测缓存都不会写。真实的版本号、下载地址与校验和会在执行安装时解析。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := f.apply(rt); err != nil {
 				return err
 			}
+			// plan 就是"不改任何东西"的预览：让引擎走干跑语义，
+			// 从而不联网解析最新版本、也不写探测缓存（新机器上还没配好网络时
+			// `bs tool plan` 必须立刻给出结果，而不是每个工具卡 15 秒）。
+			rt.app().DryRun = true
 			plan, err := rt.planFor(cmd, f, args, install.OpInstall)
 			if err != nil {
 				return toolErr(err)

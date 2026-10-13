@@ -140,7 +140,7 @@ eval "$(bs shell init bash)"
 | `bs tool list` | 列出工具及状态（`installed`/`outdated`/`missing`/`unknown`） |
 | `bs tool search <关键词>` | 按名字/描述/标签搜索 |
 | `bs tool info <工具>` | 单个工具的详情、方式链（哪个可用、哪个会选中）与依赖 |
-| `bs tool plan [...]` | 只打印将要执行的步骤，不做任何修改 |
+| `bs tool plan [...]` | 只打印将要执行的步骤，不做任何修改（离线预览，不解析"最新版本"） |
 | `bs tool install [...]` | 安装（幂等：已装的跳过；含依赖，按拓扑序） |
 | `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
 | `bs tool uninstall [...]` | 卸载（系统包管理器装的请用系统工具卸载） |
