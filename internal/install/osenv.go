@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/kingfs/Bootstrap/pkg/cmdx"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
@@ -28,7 +30,9 @@ type OSEnv struct {
 	arch     string
 	distro   string
 	dryRun   bool
+	workRoot string
 	workDir  string
+	workOnce sync.Once
 	log      *slog.Logger
 	extraBin []string
 }
@@ -44,8 +48,9 @@ type OSEnvOptions struct {
 	Arch      string
 	Distro    string
 	DryRun    bool
-	WorkDir   string
-	Log       *slog.Logger
+	// WorkRoot 是临时工作目录的父目录（默认 cache 目录）；真正用到时才创建。
+	WorkRoot string
+	Log      *slog.Logger
 	// Runner 允许注入自定义执行器（默认是 cmdx.OSRunner）。
 	Runner *cmdx.Runner
 	// Client 允许注入自定义 HTTP 客户端（默认按 Env 构造）。
@@ -74,7 +79,6 @@ func NewOSEnv(opt OSEnvOptions) *OSEnv {
 		arch:     opt.Arch,
 		distro:   opt.Distro,
 		dryRun:   opt.DryRun,
-		workDir:  opt.WorkDir,
 		log:      log,
 		extraBin: opt.ExtraPath,
 	}
@@ -183,7 +187,19 @@ func (e *OSEnv) Distro() string { return e.distro }
 func (e *OSEnv) HomeDir() string { return e.home }
 
 // WorkDir 实现 ExecEnv。
-func (e *OSEnv) WorkDir() string { return e.workDir }
+//
+// 只是"算出一个路径"，并不创建目录：`bs tool plan` / `--dry-run` 不该因为
+// 需要展示一个临时路径就在磁盘上留下东西。真正落盘的一方自己按需建目录。
+func (e *OSEnv) WorkDir() string {
+	e.workOnce.Do(func() {
+		base := e.workRoot
+		if base == "" {
+			base = os.TempDir()
+		}
+		e.workDir = filepath.Join(base, "work", fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()))
+	})
+	return e.workDir
+}
 
 // Log 实现 ExecEnv。
 func (e *OSEnv) Log() *slog.Logger { return e.log }

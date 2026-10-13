@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kingfs/Bootstrap/pkg/fsx"
 	"github.com/kingfs/Bootstrap/pkg/proxyenv"
 )
 
@@ -23,7 +24,12 @@ type PathEntry struct {
 
 // PathEntries 汇总所有需要加入 PATH 的目录。
 //
-// M1 来源：配置 tool.extra_path。M2 起会追加"已安装工具声明的 provides 目录"。
+// 来源（按优先级）：
+//  1. 配置 tool.extra_path（用户显式指定）
+//  2. 清单里工具声明的 provides（每个文件取所在目录），例如 release 安装到 ~/.local/bin
+//
+// 这里**只做路径计算**，不探测工具是否已安装：PATH 装配要足够快且无副作用
+// （每次开 shell 都会 eval `bs env path`）。
 func (a *App) PathEntries() []PathEntry {
 	var out []PathEntry
 	seen := map[string]bool{}
@@ -35,7 +41,28 @@ func (a *App) PathEntries() []PathEntry {
 		out = append(out, PathEntry{Path: p, Source: source, Exists: dirExists(p)})
 	}
 	for _, p := range a.Cfg.Tool.ExtraPath {
-		add(p, "tool.extra_path")
+		add(fsx.ExpandPath(p, a.Paths.HomeDir), "tool.extra_path")
+	}
+	loaded, err := a.LoadedManifest()
+	if err != nil {
+		a.Log.Debug("load manifest for PATH", "err", err)
+		return out
+	}
+	for _, t := range loaded.Tools {
+		if t.Disabled {
+			continue
+		}
+		for _, provide := range t.Provides {
+			p := fsx.ExpandPath(provide, a.Paths.HomeDir)
+			if p == "" {
+				continue
+			}
+			// provides 可能写成具体文件（~/.local/bin/g）或目录本身。
+			if filepath.Ext(p) != "" && !dirExists(p) {
+				p = filepath.Dir(p)
+			}
+			add(p, "tool.provides("+t.ID+")")
+		}
 	}
 	return out
 }

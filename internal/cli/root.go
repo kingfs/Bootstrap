@@ -123,6 +123,7 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 		rt.shellCmd(),
 		rt.envCmd(),
 		rt.repoCmd(),
+		rt.toolCmd(),
 		rt.doctorCmd(),
 	)
 	cmd.InitDefaultCompletionCmd()

@@ -98,7 +98,7 @@ type ExecEnv interface {
 	Distro() string
 	// HomeDir 用于展开 `~`。
 	HomeDir() string
-	// WorkDir 是本次安装可用的临时目录（由引擎创建并在结束时清理）。
+	// WorkDir 是本次安装可用的临时目录（惰性：只算路径，不创建目录）。
 	WorkDir() string
 	// Log 用于结构化日志。
 	Log() *slog.Logger

@@ -122,6 +122,20 @@ func (a *App) Doctor(ctx context.Context) []Check {
 		add(Check{Name: "package managers", Status: StatusWarn, Detail: "未检测到系统包管理器"})
 	}
 
+	// 5.5 工具清单（只读，且**不探测**：探测会执行工具自身的 --version，
+	// 那可能触发对方写自己的状态文件，例如 go 的遥测计数）。
+	if loaded, err := a.LoadedManifest(); err != nil {
+		add(Check{Name: "tool manifest", Status: StatusFail, Detail: err.Error(),
+			Hint: "运行 `bs tool manifest validate` 查看具体问题"})
+	} else if verr := a.ValidateManifestChecked(loaded); verr != nil {
+		add(Check{Name: "tool manifest", Status: StatusFail, Detail: verr.Error(),
+			Hint: "运行 `bs tool manifest validate` 查看具体问题"})
+	} else {
+		add(Check{Name: "tool manifest", Status: StatusOK,
+			Detail: fmt.Sprintf("%d 个工具，%d 个 profile，%d 个来源（用 `bs tool list` 看安装状态）",
+				len(loaded.Tools), len(loaded.Profiles), len(loaded.Sources))})
+	}
+
 	// 6. 代理
 	summary, err := a.ProxyStatus()
 	switch {

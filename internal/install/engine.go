@@ -93,6 +93,7 @@ type Step struct {
 	Kind           string         `json:"kind,omitempty"`
 	Status         StepStatus     `json:"status"`
 	Via            string         `json:"via,omitempty"`
+	Manager        string         `json:"manager,omitempty"`
 	Summary        string         `json:"summary,omitempty"`
 	Reason         string         `json:"reason,omitempty"`
 	Action         *Action        `json:"action,omitempty"`
@@ -161,7 +162,7 @@ func (r Report) Changed() bool {
 
 // PlanTools 计算安装计划（前四步，无副作用）。
 func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, error) {
-	tools, err := e.selectTools(ids)
+	tools, explicit, err := e.selectTools(ids)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -190,7 +191,10 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 	if e.detector != nil {
 		// 安装前的跳过判断必须基于真实状态，所以强制重探；
 		// 卸载/升级只用于展示与"没装就不用卸"，用缓存即可。
-		results, derr := e.detector.Detect(ctx, tools, detect.Options{UseCache: true, Refresh: op == OpInstall})
+		results, derr := e.detector.Detect(ctx, tools, detect.Options{
+			UseCache: !e.env.DryRun(),
+			Refresh:  op == OpInstall && !e.env.DryRun(),
+		})
 		if derr != nil {
 			return plan, fmt.Errorf("detect installed tools: %w", derr)
 		}
@@ -225,9 +229,22 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 			}
 		}
 
-		chain, cerr := ResolveChain(ctx, e.reg, e.env, t, ChainOptions{Via: e.opt.DefaultVia, Managers: e.opt.Managers})
+		// --via 只作用于用户显式点名的工具：自动补进来的依赖必须按它自己的
+		// 声明安装（否则 `install golang --via apt` 会连带把版本管理器也塞给 apt）。
+		via := ""
+		if explicit[t.ID] {
+			via = e.opt.DefaultVia
+		}
+		chain, cerr := ResolveChain(ctx, e.reg, e.env, t, ChainOptions{Via: via, Managers: e.opt.Managers})
 		step.Chain = chain
 		step.Skipped = chain.Skipped()
+		// --via / tool.default_via 指定错了属于用户输入问题，必须整体失败，
+		// 而不是悄悄降级成"这个工具装不了"的一行表格。
+		var viaErr *ErrViaUnavailable
+		var notFound *ErrMethodNotFound
+		if errors.As(cerr, &viaErr) || errors.As(cerr, &notFound) {
+			return Plan{}, cerr
+		}
 		if cerr != nil {
 			step.Status = StepFailed
 			step.Error = cerr.Error()
@@ -237,6 +254,7 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		}
 		cand, _ := chain.SelectedCandidate()
 		step.Via = cand.Via
+		step.Manager = cand.Method.Params.Manager
 		in, _ := e.reg.Get(cand.Via)
 		action, aerr := in.Plan(ctx, e.env, t, cand.Method, op)
 		if aerr != nil {
@@ -420,13 +438,19 @@ func (e *Engine) tryFallbacks(ctx context.Context, s Step, op Op) (Step, error) 
 }
 
 // selectTools 按 id 选取并拓扑排序（含依赖自动补全）。
-func (e *Engine) selectTools(ids []string) ([]manifest.Tool, error) {
+//
+// 第二个返回值是"用户显式点名的 id"集合，用来决定 --via 的作用范围。
+func (e *Engine) selectTools(ids []string) ([]manifest.Tool, map[string]bool, error) {
+	explicit := map[string]bool{}
+	for _, id := range ids {
+		explicit[id] = true
+	}
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, explicit, nil
 	}
 	tools, err := manifest.ExpandDeps(e.loaded, ids)
 	if err != nil {
-		return nil, err
+		return nil, explicit, err
 	}
 	out := make([]manifest.Tool, 0, len(tools))
 	for _, t := range tools {
@@ -440,9 +464,17 @@ func (e *Engine) selectTools(ids []string) ([]manifest.Tool, error) {
 		out = append(out, t)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no applicable tools for %v on %s/%s", ids, e.env.OS(), e.env.Arch())
+		return nil, explicit, fmt.Errorf("no applicable tools for %v on %s/%s", ids, e.env.OS(), e.env.Arch())
 	}
-	return out, nil
+	return out, explicit, nil
+}
+
+// ViaLabel 返回给人和脚本看的方式名（via=manager 时带上管理器名）。
+func (s Step) ViaLabel() string {
+	if s.Manager != "" {
+		return s.Via + ":" + s.Manager
+	}
+	return s.Via
 }
 
 func dryRunStatus(s StepStatus) StepStatus {

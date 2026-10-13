@@ -1,0 +1,444 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/kingfs/Bootstrap/internal/install"
+)
+
+// toolManifestConfig 让清单只从用户目录加载，从而让 CLI 测试完全自包含
+// （不依赖 tools/*.yaml 的实际内容，那些内容会在后续里程碑里持续变化）。
+const toolManifestConfig = `version: 1
+log:
+  level: error
+tool:
+  manifest:
+    builtin: false
+    user_dirs:
+      - %USERDIR%
+`
+
+const toolManifest = `
+version: 1
+tools:
+  - id: g
+    name: Go 版本管理器
+    stack: golang
+    kind: versionmgr
+    description: 管理多个 Go 版本
+    tags: [golang, version-manager]
+    verify: {command: g}
+    install:
+      - via: release
+        params:
+          repo: voidint/g
+          asset: g{{version}}-{{os}}.tar.gz
+          dest: ~/.local/bin
+  - id: golang
+    name: Go
+    stack: golang
+    kind: runtime
+    description: Go 工具链
+    tags: [golang, runtime]
+    verify:
+      command: go
+      version_args: [version]
+      version_regex: 'go(?P<v>\d+\.\d+(?:\.\d+)?)'
+      min_version: "1.22"
+    depends_on: [g]
+    install:
+      - via: manager
+        params: {manager: g, action: install, version: "1.24.1"}
+      - via: apt
+        params: {packages: [golang-go], allow_system: true}
+  - id: btop
+    stack: base
+    kind: cli
+    description: 资源监视器
+    tags: [monitor]
+    verify: {command: btop}
+    install:
+      - via: brew
+        params: {formula: btop}
+profiles:
+  base:
+    description: 基础
+    tools: [g, golang]
+  extra:
+    extends: [base]
+    tools: [btop]
+`
+
+// sandboxWithManifest 准备一个"清单来自用户目录"的沙箱。
+func sandboxWithManifest(t *testing.T) (*Runtime, *bytes.Buffer, *bytes.Buffer, string) {
+	t.Helper()
+	rt, out, errBuf, root := sandbox(t)
+	userDir := filepath.Join(root, "config", "tools")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "tools.yaml"), []byte(toolManifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	writeConfig(t, root, strings.ReplaceAll(toolManifestConfig, "%USERDIR%", userDir))
+	// 把 PATH 指向只含假命令的目录：探测与计划都只看到我们放进去的东西，
+	// 既不会执行宿主机上的 go/g，也不会被宿主环境影响
+	// （例如 go 会往 ~/.config/go/telemetry 写计数文件）。这是"测试不依赖宿主"的硬要求。
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		writeFakeBin(t, binDir, "g", "#!/bin/sh\necho g\n")
+		writeFakeBin(t, binDir, "cargo", "#!/bin/sh\necho cargo\n")
+		// 故意低于 min_version 1.22 → 计划里应出现"安装"而不是"跳过"
+		writeFakeBin(t, binDir, "go", "#!/bin/sh\necho 'go version go1.20.0 linux/amd64'\n")
+	}
+	t.Setenv("PATH", binDir)
+	return rt, out, errBuf, root
+}
+
+// writeFakeBin 放一个假的可执行文件，让"已安装/可用"的判断完全由测试决定。
+func writeFakeBin(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+}
+
+func TestToolListCommand(t *testing.T) {
+	rt, out, _, _ := sandboxWithManifest(t)
+	code, stdout, stderr := run(t, rt, "tool", "list", "--no-probe")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	for _, want := range []string{"golang", "btop", "versionmgr"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout missing %q:\n%s", want, stdout)
+		}
+	}
+	_ = out
+
+	// 按 stack 过滤
+	code, stdout, _ = run(t, rt, "tool", "list", "--no-probe", "--stack", "base")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if strings.Contains(stdout, "golang") || !strings.Contains(stdout, "btop") {
+		t.Errorf("stack filter failed:\n%s", stdout)
+	}
+
+	// 按标签过滤
+	code, stdout, _ = run(t, rt, "tool", "list", "--no-probe", "--tag", "monitor")
+	if code != 0 || !strings.Contains(stdout, "btop") || strings.Contains(stdout, "golang") {
+		t.Errorf("tag filter: code=%d\n%s", code, stdout)
+	}
+
+	// profile 过滤：base 只含 g 与 golang
+	code, stdout, _ = run(t, rt, "tool", "list", "--no-probe", "--profile", "extra")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(stdout, "btop") {
+		t.Errorf("profile extends not applied:\n%s", stdout)
+	}
+}
+
+func TestToolListJSON(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	code, stdout, stderr := run(t, rt, "tool", "list", "--no-probe", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, stdout)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	if rows[0]["id"] != "g" || rows[0]["stack"] != "golang" {
+		t.Errorf("row = %+v", rows[0])
+	}
+}
+
+func TestToolInfoCommand(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	code, stdout, stderr := run(t, rt, "tool", "info", "golang")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	for _, want := range []string{"golang", "runtime", "manager:g", "依赖: g", "最低 1.22"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// JSON 形态
+	code, stdout, _ = run(t, rt, "tool", "info", "golang", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(stdout), &detail); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, stdout)
+	}
+	if detail["id"] != "golang" {
+		t.Errorf("detail = %+v", detail)
+	}
+	methods, ok := detail["methods"].([]any)
+	if !ok || len(methods) != 2 {
+		t.Fatalf("methods = %+v", detail["methods"])
+	}
+
+	// 未知工具 → 退出码 2（用法错误），并提示可用 id
+	code, _, stderr = run(t, rt, "tool", "info", "nope")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d (stderr=%s)", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "unknown tool") {
+		t.Errorf("stderr = %s", stderr)
+	}
+}
+
+func TestToolSearchCommand(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	code, stdout, _ := run(t, rt, "tool", "search", "监视", "--no-probe")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(stdout, "btop") || strings.Contains(stdout, "golang") {
+		t.Errorf("search result:\n%s", stdout)
+	}
+	code, stdout, _ = run(t, rt, "tool", "search", "zzz", "--no-probe")
+	if code != 0 || !strings.Contains(stdout, "没有匹配") {
+		t.Errorf("empty search: code=%d\n%s", code, stdout)
+	}
+}
+
+// TestToolPlanDryRunTouchesNothing 是安全断言：
+// plan 与 --dry-run 都不能创建任何文件。
+func TestToolPlanDryRunTouchesNothing(t *testing.T) {
+	rt, _, _, root := sandboxWithManifest(t)
+	before := snapshotTree(t, root)
+
+	code, stdout, stderr := run(t, rt, "tool", "plan", "golang")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "golang") || !strings.Contains(stdout, "manager:g") {
+		t.Errorf("plan output:\n%s", stdout)
+	}
+	// 依赖 g 也应出现在计划里（拓扑序）
+	if !strings.Contains(stdout, "g") {
+		t.Errorf("dependency missing from plan:\n%s", stdout)
+	}
+
+	code, _, stderr = run(t, rt, "tool", "install", "golang", "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry-run exit = %d, stderr = %s", code, stderr)
+	}
+	if diff := diffTree(t, before, root); diff != "" {
+		t.Errorf("plan/dry-run must not create anything, but:\n%s", diff)
+	}
+	// --no-probe 同样只读
+	code, _, _ = run(t, rt, "tool", "list")
+	if code != 0 {
+		t.Fatalf("list exit = %d", code)
+	}
+	if diff := diffTree(t, before, root); diff != "" {
+		t.Errorf("tool list must not create anything, but:\n%s", diff)
+	}
+
+	// 选择条件（--stack）也需要能工作
+	code, stdout, _ = run(t, rt, "tool", "plan", "--stack", "golang")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(stdout, "golang") {
+		t.Errorf("stack selection:\n%s", stdout)
+	}
+
+	// 不给任何选择条件 → 用法错误（退出码 2）
+	code, _, stderr = run(t, rt, "tool", "install")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d (stderr=%s)", code, ExitUsage, stderr)
+	}
+}
+
+func TestToolPlanJSONAndViaOverride(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	code, stdout, stderr := run(t, rt, "tool", "plan", "--stack", "golang", "--json", "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	var plan install.Plan
+	if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, stdout)
+	}
+	if len(plan.Steps) != 2 {
+		t.Fatalf("plan = %+v", plan.Steps)
+	}
+	// --json → 非交互 → 默认不开降级
+	if !strings.Contains(stdout, "\"dry_run\"") {
+		t.Errorf("plan json = %s", stdout)
+	}
+
+	// --via 指定一个清单里存在但不可用的方式 → 前置条件错误（4）
+	code, _, stderr = run(t, rt, "tool", "plan", "golang", "--via", "apt", "--dry-run")
+	if code != ExitPrecondition {
+		t.Errorf("exit = %d, want %d (stderr=%s)", code, ExitPrecondition, stderr)
+	}
+	// --via 一个不存在的方式 → 用法错误（2）
+	code, _, stderr = run(t, rt, "tool", "plan", "golang", "--via", "nope", "--dry-run")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d (stderr=%s)", code, ExitUsage, stderr)
+	}
+	// --fallback 与 --no-fallback 互斥
+	code, _, _ = run(t, rt, "tool", "plan", "golang", "--fallback", "--no-fallback", "--dry-run")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+}
+
+func TestManifestCommands(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+
+	code, stdout, stderr := run(t, rt, "tool", "manifest", "validate")
+	if code != 0 {
+		t.Fatalf("validate exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "校验通过") {
+		t.Errorf("stdout = %s", stdout)
+	}
+
+	code, stdout, _ = run(t, rt, "tool", "manifest", "path")
+	if code != 0 {
+		t.Fatalf("path exit = %d", code)
+	}
+	if !strings.Contains(stdout, "user") || !strings.Contains(stdout, "tools.yaml") {
+		t.Errorf("path output = %s", stdout)
+	}
+
+	// 写一个坏清单 → 校验失败且退出码 1
+	badDir := filepath.Join(t.TempDir(), "bad")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "bad.yaml"), []byte(`
+version: 1
+tools:
+  - id: broken
+    stack: golang
+    kind: cli
+    verify: {command: broken}
+    install:
+      - via: no-such-via
+        params: {package: x}
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	code, _, stderr = run(t, rt, "tool", "manifest", "validate", "--config", writeBadConfig(t, badDir))
+	if code != ExitFail {
+		t.Errorf("exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stderr, "no-such-via") {
+		t.Errorf("stderr = %s", stderr)
+	}
+}
+
+func writeBadConfig(t *testing.T, userDir string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "version: 1\nlog: {level: error}\ntool:\n  manifest:\n    builtin: false\n    user_dirs:\n      - " + userDir + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// TestManifestDiffCommand 覆盖"本地草稿 vs 生效清单"的差异视图。
+func TestManifestDiffCommand(t *testing.T) {
+	rt, _, _, root := sandboxWithManifest(t)
+	path := filepath.Join(root, "draft.yaml")
+	if err := os.WriteFile(path, []byte(`
+version: 1
+tools:
+  - id: golang
+    stack: rust
+    kind: runtime
+    verify: {command: go}
+    install:
+      - via: manager
+        params: {manager: rustup, action: install, version: "1.80"}
+  - id: newtool
+    stack: base
+    kind: cli
+    verify: {command: newtool}
+    install:
+      - via: brew
+        params: {formula: newtool}
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	code, stdout, stderr := run(t, rt, "tool", "manifest", "diff", path)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "newtool") || !strings.Contains(stdout, "golang") {
+		t.Errorf("diff output:\n%s", stdout)
+	}
+}
+
+// snapshotTree / diffTree 用于断言"干跑没有产生任何文件"。
+func snapshotTree(t *testing.T, root string) map[string]int64 {
+	t.Helper()
+	out := map[string]int64{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		out[path] = info.Size()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	return out
+}
+
+// diffTree 比较两次快照。
+//
+// 有意忽略 cache/ 子树：探测缓存是"可随时删除的加速数据"（ADR-0011），
+// 查询类命令刷新它是设计内行为；**config/ 与 state/ 一个字节都不能动**，
+// 那才是"不产生副作用"的实质。
+func diffTree(t *testing.T, before map[string]int64, root string) string {
+	t.Helper()
+	after := snapshotTree(t, root)
+	cacheDir := filepath.Join(root, "cache")
+	var sb strings.Builder
+	for path := range after {
+		if strings.HasPrefix(path, cacheDir) {
+			continue
+		}
+		if _, ok := before[path]; !ok {
+			sb.WriteString("created: " + path + "\n")
+		}
+	}
+	for path := range before {
+		if strings.HasPrefix(path, cacheDir) {
+			continue
+		}
+		if _, ok := after[path]; !ok {
+			sb.WriteString("removed: " + path + "\n")
+		}
+	}
+	return sb.String()
+}

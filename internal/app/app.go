@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kingfs/Bootstrap/internal/config"
+	"github.com/kingfs/Bootstrap/internal/manifest"
 	"github.com/kingfs/Bootstrap/internal/proxy"
 	"github.com/kingfs/Bootstrap/internal/state"
 	"github.com/kingfs/Bootstrap/pkg/cmdx"
@@ -38,6 +39,17 @@ type App struct {
 	JSON    bool
 	NoColor bool
 	Verbose int
+
+	// Fallback 控制"安装失败后是否允许换一种方式"（ADR-0013）。
+	// nil 表示按是否交互自动决定（见 fallbackEnabled）。
+	Fallback *bool
+	// NonInteractive 表示当前不是交互式会话（管道 / CI / --non-interactive）。
+	NonInteractive bool
+	// DefaultViaOverride 是 --via 指定的安装方式（覆盖配置里的 tool.default_via）。
+	DefaultViaOverride string
+
+	// loaded 缓存已装载的清单，避免一次命令里重复解析 YAML。
+	loaded *manifest.Loaded
 }
 
 // New 构造 App。

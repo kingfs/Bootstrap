@@ -87,6 +87,19 @@ func (e *ErrMethodNotFound) Error() string {
 	return fmt.Sprintf("tool %s has no method via=%s (available: %s)", e.ToolID, e.Via, joinStrings(e.Known))
 }
 
+// ErrViaUnavailable 表示 `--via` 指定的方法在当前机器上不可用
+// （Declared 为真时是"清单里就写明了不启用/条件不匹配"）。
+type ErrViaUnavailable struct {
+	ToolID   string
+	Via      string
+	Reason   string
+	Declared bool
+}
+
+func (e *ErrViaUnavailable) Error() string {
+	return fmt.Sprintf("tool %s: via=%s is not available (%s)", e.ToolID, e.Via, e.Reason)
+}
+
 // ErrNoMethod 表示链里没有任何可用方法。
 type ErrNoMethod struct {
 	ToolID  string
@@ -137,10 +150,10 @@ func ResolveChain(ctx context.Context, reg *Registry, e ExecEnv, t manifest.Tool
 				continue
 			}
 			if !cand.Usable {
-				return chain, fmt.Errorf("tool %s: via=%s is not usable (%s)", tool.ID, opt.Via, cand.Skip)
+				return chain, &ErrViaUnavailable{ToolID: tool.ID, Via: opt.Via, Reason: cand.Skip, Declared: true}
 			}
 			if !cand.Available {
-				return chain, fmt.Errorf("tool %s: via=%s is not available (%s)", tool.ID, opt.Via, cand.Note)
+				return chain, &ErrViaUnavailable{ToolID: tool.ID, Via: opt.Via, Reason: cand.Note}
 			}
 			chain.Selected = i
 			return chain, nil

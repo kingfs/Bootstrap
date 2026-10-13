@@ -46,6 +46,35 @@ type LoadOptions struct {
 	ReadDir  func(string) ([]fs.DirEntry, error)
 }
 
+// LoadFile 单独加载一个 YAML 文件（用于 `bs tool manifest diff`）。
+//
+// 只做"解析 + 校验"，不参与合并，因此调用方拿到的是该文件自己的声明。
+func LoadFile(path string) (*Loaded, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var mf Manifest
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&mf); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if mf.Version != 1 {
+		return nil, fmt.Errorf("%s: unsupported manifest version %d (want 1)", path, mf.Version)
+	}
+	out := &Loaded{Profiles: map[string]Profile{}}
+	for _, t := range mf.Tools {
+		t.Origin = path
+		out.Tools = append(out.Tools, t)
+	}
+	for name, p := range mf.Profiles {
+		out.Profiles[name] = p
+	}
+	out.Sources = []Source{{Path: path, Kind: SourceUser, Tools: len(mf.Tools)}}
+	return out, nil
+}
+
 // Loaded 是合并后的清单。
 type Loaded struct {
 	Tools    []Tool
@@ -61,6 +90,35 @@ func (l *Loaded) ByID(id string) (Tool, bool) {
 		}
 	}
 	return Tool{}, false
+}
+
+// IDs 返回全部工具 id（保持清单顺序，便于稳定输出）。
+func (l *Loaded) IDs() []string {
+	if l == nil {
+		return nil
+	}
+	out := make([]string, 0, len(l.Tools))
+	for _, t := range l.Tools {
+		out = append(out, t.ID)
+	}
+	return out
+}
+
+// Dependents 返回直接依赖某个工具的工具 id（`depends_on` 的反向查询）。
+func (l *Loaded) Dependents(id string) []string {
+	if l == nil {
+		return nil
+	}
+	var out []string
+	for _, t := range l.Tools {
+		for _, dep := range t.DependsOn {
+			if dep == id {
+				out = append(out, t.ID)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // ProfileNames 返回排序后的 profile 名。
