@@ -120,7 +120,11 @@ for t in $TOOLS; do
     fail=$((fail+1))
     continue
   fi
-  ver="$("$WORK/bin/$t" --version 2>&1 | head -1)"
+  # 不要 `| head -1`：`set -o pipefail` 下 head 提前关管道会让被测程序吃 SIGPIPE，
+  # 整个脚本以 141 退出（k9s 的 --version 输出较长，必现）。
+  # 有的工具不认 --version（k9s 用 `k9s version`），两种都试一下，只为打印好看。
+  ver="$("$WORK/bin/$t" --version 2>&1 || "$WORK/bin/$t" version 2>&1 || true)"
+  ver="${ver%%$'\n'*}"
   echo "  ok   $t -> $WORK/bin/$t ($ver)"
 done
 
