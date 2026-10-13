@@ -1,0 +1,262 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/kingfs/Bootstrap/internal/buildinfo"
+	"github.com/kingfs/Bootstrap/pkg/fsx"
+	"github.com/kingfs/Bootstrap/pkg/hostinfo"
+)
+
+// CheckStatus 是体检项的结论。
+type CheckStatus string
+
+// 体检结论枚举。
+const (
+	StatusOK   CheckStatus = "ok"
+	StatusWarn CheckStatus = "warn"
+	StatusFail CheckStatus = "fail"
+	StatusSkip CheckStatus = "skip"
+)
+
+// Check 是单项体检结果。
+type Check struct {
+	Name   string      `json:"name"`
+	Status CheckStatus `json:"status"`
+	Detail string      `json:"detail,omitempty"`
+	Hint   string      `json:"hint,omitempty"`
+}
+
+// Doctor 执行一组只读的环境体检。
+//
+// 原则：**只读**。doctor 不创建任何文件、不改任何配置（`--fix` 属未来项，见 design §18.3）。
+func (a *App) Doctor(ctx context.Context) []Check {
+	var checks []Check
+	add := func(c Check) { checks = append(checks, c) }
+
+	// 1. 平台
+	ver := buildinfo.Get()
+	platDetail := fmt.Sprintf("%s/%s", a.Platform.OS, a.Platform.Arch)
+	if a.Platform.Distro != "" {
+		platDetail += " " + a.Platform.Distro + " " + a.Platform.DistroVer
+	}
+	if a.Platform.Shell != "" {
+		platDetail += " shell=" + a.Platform.Shell
+	}
+	platStatus := StatusOK
+	if !a.Platform.Supported() {
+		platStatus = StatusWarn
+	}
+	add(Check{Name: "platform", Status: platStatus, Detail: platDetail,
+		Hint: hintIf(platStatus == StatusWarn, "该平台暂未在首批清单中覆盖（M5+ 补齐 Windows）")})
+	add(Check{Name: "bs", Status: StatusOK, Detail: ver.Version + " (" + ver.GoVersion + ")"})
+
+	// 2. 配置
+	cfgStatus := StatusWarn
+	cfgDetail := "未找到配置文件，正在使用内置默认值"
+	if len(a.ConfigSources) > 0 {
+		cfgStatus = StatusOK
+		cfgDetail = strings.Join(a.ConfigSources, ", ")
+	}
+	add(Check{Name: "config", Status: cfgStatus, Detail: cfgDetail,
+		Hint: hintIf(cfgStatus == StatusWarn, "运行 `bs config init` 生成默认配置")})
+
+	// 3. 目录可写性（不创建目录，只检查最近的已存在祖先）
+	for _, item := range []struct{ name, path string }{
+		{"config dir", a.Paths.ConfigDir},
+		{"state dir", a.Paths.StateDir},
+		{"cache dir", a.Paths.CacheDir},
+	} {
+		st, detail := writableAncestor(item.path)
+		add(Check{Name: item.name, Status: st, Detail: item.path + " — " + detail,
+			Hint: hintIf(st != StatusOK, "请检查目录权限")})
+	}
+
+	// 4. 外部命令
+	for _, bin := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"git", []string{"--version"}, true},
+		{"curl", []string{"--version"}, false},
+		{"go", []string{"version"}, false},
+	} {
+		path, ok := a.lookPath(bin.name)
+		if !ok {
+			st := StatusSkip
+			hint := ""
+			if bin.want {
+				st = StatusFail
+				hint = fmt.Sprintf("`bs repo` 依赖 git，请先安装 %s", bin.name)
+			}
+			add(Check{Name: bin.name, Status: st, Detail: "未找到", Hint: hint})
+			continue
+		}
+		res, err := a.Runner.Run(ctx, cmdxCommand(bin.name, bin.args...))
+		detail := path
+		if err == nil {
+			if line := firstLine(strings.TrimSpace(res.Stdout + res.Stderr)); line != "" {
+				detail += " — " + line
+			}
+		}
+		add(Check{Name: bin.name, Status: StatusOK, Detail: detail})
+	}
+
+	// 5. 包管理器
+	if len(a.Platform.PackageManagers) > 0 {
+		add(Check{Name: "package managers", Status: StatusOK, Detail: strings.Join(a.Platform.PackageManagers, ", ")})
+	} else {
+		add(Check{Name: "package managers", Status: StatusWarn, Detail: "未检测到系统包管理器"})
+	}
+
+	// 6. 代理
+	summary, err := a.ProxyStatus()
+	switch {
+	case err != nil:
+		add(Check{Name: "proxy", Status: StatusFail, Detail: err.Error()})
+	case summary.Source == "none":
+		add(Check{Name: "proxy", Status: StatusSkip, Detail: "未启用代理",
+			Hint: "如在国内网络环境，可运行 `bs proxy use <profile>`；连通性用 `bs proxy test` 验证"})
+	default:
+		detail := fmt.Sprintf("%s (%s)", firstNonEmpty(summary.Active, summary.Source), summary.Detail)
+		if summary.HTTPSProxy != "" {
+			detail += " https=" + summary.HTTPSProxy
+		}
+		add(Check{Name: "proxy", Status: StatusOK, Detail: detail})
+	}
+
+	// 7. PATH 条目
+	missing := 0
+	var entries []string
+	for _, e := range a.PathEntries() {
+		entries = append(entries, e.Path)
+		if !e.Exists {
+			missing++
+		}
+	}
+	switch {
+	case len(entries) == 0:
+		add(Check{Name: "path entries", Status: StatusSkip, Detail: "无"})
+	case missing > 0:
+		add(Check{Name: "path entries", Status: StatusWarn,
+			Detail: fmt.Sprintf("%d/%d 个目录尚不存在", missing, len(entries)),
+			Hint:   "安装对应工具后目录会自动出现；`bs env path` 可查看完整清单"})
+	default:
+		add(Check{Name: "path entries", Status: StatusOK, Detail: strings.Join(entries, ", ")})
+	}
+
+	// 8. 仓库根目录
+	root, source := a.RepoRoot()
+	if fsx.IsDir(root) {
+		count := 0
+		if paths, err := discoverCount(root); err == nil {
+			count = paths
+		}
+		add(Check{Name: "repo root", Status: StatusOK, Detail: fmt.Sprintf("%s (%s, %d 个仓库)", root, source, count)})
+	} else {
+		add(Check{Name: "repo root", Status: StatusWarn, Detail: root + " 不存在 (" + source + ")",
+			Hint: "`bs repo get <repo>` 会自动创建"})
+	}
+
+	// 9. shell 受管块
+	shell := a.Platform.Shell
+	if shell == "" {
+		shell = "bash"
+	}
+	if st, err := a.ShellStatusOf(shell, ""); err == nil {
+		switch {
+		case !st.HasBlock:
+			add(Check{Name: "shell rc", Status: StatusWarn, Detail: st.RCFile + " 中未安装受管块",
+				Hint: "`bs shell install` 安装（可先用 `--dry-run` 预览）"})
+		case !st.UpToDate:
+			add(Check{Name: "shell rc", Status: StatusWarn, Detail: st.RCFile + " 中的受管块与当前版本不一致",
+				Hint: "`bs shell install` 原地更新受管块"})
+		default:
+			add(Check{Name: "shell rc", Status: StatusOK, Detail: st.RCFile + " 已安装且为最新"})
+		}
+	} else {
+		add(Check{Name: "shell rc", Status: StatusSkip, Detail: err.Error()})
+	}
+
+	return checks
+}
+
+// Summary 返回 (ok, warn, fail, skip) 计数。
+func CheckSummary(checks []Check) (ok, warn, fail, skip int) {
+	for _, c := range checks {
+		switch c.Status {
+		case StatusOK:
+			ok++
+		case StatusWarn:
+			warn++
+		case StatusFail:
+			fail++
+		case StatusSkip:
+			skip++
+		}
+	}
+	return
+}
+
+func discoverCount(root string) (int, error) {
+	paths, err := gitrepoDiscover(root)
+	if err != nil {
+		return 0, err
+	}
+	return len(paths), nil
+}
+
+func writableAncestor(path string) (CheckStatus, string) {
+	dir := path
+	for {
+		if fsx.Exists(dir) {
+			if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+				return StatusFail, "存在但不是目录"
+			}
+			if err := probeWritable(dir); err != nil {
+				return StatusFail, "不可写：" + err.Error()
+			}
+			if dir == path {
+				return StatusOK, "存在且可写"
+			}
+			return StatusOK, "将创建（父目录 " + dir + " 可写）"
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return StatusFail, "无法确定可写位置"
+		}
+		dir = parent
+	}
+}
+
+func probeWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".bs-doctor-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	_ = f.Close()
+	return os.Remove(name)
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func hintIf(cond bool, hint string) string {
+	if cond {
+		return hint
+	}
+	return ""
+}
+
+// Platform 暴露只读平台信息（供 CLI 展示）。
+func (a *App) PlatformInfo() hostinfo.Platform { return a.Platform }

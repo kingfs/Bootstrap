@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          out="$(gofmt -l ./cmd ./internal ./pkg ./tools)"
+          if [ -n "$out" ]; then echo "未格式化："; echo "$out"; exit 1; fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: unit tests
+        run: go test -race ./...
+
+      # 冒烟测试无副作用：全部读写都在临时沙箱目录内，且不发起网络请求。
+      # Windows 上没有 bash 冒烟脚本，改跑 PowerShell 版本。
+      - name: smoke (posix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          go build -o bin/bs ./cmd/bs
+          BS_BIN="$PWD/bin/bs" ./scripts/smoke.sh
+
+      - name: smoke (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          go build -o bin/bs.exe ./cmd/bs
+          ./scripts/smoke.ps1 -Bin "$PWD/bin/bs.exe"
+
+  cross-build:
+    name: cross build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build all targets
+        run: make cross
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bs-cross
+          path: dist/**
+          if-no-files-found: error

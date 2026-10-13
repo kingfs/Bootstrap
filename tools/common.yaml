@@ -1,0 +1,6 @@
+# 跨平台公共工具清单（随二进制发布，ADR-0002）
+#
+# 字段参考：docs/tool-schema.md
+# M2 阶段填充具体工具；此处先固定文件结构，保证 go:embed 与加载器稳定。
+version: 1
+tools: []

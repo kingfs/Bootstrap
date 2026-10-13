@@ -1,0 +1,13 @@
+# 构建产物
+/bin/
+/dist/
+
+# 本地开发缓存：当 HOME 只读（沙箱/CI 受限环境）时，Go 的模块与构建缓存改放这里
+/.cache/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

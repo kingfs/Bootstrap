@@ -1,0 +1,9 @@
+# 工具套装定义：bs tool install --profile <name>
+#
+# M2 阶段填充；首批目标为 base / golang / nodejs / python（linux + darwin）。
+version: 1
+profiles:
+  base: []
+  golang: []
+  nodejs: []
+  python: []

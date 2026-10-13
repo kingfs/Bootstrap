@@ -1,0 +1,3 @@
+# Windows 专属工具清单（ADR-0014：首批清单暂不含 windows，M5+ 补齐）
+version: 1
+tools: []

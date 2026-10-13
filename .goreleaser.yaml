@@ -1,0 +1,70 @@
+# goreleaser 配置（ADR-0008：只发布 GitHub Release 二进制，不做 deb/rpm/brew/scoop/winget）
+#
+# 产物：bootstrap_<version>_<os>_<arch>.tar.gz（Windows 为 .zip）+ checksums.txt
+# 校验：scripts/install.sh 只用 checksums.txt 里的 sha256 校验（ADR-0009）
+version: 2
+
+project_name: bootstrap
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: bs
+    main: ./cmd/bs
+    binary: bs
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/kingfs/Bootstrap/internal/buildinfo.Version={{.Version}}
+      - -X github.com/kingfs/Bootstrap/internal/buildinfo.Commit={{.Commit}}
+      - -X github.com/kingfs/Bootstrap/internal/buildinfo.Date={{.CommitDate}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - docs/design.md
+      - scripts/install.sh
+      - scripts/install.ps1
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^style:'
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    安装方式见 README 的 Quick start，或直接下载对应平台的归档并校验 checksums.txt。

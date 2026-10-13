@@ -1,0 +1,3 @@
+# Linux 专属工具清单（含发行版差异，通过 when.distro 区分）
+version: 1
+tools: []
