@@ -143,6 +143,10 @@ make cross     # 交叉编译 6 个平台组合
 4. **平台差异用 `when` 表达，不要复制 id**；只有"整个工具只属于某个系统"才写进 `<os>.yaml`。
 5. **改完必须校验**：`bs tool manifest validate`（含 `--os linux|darwin|windows` 交叉校验），
    再 `bs tool plan` 看实际会选哪个方式。清单字段见 `docs/tool-schema.md`。
+6. **"名字类"参数可以引用 `{{versions.*}}`**，但只限 `version`/`package`/`formula`/`cask`/
+   `crate`/`module`/`id`/`python`/`version_source`/`source`/`repo`（引擎会提前展开）；
+   `asset`/`url`/`sha256`/`dest`/`build` 里的 `{{version}}` 由 installer 在版本确定后渲染，
+   这两类不能混用——写错了 `bs tool plan` 里会直接看到字面量 `{{...}}`。
 
 ## 10. 已知未完成项
 
@@ -151,3 +155,6 @@ make cross     # 交叉编译 6 个平台组合
 - `bs init` 的交互式向导（`charmbracelet/huh`，ADR-0003）与自更新（sha256 校验，ADR-0009）属 M3。
 - 内置清单未覆盖 `fd`/`bat`：Ubuntu 上二进制名是 `fdfind`/`batcat`，与其它平台不一致，
   等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。
+- 配置里的 `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` 与
+  `--interactive` 开关尚未接线（M3 与 `huh` 一起做）。
+- 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（需要网络，不进 `make smoke`）。

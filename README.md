@@ -231,6 +231,7 @@ make test         # 单元测试
 make race         # 单元测试（-race）
 make smoke        # 无副作用端到端冒烟测试（沙箱目录，不碰真实 HOME，不发网络请求）
 make check        # gofmt + vet + test + race
+make e2e          # 真实下载安装验证（**需要网络**，产物只落在 .cache/e2e）
 make cross        # 交叉编译 6 个平台
 ```
 

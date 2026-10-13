@@ -237,3 +237,7 @@ ui:
 `managers` 决定"谁来装"，`versions` 决定"装哪个版本"。清单里写
 `params: {action: install, version: "{{versions.golang}}"}`，两者配合起来就能做到
 "把 nodejs 从 fnm 换成 nvm、版本从 latest 换成 20.11.1"都只改配置、不动清单。
+
+> 说明：`{{versions.*}}` 由引擎在选用方法前展开（"名字类"参数，见
+> [tool-schema.md](./tool-schema.md) §6），因此 `bs tool plan`/`--dry-run` 里看到的是
+> 真实版本号（例如 `g install 1.24.1`），而不是模板字面量。

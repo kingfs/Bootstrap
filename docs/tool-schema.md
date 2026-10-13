@@ -186,6 +186,11 @@ install:
 - `params.manager` 留空时，由配置 `tool.managers.<stack>` 决定（默认 `golang=g`、`nodejs=fnm`、`python=uv`、`rust=rustup`）。
   这样**换管理器只需要改配置**，清单不用分叉。
 - `params.version` 支持 `{{versions.<name>}}`，取自配置 `tool.versions`（如 `golang=1.24.1`、`rust=stable`）。
+  引擎会在选用方法前先把这类"名字类"参数（`version`/`package`/`formula`/`cask`/`crate`/`module`/
+  `id`/`python`/`version_source`/`source`/`repo`）里的 `{{versions.*}}` 渲染成真实值，再交给
+  安装器——它们会被当作**值**塞进命令模板，不能留到后面才展开。
+  反过来 `asset`/`url`/`sha256`/`dest`/`build` 这些引用 `{{version}}` 的参数必须等到版本号
+  确定后由各 installer 渲染，别写成 `{{versions.*}}`。
 - `tool.update` 与 `tool.uninstall` 是可选的显式覆盖：写了就用它（`update` 是单个方法，
   `uninstall` 是一条链），没写则复用 `install` 链并由安装器推算命令。
 - 内置支持的管理器：`g`、`fnm`、`nvm`（`NeedsShell`，会先 `source ~/.nvm/nvm.sh`）、`uv`、`rustup`、`mise`、`pyenv`。

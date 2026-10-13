@@ -25,7 +25,7 @@
 |---|---|---|
 | 1 | 输入 GitHub 仓库任意形态的 URL/简写，自动 clone 到 `<repo_root>/<host>/<owner>/<repo>`；目标已存在则转为 `git pull` | `gitrepo` + `bs repo` |
 | 2 | 自动探测 OS/Arch（含 Linux 发行版、Shell），加载对应工具清单 | `platform` + `manifest` |
-| 3 | 初始化时列出"已安装 / 未安装"，可交互勾选安装 | `install` + `ui` + `bs init` |
+| 3 | 初始化时列出"已安装 / 未安装"，可交互勾选安装 | `install` + `ui` + `bs init`（当前：`bs tool list --installed/--missing` + `bs tool install` 已可用；交互式勾选向导属 M3） |
 | 4 | 纯 CLI（无 GUI、无常驻服务） | 全局约束 |
 | 5 | 执行下载 / clone 等网络操作时自动识别并注入代理 | `proxy` + `pkg/cmdx`/`httpx` |
 | 6 | 集成 startproxy / chaitinproxy 能力，按平台生成可生效的代理环境变量 | `proxy` + `bs proxy` + `bs shell init` |
@@ -114,66 +114,69 @@ flowchart TB
 
 ```
 Bootstrap/
-├── cmd/bs/main.go                 # 仅：构造 root command、执行、os.Exit(code)
+├── cmd/bs/main.go                 # 仅：Runtime.Run(os.Args) → os.Exit(code)
 ├── internal/
-│   ├── cli/                       # cobra 命令层（每命令一文件，薄）
-│   │   ├── root.go                # 全局 flag：--config --dry-run --yes --json --verbose --no-color
-│   │   ├── init.go  doctor.go  version.go  selfupdate.go  env.go
-│   │   ├── config.go  proxy.go  repo.go  tool.go  shell.go
-│   │   └── render.go              # 表格 / JSON / 颜色统一出口
-│   ├── app/                       # 用例编排（无 cobra、无 fmt.Println）
-│   │   ├── bootstrap.go           # init 向导：探测→清单→勾选→plan→apply
-│   │   ├── tool_service.go        # list/info/plan/install/upgrade/uninstall
-│   │   ├── repo_service.go        # get/sync/list/root
-│   │   ├── proxy_service.go       # on/off/status/env/exec/test
-│   │   ├── shell_service.go       # rc 受管块：渲染/安装/卸载/自检
-│   │   └── env_service.go         # 汇总 proxy + PATH 导出
-│   ├── domain/                    # 纯模型与接口，零 infra 依赖（可依赖 pkg/*）
-│   │   ├── tool.go                # Tool, Stack, Kind, Provides, Verify, DependsOn
-│   │   ├── manifest.go            # Manifest, Layer, Selection
-│   │   ├── method.go              # InstallMethod 及其参数联合体
-│   │   ├── installer.go           # Installer / Detector / Action / ExecEnv 接口
-│   │   ├── proxy.go               # ProxyProfile, ProxyEnv
-│   │   ├── shell.go               # Snippet, ManagedBlock
-│   │   └── state.go               # InstalledRecord
-│   ├── manifest/                  # 清单装载：embed 内置 + 用户覆盖 + 校验 + 选择
-│   ├── install/                   # 各 Installer 实现 + 注册表（每个都是薄映射器）
-│   │   ├── registry.go  chain.go  # 方法链选择与降级
-│   │   ├── manager/               # 版本管理器注册表：g / nvm / fnm / uv / rustup / mise ...
-│   │   ├── script.go  release.go  source.go
-│   │   ├── bun.go  npm.go  pnpm.go  pipx.go  uvpm.go  cargo.go  goinstall.go
-│   │   └── brew.go  apt.go  dnf.go  pacman.go  winget.go  scoop.go  choco.go
-│   ├── detect/                    # 已安装探测、版本约束判定（用 pkg/version）
+│   ├── cli/                       # cobra 命令层（每域一文件，薄：解析参数 + 调 app + 渲染）
+│   │   ├── root.go                # 全局 flag、Runtime 装配、表格/JSON 输出出口（emit/newTable）
+│   │   ├── exit.go                # 错误 → 退出码（0..5）的唯一映射点
+│   │   ├── config.go  doctor.go  version.go  env.go  proxy.go  repo.go
+│   │   └── shell.go  tool.go  manifest.go
+│   ├── app/                       # 用例编排（无 cobra、不直接打印，输出走注入的 writer）
+│   │   ├── app.go                 # App 装配：paths/config/platform/runner/logger/Manifests
+│   │   ├── tool.go                # list/info/plan/install/upgrade/uninstall/validate/diff
+│   │   ├── repo.go  proxy.go  shell.go  subshell.go  env.go  doctor.go  helpers.go
+│   ├── manifest/                  # 清单模型 + 分层装载合并 + 校验 + 依赖图（"domain"层）
+│   │   ├── types.go               # Tool/Method/Verify/Params/Profile/When/Origin
+│   │   ├── load.go                # embed 内置 + 用户覆盖 + 合并（KnownFields 严格模式）
+│   │   ├── validate.go            # 全量校验（一次报全）+ 系统包管理器护栏
+│   │   └── graph.go               # TopoOrder / ExpandDeps / Problems 聚合
+│   ├── install/                   # 安装引擎 + 全部 Installer 实现 + 注册表
+│   │   ├── ports.go               # Op/Action/Download/ExecEnv/Installer/Registry/错误类型
+│   │   ├── chain.go               # 方法链选择、--via 强制、降级候选
+│   │   ├── engine.go              # PlanTools/Apply 流水线、Step/Report、Recorder、LogPath
+│   │   ├── managers.go            # 版本管理器表：g/fnm/nvm/uv/rustup/mise/pyenv
+│   │   ├── pkgmanagers.go         # bun/npm/pnpm/pipx/uvpm/cargo/goinstall/brew
+│   │   ├── system.go              # apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco（一份实现多 via）
+│   │   ├── artifacts.go           # script/release/source（下载、校验、解压、软链、克隆）
+│   │   ├── render.go              # {{...}} 模板渲染（变量/过滤器）
+│   │   ├── exec.go  files.go      # argv 拆分与 sudo 前缀、文件落盘辅助
+│   │   └── osenv.go               # ExecEnv 的唯一真实实现（所有系统接触点）
+│   ├── detect/                    # 四态探测 + 5s 超时 + 并发 + TTL 缓存（cache.go）
 │   ├── gitrepo/                   # clone/pull/sync 编排（用 pkg/giturl + 系统 git）
-│   ├── proxy/                     # profile 解析、系统代理探测、连通性测试
-│   ├── shellsnip/                 # 内置/用户片段装载、排序、受管块拼装
-│   ├── config/                    # 路径解析 + viper 装载 + 类型化 Config + 校验
-│   ├── httpx/                     # 下载、校验和、解压（用 pkg/fsx）
-│   └── ui/                        # 表格、进度、确认、颜色、huh 交互（唯一可 import huh 处）
+│   ├── proxy/                     # profile 解析、state 读写、系统代理探测、连通性测试
+│   ├── shellsnip/                 # 内置/用户片段装载、排序、受管块拼装（rc.go/fs.go）
+│   ├── config/                    # paths.go 目录策略 + load.go viper 装载 + types.go + validate.go
+│   ├── state/                     # state.yaml：活跃 proxy profile、安装记录路径等
+│   └── buildinfo/                 # Version/Commit/Date（ldflags 注入，version 命令读取）
 ├── pkg/                           # 纯逻辑库：无业务语义、不 import internal、可脱离本项目复用
-│   ├── giturl/                    # 仓库 URL → Ref{Host,Owner,Repo,Ref,SubPath}
+│   ├── giturl/                    # 仓库 URL → Ref{Host,Owner,Repo,Ref,SubPath} + layout 渲染
 │   ├── version/                   # 版本抽取(命名组正则)/比较/约束
-│   ├── proxyenv/                  # Profile → bash/zsh/fish/pwsh/cmd/dotenv 的 env 文本
+│   ├── proxyenv/                  # Profile → bash/zsh/fish/pwsh/cmd/dotenv/json 的 env 文本
 │   ├── hostinfo/                  # OS/Arch/Distro/Shell/包管理器探测 → Platform
 │   ├── cmdx/                      # 命令执行：dry-run/超时/env 注入/日志脱敏
-│   └── fsx/                       # 原子写、~ 展开、目录确保、文件锁
+│   ├── httpx/                     # 带代理与超时的下载、sha256 校验
+│   ├── ghrelease/                 # GitHub Release 元数据（最新 tag、asset、校验和文件名候选）
+│   ├── archive/                   # tar/zip/gz 解压与"从归档里找出可执行文件"
+│   └── fsx/                       # 原子写、~ 展开、目录确保、内容不变不写盘、备份
 ├── tools/                         # 内置工具清单 + 内置 shell 片段（go:embed 进二进制）
-│   ├── common.yaml                # 跨平台公共工具
-│   ├── linux.yaml  darwin.yaml  windows.yaml
-│   ├── profiles.yaml              # base / golang / python / nodejs / rust / cpp / full
-│   └── snippets/{posix,fish,pwsh}/…# 内置 shell 片段（10-proxy.sh / 20-path.sh / 90-aliases.sh）
-├── docs/
-│   ├── design.md                  # 本文
-│   ├── tool-schema.md             # 清单字段完整参考
-│   ├── configuration.md           # 配置项参考
-│   └── adr/                       # 架构决策记录（0001-*.md ...）
-├── scripts/install.sh  install.ps1
+│   ├── embed.go                   # //go:embed 清单与 snippets
+│   ├── common.yaml                # 跨平台公共工具（38 条）
+│   ├── linux.yaml  darwin.yaml  windows.yaml   # 平台专属工具与平台专属 profile（windows 目前是占位）
+│   ├── profiles.yaml              # base/golang/nodejs/python/rust/editor/infra/agent/managers
+│   └── snippets/{posix,fish,pwsh}/…# 10-proxy.* / 20-path.* / 90-aliases.sh
+├── docs/design.md  tool-schema.md  configuration.md   # 决策记录（ADR）以 §18 的形式包含在 design.md 里
+├── scripts/                       # devenv.sh smoke.sh smoke.ps1 install.sh install.ps1 e2e-install.sh
 ├── .github/workflows/{ci.yaml,release.yaml}
-├── .goreleaser.yaml
-├── Makefile
-├── README.md  AGENTS.md  LICENSE
-└── go.mod
+├── .goreleaser.yaml  Makefile  go.mod
+├── README.md  AGENTS.md
+└── bin/  dist/                    # 本地构建产物（bin/bs、交叉编译归档），不入库
 ```
+
+> 与早期设计稿的差异：原计划里的 `internal/domain/`、`internal/install/manager/`、
+> `internal/install/{bun,npm,apt,…}.go` 单文件、`internal/ui/`、`internal/httpx/` 都被合并或上移了——
+> 模型进了 `internal/manifest`，管理器与包管理器改成**表驱动的一份实现**，
+> `httpx` 与新增的 `ghrelease`/`archive` 落在 `pkg/`，`internal/ui` 留到 M3 引入 huh 时再建。
+> 依据是 §4.1 的准入规则：能表驱动的就不要拆文件，能脱离业务复用的就上移 `pkg/`。
 
 ### 4.1 `pkg/` 准入规则（回答"常见方法是否抽成 pkg"）
 
@@ -730,8 +733,12 @@ type ExecEnv interface {
      （`bs tool plan`/`report.Steps[].skipped` 都能看到"为什么没用 brew"）；
    - Installer 的 `Available()` 为 false（没有 brew、管理器没装、`has: [bun]` 不满足）→ 跳过；
    - 命中第一个可用方法 → 选中，把"为什么是它"写进 `Action.Reason`。
-3. 一个候选都没有时返回 `ErrNoMethod`，它**聚合每个候选各自的原因**（而不是只报最后一个），
-   退出码 4（前置条件不满足）。
+3. 一个候选都没有时得到 `ErrNoMethod`，它**聚合每个候选各自的原因**（而不是只报最后一个），
+   例如：`tool fnm: no usable install method (brew (when: os=linux 不在 darwin), cargo (when: 缺少依赖命令 cargo), release (enabled: false))`。
+   计划期就有 `failed` 步骤时，`bs tool install/upgrade/uninstall` 以退出码 4 结束
+   （前置条件不满足），不会让脚本误以为装好了；`bs tool plan` 仍是 0——它只是预览。
+   而"用户点名的方式不存在/不可用"（`ErrMethodNotFound` / `ErrViaUnavailable`）会让整条命令
+   直接以退出码 2 失败，绝不悄悄降级。
 
 **降级（ADR-0013）**：选中方法执行失败后，只有 `Fallback` 为真才按顺序试链上其余候选
 （`Chain.Fallbacks()` 只含当时 `Available()` 的候选）。降级必须显式留痕：
@@ -799,6 +806,9 @@ type ExecEnv interface {
   `params.checksum: none` 是唯一的显式放弃开关。实测各家习惯不同（g 用 `sha256sum.txt`、
   k9s 用 `checksums.sha256`、uv/ripgrep 每个产物配 `<asset>.sha256`），逐个试比强制清单作者
   记住某个项目的习惯更可靠。
+  这些"元数据查询"（最新 tag、校验和文件、版本文本）共用 `install.LookupTimeout = 15s`
+  的单次上限，而真正的下载用 `httpx.DefaultDownloadTimeout = 15min`（通用 GET 是 60s）——
+  **下载慢是正常的，查元数据慢不是**；把两者绑在同一个 60s 上，会出现"能下完却永远装不上"。
 - **`extract` 决定"目录型"还是"单文件型"**：默认从归档里挑出 `binary`（缺省是 repo 名）
   复制到 `dest`；`extract: true` 则整棵解压到 `dest`（Go 工具链、uv 这类目录型发布物），
   再用 `symlinks` 把要暴露的可执行文件链到 PATH 目录。
@@ -864,8 +874,9 @@ type ExecEnv interface {
 [3] Plan        逐工具 ResolveChain → 选中的 Installer.Plan()
                 · install：已安装（installed）→ skip；uninstall：未安装 → skip；upgrade 从不跳过
                 · 方法链全部不可用 → 该步 status=failed 并带上聚合原因
+                  （CLI 看到 failed 步骤就以退出码 4 结束，不会静默返回 0）
                 · ErrUnsupported（如用 apt 卸载）→ status=unsupported（不算失败）
-                · 探测：install 且非 dry-run 时强制重探，其余用缓存
+                · 探测：install 且非 dry-run 时强制重探；dry-run/plan 既不读也不写缓存
 [4] Confirm     `bs tool install/upgrade/uninstall` 在**真正动手前**要一句明确同意
                 （CLI 层，不在引擎里）：
                 · --yes 直接通过；
@@ -879,23 +890,30 @@ type ExecEnv interface {
 [6] Verify      装完立刻重探（Probe，不走缓存）：仍然 missing → 该步 failed，
                 错误是"命令已执行，但验证失败"——不相信命令的退出码
 [7] Report      逐步状态 + 耗时 + 降级记录；`installed.yaml` 落盘（audit）；
-                有失败项 → 退出码 1；既有成功又有失败 → 退出码 3
+                每个工具的命令输出落到 `<state>/logs/<时间>-<工具>.log`，失败项在
+                Report 里打印日志路径；有失败项 → 退出码 1；既有成功又有失败 → 退出码 3
 ```
 
 `normalize` 是 Plan 前的一个隐式步骤：把配置 `tool.managers.<stack>` 落到清单上——
 `via: manager` 缺 `params.manager` 时补上，`depends_on: [fnm]` 在该 stack 的管理器换成 `nvm` 时
 自动改写依赖指向（**清单无需分叉**）。没用到配置映射时不复制清单。
 
-`bs tool plan` 与 `--dry-run` 的区别：`plan` 是"只看不做"的正规入口（永远不执行）；
-`--dry-run` 是给 `install/upgrade/uninstall` 的演练开关，两者都可能在解析版本时联网
-（`release` 要查 latest release，`manager` 的 `latest` 要查 list-remote），
-因为预览必须显示真实版本号。
+- **`bs tool plan` 是离线预览**：它把引擎切到干跑语义（`App.DryRun = true`），
+  因此**不联网解析最新版本**（`release` 的 URL 保留 `<latest>` 占位符）、**不写探测缓存**，
+  但仍然做真实探测（这样才能如实回答"哪些已装、哪些要处理"）。新机器上网络还没配好时，
+  `bs tool plan` 必须立刻给出结果，而不是每个工具卡 15 秒。
+- **`--dry-run`** 是给 `install/upgrade/uninstall` 的同一套演练开关，行为一致。
+- 真实的版本号、下载地址与校验和**只在执行安装时解析**（`release` 查最新 tag、
+  `manager` 的 `latest` 查 `list-remote`）。预览显示占位符是有意为之：预览的用途是
+  "看要做什么、按什么顺序、用哪种方式"，不是"看最终 URL"。
 
 **日志与审计**：`<state>/installed.yaml` 记录 `{version, tools.<id>.{via, version, installed_at}}`，
 只写成功（`done`）的步骤，内容不变时不写盘；它**不是**"是否已安装"的依据（ADR-0010/0011），
-只用于 `bs tool info` 展示历史与将来的升级提示。命令输出目前走 `slog`
-（`-v` 可见完整 argv 与退出码）；`install.LogPath(stateDir, toolID, now)` 已给出
-`<state>/logs/<时间>-<工具>.log` 的路径约定并有单测，但引擎尚未把每条命令的输出落进该文件。
+只用于 `bs tool info` 展示历史与将来的升级提示。命令输出走两处：`slog`（`-v` 可见完整
+argv 与退出码，实时）与文件日志 `<state>/logs/<时间>-<工具>.log`（`install.LogPath`，
+含每条命令的 stdout/stderr 与退出码）。文件日志由引擎在每个步骤外面套一层
+`logEnv` 装饰器实现——所有 `via` 共用同一条执行路径，拦在这里就覆盖全部安装方式，
+且每个工具一个实例，不存在并发写同一文件。`--dry-run` 不写日志（零副作用）。
 
 ### 7.6 卸载与升级
 
@@ -997,19 +1015,18 @@ bs proxy add <name> --http ... --no-proxy ...   # 快速新增 profile（写用�
 - **日常新增别名/函数直接提 PR 或直接改 `tools/snippets/`**：升级 `bs` 即自动带上，不存在"这份脚本在哪台机器上"的问题。代价是片段变更要走提交（个人仓库，成本可接受）。
 - `<config>/shell/` 只用于**机器特定或敏感**内容（某台机器独有的 export、路径、私密 alias），不进仓库。
 - 文件名 `NN-name.*` 决定加载顺序（10 → 20 → 90），同序号时用户片段优先；同名文件**整体覆盖**内置（便于临时替换而不改仓库）。
-- `bs shell snippet list|new <name>|edit <name>|show <name>|path` 管理用户片段；`bs shell init` 会把这些片段内容**内联渲染**进输出（所以 rc 里永远只有一行）。
+- `bs shell snippet list|new <name>|path` 管理用户片段（`new` 只创建空文件，编辑用 `$EDITOR` 或直接改，
+  这里刻意不内置编辑器交互）；`bs shell init` 会把这些片段内容**内联渲染**进输出（所以 rc 里永远只有一行）。
 
-**命令**：
+**命令**（均为已实现）：
 
 ```
-bs shell init <bash|zsh|fish|pwsh|cmd>   # 渲染完整受管内容（包装函数 + 片段 + PATH/代理装配）
-bs shell install [--rc <file>] [--shell S] [--dry-run]
-                                         # 幂等写入 rc 的受管块；自动备份；--dry-run 只显示 diff
-bs shell uninstall [--rc <file>]         # 精确移除受管块（块外内容零改动）
-bs shell status [--json]                 # 受管块是否存在/是否过期/与当前二进制是否同步
-bs shell update                          # 重写受管块（升级 bs 后刷新）
-bs shell snippet list|new|edit|show|path|remove
-bs shell [--profile P] [--shell S]       # 不改 rc：直接开一个已装配环境 + PATH 的子 shell
+bs shell init [bash|zsh|fish|pwsh|cmd]     # 渲染完整受管内容（包装函数 + 片段 + PATH/代理装配）
+bs shell install [--rc <file>] [--shell S] # 幂等写入 rc 的受管块；写前自动备份（--dry-run 见全局 flag）
+bs shell uninstall [--rc <file>] [--shell S]  # 精确移除受管块（块外内容零改动）
+bs shell status [--rc <file>] [--shell S]  # 受管块是否存在、内容是否与当前 bs 一致
+bs shell snippet list|new <name>|path
+bs shell [--profile P]                   # 不改 rc：开一个已装配环境 + PATH 的交互式子 shell
 ```
 
 **受管块格式**（幂等替换的锚点，块外字节级不动）：
@@ -1021,7 +1038,8 @@ eval "$(bs shell init bash)"
 ```
 
 - `bs shell install` 的行为：定位/探测 rc → 若存在受管块则**原地替换**（升级即生效）→ 否则追加 → 写前备份 `<rc>.bs-backup.<ts>` → 原子写入。
-- `bs shell status` 对比"rc 中的块内容"与"当前版本应输出的锚点行"，提示是否需要 `bs shell update`（例如你换了 shell 或改了 `shell.rc_files`）。
+- `bs shell status` 对比"rc 中的块内容"与"当前 `bs shell init` 的输出"，提示是否需要重跑
+  `bs shell install`（升级 `bs` 之后重跑一次即可；**没有**单独的 `shell update` 子命令）。
 - **安全边界**：只识别并替换上述标记之间的内容；不解析、不重排、不删除块外的任何行；`uninstall` 只删块。这与 §16 的安全约定一致。
 
 ### 8.5 探测与安全
@@ -1100,11 +1118,13 @@ eval "$(bs shell init bash)"
 ### 9.4 批量能力
 
 ```
-bs repo get kingfs/Bootstrap other/repo https://github.com/x/y   # 批量
-bs repo get -f repos.txt                                         # 从文件读（每行一个，支持 # 注释）
-bs repo list [--root <path>] [--dirty] [--json]                  # 枚举 root 下所有仓库
-bs repo sync [--jobs 4] [--root ...] [--only-dirty]              # 批量 pull，汇总表格
+bs repo get kingfs/Bootstrap other/repo https://github.com/x/y   # 一次给多个 URL 即批量
+bs repo list [--root <path>] [--json]                            # 枚举 root 下所有仓库
+bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull，汇总表格
 ```
+
+> 从文件读取 URL 列表（`-f repos.txt`）、`repo list --dirty`、`sync --only-dirty` 都**还没实现**；
+> 需要批量时把 URL 写在命令行或 `xargs`（`bs repo get` 接受任意多个位置参数）。
 
 `bs repo sync` 是"换电脑/定期更新"的主力命令：并发 fetch+pull，输出 `仓库 | 分支 | 动作 | 结果 | 领先/落后`。
 
@@ -1154,7 +1174,7 @@ config init          生成默认配置文件（已存在时不覆盖）
 
 proxy  list | status | on | use [名字] | off
 proxy  env [--apply|--off] [--profile 名字] [--shell bash|zsh|fish|pwsh|cmd|dotenv|json]
-proxy  exec <命令...>      在带代理的子进程里执行
+proxy  exec [--profile P] -- <命令...>   在带代理的子进程里执行（`--` 之后原样传给子进程）
 proxy  test                分别测直连与走代理（**唯一会发真实网络请求的命令**）
 proxy  add                 新增 profile（默认只打印 YAML 片段，不写文件）
 
@@ -1167,7 +1187,7 @@ tool   list  [--stack S] [--kind K] [--profile P] [--tag T]... [--installed|--mi
 tool   search <关键词>      （别名 find；与 list 同一套过滤参数）
 tool   info <工具> [--refresh]
 tool   plan  [工具...] [--profile P] [--stack S] [--kind K] [--tag T]... [--missing]
-             [--via V] [--fallback|--no-fallback]
+             [--via V] [--fallback|--no-fallback]      # 离线预览：不联网解析版本、不写缓存
 tool   install   （同上参数）
 tool   upgrade   （同上参数）
 tool   uninstall （同上参数）
@@ -1182,7 +1202,7 @@ shell  install                          把受管块幂等写入 rc（写前备�
 shell  uninstall                        移除受管块（块外内容字节级不变）
 shell  status                           显示受管块安装状态
 shell  snippet list|new|path            查看/创建 shell 片段
-shell  [命令...]                        开一个已装配环境的子 shell（不改 rc）
+shell  [--profile P]                    开一个已装配环境的交互式子 shell（不改 rc；不接受命令参数）
 
 completion <shell>   由 cobra 提供
 ```
@@ -1195,7 +1215,7 @@ completion <shell>   由 cobra 提供
 | `1` | 一般失败 | 所有步骤都失败、未知错误 |
 | `2` | 用法/参数错误 | 工具名不存在、`--via` 写了一个清单里没有的方式、`--fallback` 与 `--no-fallback` 同时给 |
 | `3` | 部分成功 | 3 个工具装了 2 个 |
-| `4` | 前置条件不满足 | 方法链全部不可用、仓库根未初始化（`bs repo get` 前的 `ErrNoRoot`） |
+| `4` | 前置条件不满足 | `--via` 指向本机不可用的方式（`ErrViaUnavailable`）、仓库根未初始化（`ErrNoRoot`）、需要执行器却没有可用的执行环境 |
 | `5` | 需要交互但处于非交互模式 | 破坏性操作没给 `--yes` |
 
 **非交互约定**：输出不是终端、`--json`、`--non-interactive` 或 `CI=1` 时不提问、不阻塞；
@@ -1251,8 +1271,8 @@ completion <shell>   由 cobra 提供
 
 **日志**：`log/slog` 结构化日志，默认 stderr，级别取 `log.level`（`-v` debug、`-vv` trace）。
 外部命令的完整 argv 与退出码在 debug 级可见；`*_PROXY` 值一律脱敏（保留 host:port，
-userinfo 换成 `***`）。文件日志（`<state>/logs/`）只有路径约定
-（`install.LogPath`），引擎还没接线（§7.5）。
+userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`）由引擎按步骤写入
+（§7.5 的 `logEnv`），日志写不出来只降级为警告，不让安装失败。
 
 ---
 
@@ -1261,12 +1281,12 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/`）只有路径约定
 | 关注点 | 方案（当前实现） |
 |---|---|
 | 错误处理 | `fmt.Errorf("...: %w", err)` 逐层包装；领域错误用 Sentinel + `errors.Is/As`；`internal/cli/exit.go` 是**唯一**把 error 映射成退出码的地方（`codedError` + cobra 文案识别） |
-| 上下文 | 所有 IO 首参 `context.Context`；超时集中在三处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、HTTP 60s（`httpx.DefaultTimeout`）。全局 `--timeout` **尚未实现** |
+| 上下文 | 所有 IO 首参 `context.Context`；超时集中在四处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、元数据查询 15s（`install.LookupTimeout`，只用于"最新 tag / 校验和文件 / 版本文本"）、通用 GET 60s 与下载 15min（`httpx.DefaultTimeout` / `DefaultDownloadTimeout`）。全局 `--timeout` **尚未实现** |
 | 并发 | `errgroup` 只用在两处：工具探测（`min(8, NumCPU)`）与 `repo sync`（`repo.sync.jobs`）；安装执行是**串行**的（依赖顺序优先，暂不并行） |
 | 配置注入 | 依赖显式构造（`app.New` 装配 `Runtime`/`App`），**没有 `init()` 副作用**——安装器注册表也由 `install.NewRegistry()` 显式构建 |
 | 平台分支 | 平台差异收敛在 `pkg/hostinfo`（探测）与 `internal/config/paths.go`（目录策略）；业务代码里不散落 `runtime.GOOS` |
 | 外部命令 | 一律走 `pkg/cmdx`（超时、干跑、脱敏、日志都在那里），业务代码不直接 `os/exec` |
-| 测试 | 表驱动单测；安装引擎用 `internal/install/fake_test.go` 的 `fakeEnv`/`fakeDetector`（记录命令、可编排返回值），探测用注入的 `Executor`/`LookPath`；CLI 层用进程内 `Runtime.Run` + 临时 `BS_CONFIG_HOME`/`BS_STATE_HOME`/`BS_CACHE_HOME` + 缓冲区输出；端到端用 `scripts/smoke.sh`（POSIX）与 `scripts/smoke.ps1`（Windows） |
+| 测试 | 表驱动单测；安装引擎用 `internal/install/fake_test.go` 的 `fakeEnv`/`fakeDetector`（记录命令、可编排返回值），探测用注入的 `Executor`/`LookPath`；CLI 层用进程内 `Runtime.Run` + 临时 `BS_CONFIG_HOME`/`BS_STATE_HOME`/`BS_CACHE_HOME` + 缓冲区输出；端到端用 `scripts/smoke.sh`（POSIX）与 `scripts/smoke.ps1`（Windows），两者都不发网络请求；另有**需要网络的**可选 `scripts/e2e-install.sh`（真下载真校验，产物全部落在 `.cache/e2e/`，不属于 CI 必跑项） |
 | 无副作用测试（硬要求） | 全部读写都在 `t.TempDir()`；`--dry-run` 断言"目标路径不存在/文件数不变"；幂等断言"第二次执行 mtime 不变"（`fsx.WriteFileIfChanged`/`state`）；涉及用户文件的逻辑断言"内容字节级未变"（`shellsnip`）；单测与 smoke **都不发网络请求** |
 | 静态检查 | `make check` = `gofmt -l` + `go vet ./...` + `go test ./...` + `go test -race ./...`；CI 在 ubuntu/macos/windows 三个 runner 上跑同样的四件事 + 冒烟。**尚未接入** `golangci-lint` / `govulncheck`（设计里提过，属 M4 打磨） |
 | 依赖策略 | 目前只有 4 个直接依赖：`spf13/cobra`、`spf13/viper`、`gopkg.in/yaml.v3`、`golang.org/x/sync`；UI 依赖（`huh`）在 M3 引入且只允许出现在 `internal/ui`；`pkg/*` 不 import `internal/*` |
@@ -1321,20 +1341,30 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/`）只有路径约定
 
 ## 15. 文档体系
 
-- **`README.md`（给人看，简洁）**：一段话定位 → 安装（三平台各一行）→ **5 分钟上手**（`bs init`）→ 常用命令速查表（repo/proxy/tool/env 各 2–4 条）→ 配置示例 → 卸载。
+- **`README.md`（给人看，简洁）**：一段话定位 → 安装（三平台各一行）→ **5 分钟上手**（`bs shell install` + `bs tool plan/install`；`bs init` 向导要到 M3）→ 常用命令速查表（repo/proxy/tool/env 各 2–4 条）→ 配置示例 → 卸载。
 - **`AGENTS.md`（给 AI Agent 看）** 必含：项目定位与不变量、**构建/测试/校验命令**、目录地图与分层依赖规则、**如何新增一个工具（只改 YAML 的三步流程）**、如何新增一种安装机制（实现 Installer + 注册 + 测试）、代码风格与提交规范、Definition of Done 清单、禁止事项（如禁止在 `cli` 层写业务逻辑、禁止无 sha256 的脚本安装）。
-- **`docs/`**：`tool-schema.md`（清单字段全参考 + 每个 via 的 params）、`configuration.md`（配置项全参考 + 示例）、`design.md`（本文）、`adr/`（关键决策：为什么用系统 git、为什么 plan/apply 分离、为什么 macOS 用 `~/.config` 等）。
-- **命令内建文档**：每个 cobra 命令有 `Long` + `Example`；`bs completion <shell>` 由 cobra 自动提供；`bs <cmd> --help` 即权威参考。
+- **`docs/`**：`tool-schema.md`（清单字段全参考 + 每个 via 的 params）、`configuration.md`（配置项全参考 + 示例）、`design.md`（本文，**ADR 以 §18 的形式内联在这里，没有单独的 `docs/adr/` 目录**）。
+- **命令内建文档**：每个 cobra 命令有 `Long`/`Example`；`bs completion <shell>` 由 cobra 自动提供；`bs <cmd> --help` 即权威参考。
 
 ---
 
 ## 16. 安全边界
 
-1. `curl | bash` 类安装必须固化 `sha256` 或要求 `--insecure-script` 显式放行，并在 plan 中显著标注。
-2. 需要 root 的操作在 plan 中标注 `needs_root`，执行前二次确认；`--yes` 时也打印将执行的 `sudo` 命令。
+1. **下载物必须校验 sha256**：`via: release` 固化了 `params.sha256`、指定了 `params.checksum_file`，
+   或能从常见校验和文件里查到才继续，查不到就中止（`params.checksum: none` 是唯一的显式放弃开关）；
+   `via: script` 必须有 `params.sha256`，除非清单显式写 `params.insecure: true`。
+   内置清单里**不使用** `via: script`（AGENTS.md §9 的清单纪律）。没有 `--insecure-script` 这类 CLI 开关——
+   放弃校验必须写进清单并被 review。
+2. **不静默提权**：系统包管理器的使用受 `tool.allow_system_for` 护栏限制（§7.2），
+   需要 root 时命令自动加 `sudo` 前缀，`Action.NeedsRoot` 在 `--json` 的
+   `plan.steps[].action.needs_root` 里可见，具体命令用 `-v` 或 `--dry-run -v` 能看到。
+   人工确认是**整批一次**的"即将安装/升级/卸载 N 个工具，继续？"（§7.5 的 [4]），
+   不是逐命令二次确认；`--yes` 表示调用方已明确授权。
 3. 代理凭据不落明文日志；日志中 `*_PROXY` 值做掩码（保留 host:port，隐去 userinfo）。
-4. `bs self-update` 仅校验 sha256（ADR-0009）；签名校验明确不做。
+4. `bs self-update` **尚未实现**（M3）；实现时只校验 sha256（ADR-0009），签名校验明确不做。
 5. rc 文件只允许通过 `bs shell install` 的**受管块**修改：块由固定标记包围、可幂等替换、可精确移除，块外字节级不动；写前自动备份。其余场景一律只**输出**片段，不写文件。
+6. **破坏性操作必须先拿到明确同意**（`confirmDestructive`）：交互终端默认拒绝，
+   非交互环境绝不阻塞，没有 `--yes` 就以退出码 5 结束（`--dry-run` 不需要同意，因为它什么都不做）。
 
 ---
 
@@ -1397,10 +1427,27 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/`）只有路径约定
 | Windows 工具清单与 `repo.root` | 首批不含（ADR-0014）：`tools/windows.yaml` 目前是占位文件，只保证能加载不报错；`D:/src` 约定与 scoop/winget 清单待单独设计 | M5+ |
 | `bs doctor --fix` | 是否让 doctor 自动修复（补 PATH、重建受管块、清理缓存），还是只诊断 | M4 |
 | 跨工具并行安装 | `bs tool install` 目前严格串行（依赖顺序优先）；同层无依赖的工具并行需要先解决日志与确认交互的交错问题 | 安装变慢时 |
-| 全局 `--timeout` | 现在超时是写在三处的常量，需要一个统一的 flag 时才加 | M4 |
+| 全局 `--timeout` | 现在超时是写在四处的常量（命令 10min / 探测 5s / 元数据 15s / 通用 GET 60s / 下载 15min），需要一个统一的 flag 时才加 | M4 |
 | `bs tool list` 的探测成本 | 目前每个条目都真起一次 `--version`（并发 8、TTL 10 分钟）；清单长到几百条时需要"只探测相关的"或懒惰探测 | 清单规模上来后 |
 
-### 18.4 待修缺陷（代码与设计不一致，已知且未修）
+### 18.4 缺陷修复记录
+
+2026-10-13 的 M2 收尾 review（用真实二进制逐条复现）发现并**已修复**下列 7 个问题：
+
+| # | 位置 | 现象 | 修复 |
+|---|---|---|---|
+| 1 | `internal/install/engine.go`（`resolveParams`） | `params.version` 里的模板（`"{{versions.golang}}"`）从未渲染，命令里出现字面量 `g install {{versions.golang}}` | 引擎在选工具后、`Installer.Plan` 前统一展开"名字类"参数（`version/package/formula/cask/crate/module/id/python/version_source/source/repo`），见 `internal/install/render.go` 的 `nameParamFields` |
+| 2 | `internal/install/osenv.go`（`NewOSEnv`） | `OSEnvOptions.Versions` 没赋给 `versions` 字段，`ExecEnv.Versions()` 恒为 nil | 补上赋值；`{{versions.*}}` 因此才真正可用 |
+| 3 | `internal/manifest/load.go`（`mergeVerify`） | 合并 `verify` 时忽略 `over.File` | 补上 `File` 覆盖（`disabled` 仍只能置 true） |
+| 4 | `internal/cli/manifest.go` | `bs tool manifest show` 没有非 JSON 分支，不打印却返回 0 | 默认输出规范化 YAML，`--json` 仍出 JSON |
+| 5 | `internal/install/engine.go` | `LogPath` 无调用点，§7.5 承诺的日志没兑现 | 新增 `logEnv` 装饰器，每个工具写 `<state>/logs/<时间>-<工具>.log`，失败时在 Report 里打印路径，`--dry-run` 不写 |
+| 6 | `internal/install/pkgmanagers.go` | 摘要重复动词（`cargo install install fnm`） | 摘要直接用真实命令（`bin + args`） |
+| 7 | `internal/cli/tool.go`（`planHasWork`） | 计划期 `failed` 不算"有活干"，`bs tool install fnm --yes` 打印 failed 后返回 0 | 新增 `failedSteps`：安装/升级/卸载遇到计划期 failed 步骤以退出码 4 结束 |
+
+仍未接线（刻意保留，属 M3）：`ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy`
+四个配置项、`--interactive` 显式开关、`huh` 交互式勾选、自更新。
+
+## 18.4 待修缺陷（代码与设计不一致，已知且未修）
 
 这些是**当前代码的真实行为**，写在这里免得文档比代码乐观：
 
@@ -1412,6 +1459,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/`）只有路径约定
 | 4 | `internal/cli/manifest.go`（`manifestShowCmd`） | `bs tool manifest show` 只调用 `rt.emit`，没有非 JSON 分支 | 不带 `--json` 时**什么都不打印**却返回 0 |
 | 5 | `internal/install/engine.go` | `LogPath` 已定义且有单测，但没有任何调用点 | §7.5 承诺的"每条命令输出落到 `<state>/logs/<时间>-<工具>.log`"没有兑现；命令输出目前只在 slog（`-v`）里 |
 | 6 | `internal/install/pkgmanagers.go` | 摘要文案是 `label + " " + args...`，而 `label` 已含动词 | `bs tool plan` 里会出现 `cargo install install fnm` 这种重复（纯观感问题） |
+| 7 | `internal/cli/tool.go`（`planHasWork`） | 只把 `install/upgrade/uninstall` 当作"有活干"，`failed` 不算 | 方法链全部不可用时（如 `fnm` 在只有 apt 的机器上），`bs tool install fnm --yes` 打印 `failed` 那一行后以**退出码 0** 结束——脚本会误判为成功。`bs tool plan` 的 0 是对的（它只是预览），`install` 应当是 4 |
 
 修 #1/#2 的最小方案：在引擎 `PlanTools` 调 `Installer.Plan` 之前，用 `RenderData{Versions: e.Versions()}`
 把方法参数里的模板统一渲染一遍（或至少在 `managerInstaller.Plan`/`pkgManager.Plan` 里先渲染

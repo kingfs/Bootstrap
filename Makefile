@@ -72,6 +72,11 @@ cover:
 smoke: build
 	$(ROOT)/scripts/smoke.sh
 
+# e2e 需要网络：真从 GitHub Release 下载并校验，产物只落在 .cache/e2e
+.PHONY: e2e
+e2e:
+	$(ROOT)/scripts/e2e-install.sh
+
 .PHONY: check
 check: fmt-check vet test race
 
