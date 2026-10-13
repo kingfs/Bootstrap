@@ -318,7 +318,8 @@ tools:
         params:
           repo: jesseduffield/lazygit
           asset: "lazygit_{{version}}_{{os}}_{{arch|archmap:amd64=x86_64,arm64=arm64}}.tar.gz"
-          strip_components: 1
+          # 实测：归档根目录直接是 lazygit/LICENSE/README.md，**没有**外层目录，
+          # 写 strip_components 会把文件本身剥掉（别的工具如 ripgrep 才需要 1）。
           binary: lazygit
           dest: "~/.local/bin"
       - via: goinstall
@@ -361,7 +362,7 @@ tools:
         params:
           repo: voidint/g
           asset: "g{{version}}.{{os}}-{{arch}}.tar.gz"
-          strip_components: 1
+          # 实测：归档里只有 ./g 一个条目，没有外层目录。
           binary: g
           dest: "~/.local/bin"
       - via: brew
@@ -719,7 +720,7 @@ tools:
         params:
           repo: derailed/k9s
           asset: "k9s_{{os|osmap:linux=Linux,darwin=Darwin}}_{{arch}}.tar.gz"
-          strip_components: 1
+          # 实测：归档根是 k9s/LICENSE/README.md，没有外层目录。
           binary: k9s
           dest: "~/.local/bin"
           checksum_file: checksums.sha256

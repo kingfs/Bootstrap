@@ -246,7 +246,8 @@ params:
   version_source: ""                    # 空/`latest-release`=按最新 tag；可以是固定 tag、
                                         # 也可以是一个 URL（从该 URL 的文本里抓出版本号）
   dest: "~/.local/share/uv"
-  strip_components: 1
+  strip_components: 1                   # 只在归档有外层目录时写！实测：uv/ripgrep/ruff 有，
+                                        # lazygit/k9s/g 没有（根下直接是二进制），写错会把文件剥没
   extract: true                         # 整包解压到 dest（默认只挑出 binary 一个文件）
   binary: uv                            # extract=false 时挑哪个文件
   symlink: {from: ..., to: ...}         # 单个软链

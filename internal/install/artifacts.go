@@ -278,13 +278,22 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 		if err != nil {
 			return fmt.Errorf("extract %s: %w", filepath.Base(local), err)
 		}
+		if len(files) == 0 {
+			// strip_components 写大了会把整个归档"剥"没（归档本身没有外层目录时最常见）。
+			// 这时 dest 会是空的，必须当场说清楚，别让它变成"装了个寂寞"。
+			return fmt.Errorf("extract %s: nothing left after stripping %d path component(s); "+
+				"the archive probably has no wrapping directory", filepath.Base(local), plan.Strip)
+		}
 		if plan.Tree {
 			e.Log().Info("extracted", "tool", a.ToolID, "files", len(files), "dest", plan.Dest)
 			return applySymlink(plan, e)
 		}
 		found, ok := archive.FindBinary(files, plan.Binary)
 		if !ok {
-			return fmt.Errorf("%s 中没有找到可执行文件 %s", filepath.Base(local), plan.Binary)
+			// 把归档里真实存在的顶层条目报出来：清单里 strip_components/binary
+			// 写错时，作者一眼就能看出该怎么改。
+			return fmt.Errorf("%s 中没有找到可执行文件 %s（解出 %d 个文件，顶层：%s）",
+				filepath.Base(local), plan.Binary, len(files), topLevelList(files))
 		}
 		source = found
 	}
@@ -474,6 +483,31 @@ func executableName(name, goos string) string {
 }
 
 // firstLineOf 只取错误的第一行：终端表格与 JSON 里都不需要多行栈式错误。
+// topLevelList 汇总解出来的顶层条目（目录名或文件名），用于错误提示。
+func topLevelList(files []string) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range files {
+		rel := strings.TrimPrefix(filepath.ToSlash(f), "./")
+		name := rel
+		if i := strings.Index(rel, "/"); i >= 0 {
+			name = rel[:i] + "/"
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+		if len(out) == 8 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return "(空)"
+	}
+	return strings.Join(out, ", ")
+}
+
 func firstLineOf(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]

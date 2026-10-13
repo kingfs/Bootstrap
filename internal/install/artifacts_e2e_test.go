@@ -289,3 +289,141 @@ func buildTarGz(t *testing.T, files map[string]tarEntry) []byte {
 	}
 	return buf.Bytes()
 }
+
+// TestReleaseInstallWithoutStripComponents：归档根目录直接放二进制（lazygit/k9s/g 就是这样）
+// 时必须能装成功。曾经这三个清单都误写了 strip_components: 1，把文件本身剥没了——
+// 而这一点直到真的下载安装才会暴露（离线假归档太"规整"，反而测不出来）。
+func TestReleaseInstallWithoutStripComponents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	const (
+		repo  = "acme/flat"
+		tag   = "v0.1.0"
+		asset = "flat_0.1.0_linux_amd64.tar.gz"
+	)
+	// 关键：没有外层目录，条目就是根下的 flat 本身。
+	payload := buildTarGz(t, map[string]tarEntry{
+		"flat":   {Body: "#!/bin/sh\necho flat 0.1.0\n", Mode: 0o755},
+		"README": {Body: "x\n", Mode: 0o644},
+	})
+	sum := sha256.Sum256(payload)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/" + repo + "/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tag})
+		case "/" + repo + "/releases/download/" + tag + "/checksums.txt":
+			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), asset)
+		default:
+			_, _ = w.Write(payload)
+		}
+	}))
+	defer api.Close()
+	oldAPI, oldAsset := ghrelease.APIBaseURL, ghrelease.AssetBaseURL
+	ghrelease.APIBaseURL, ghrelease.AssetBaseURL = api.URL, api.URL
+	defer func() { ghrelease.APIBaseURL, ghrelease.AssetBaseURL = oldAPI, oldAsset }()
+
+	home := t.TempDir()
+	dest := filepath.Join(home, "bin")
+	env := NewOSEnv(OSEnvOptions{
+		Env: map[string]string{"HOME": home}, ExtraPath: []string{dest}, HomeDir: home,
+		GOOS: "linux", Arch: "amd64", Client: httpx.New(30e9, nil), WorkRoot: t.TempDir(),
+	})
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: flat
+    stack: base
+    kind: cli
+    verify: {command: flat, version_args: [--version], version_regex: 'flat (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: release
+        params:
+          repo: acme/flat
+          asset: "flat_{{version}}_{{os}}_{{arch}}.tar.gz"
+          binary: flat
+          dest: `+dest+`
+`)
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	plan, err := eng.PlanTools(context.Background(), []string{"flat"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	report, err := eng.Apply(context.Background(), plan, OpInstall)
+	if err != nil {
+		t.Fatalf("Apply: %v (steps=%+v)", err, report.Steps)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "flat")); err != nil {
+		t.Fatalf("flat 没装上：%v", err)
+	}
+}
+
+// TestReleaseInstallStripTooManyIsLoud：strip_components 写大了必须当场报错，
+// 而不是"解出 0 个文件"然后当作装好了。
+func TestReleaseInstallStripTooManyIsLoud(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	const (
+		repo  = "acme/over"
+		tag   = "v0.2.0"
+		asset = "over_0.2.0_linux_amd64.tar.gz"
+	)
+	payload := buildTarGz(t, map[string]tarEntry{"over": {Body: "#!/bin/sh\n", Mode: 0o755}})
+	sum := sha256.Sum256(payload)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), asset)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/latest") {
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tag})
+			return
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer api.Close()
+	oldAPI, oldAsset := ghrelease.APIBaseURL, ghrelease.AssetBaseURL
+	ghrelease.APIBaseURL, ghrelease.AssetBaseURL = api.URL, api.URL
+	defer func() { ghrelease.APIBaseURL, ghrelease.AssetBaseURL = oldAPI, oldAsset }()
+
+	home := t.TempDir()
+	env := NewOSEnv(OSEnvOptions{
+		Env: map[string]string{"HOME": home}, HomeDir: home,
+		GOOS: "linux", Arch: "amd64", Client: httpx.New(30e9, nil), WorkRoot: t.TempDir(),
+	})
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: over
+    stack: base
+    kind: cli
+    verify: {command: over}
+    install:
+      - via: release
+        params:
+          repo: acme/over
+          asset: "over_{{version}}_{{os}}_{{arch}}.tar.gz"
+          strip_components: 1
+          binary: over
+          dest: `+filepath.Join(home, "bin")+`
+`)
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	plan, err := eng.PlanTools(context.Background(), []string{"over"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	report, _ := eng.Apply(context.Background(), plan, OpInstall)
+	if report.Steps[0].Status == StepDone {
+		t.Fatalf("strip 过大不该算成功：%+v", report.Steps[0])
+	}
+	if !strings.Contains(report.Steps[0].Error, "strip") {
+		t.Errorf("error = %q, want it to mention stripping", report.Steps[0].Error)
+	}
+}
