@@ -861,6 +861,11 @@ type ExecEnv interface {
   缓存写入用 `WriteFileIfChanged`，内容没变就不碰 mtime（"重复 list 不写盘"是可断言的性质）；
 - 缓存文件损坏或过期只当作"没有缓存"，不报错；`ErrNoExecutor` 防止"既没有执行器也没有
   PATH 查找"时静默给出满屏 `missing`。
+- **探测与安装共用同一套查找规则**（`install.OSEnv.LookPath`：进程 PATH + `tool.extra_path`
+  + 清单 `path_dirs` + `~/.local/bin`、`~/bin`、`~/.g/versions/current/bin`）。这不是洁癖：
+  新机器上装进 `~/.local/bin` 的工具在重开 shell 之前不在 PATH 里，若两边规则不一致，
+  "复核"会把自己刚装好的工具判成 missing。也因此探测**用解析出的完整路径执行** `--version`，
+  而不是退回裸命令名。
 
 ### 7.5 执行流水线（`bs tool plan` / `bs tool install`）
 
@@ -1440,9 +1445,16 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 2 | `internal/install/osenv.go`（`NewOSEnv`） | `OSEnvOptions.Versions` 没赋给 `versions` 字段，`ExecEnv.Versions()` 恒为 nil | 补上赋值；`{{versions.*}}` 因此才真正可用 |
 | 3 | `internal/manifest/load.go`（`mergeVerify`） | 合并 `verify` 时忽略 `over.File` | 补上 `File` 覆盖（`disabled` 仍只能置 true） |
 | 4 | `internal/cli/manifest.go` | `bs tool manifest show` 没有非 JSON 分支，不打印却返回 0 | 默认输出规范化 YAML，`--json` 仍出 JSON |
-| 5 | `internal/install/engine.go` | `LogPath` 无调用点，§7.5 承诺的日志没兑现 | 新增 `logEnv` 装饰器，每个工具写 `<state>/logs/<时间>-<工具>.log`，失败时在 Report 里打印路径，`--dry-run` 不写 |
+| 5 | `internal/install/engine.go` | `LogPath` 无调用点，§7.5 承诺的日志没兑现 | 新增 `logEnv` 装饰器，每个工具写 `<state>/logs/<时间>-<工具>.log`（**惰性创建**：纯下载型安装没有命令，就不留空文件），失败时在 Report 里打印路径，`--dry-run` 不写 |
 | 6 | `internal/install/pkgmanagers.go` | 摘要重复动词（`cargo install install fnm`） | 摘要直接用真实命令（`bin + args`） |
 | 7 | `internal/cli/tool.go`（`planHasWork`） | 计划期 `failed` 不算"有活干"，`bs tool install fnm --yes` 打印 failed 后返回 0 | 新增 `failedSteps`：安装/升级/卸载遇到计划期 failed 步骤以退出码 4 结束 |
+
+第二轮（同上，由 `internal/install/artifacts_e2e_test.go` 的离线端到端测试发现）：
+
+| # | 现象 | 修复 |
+|---|---|---|
+| 8 | 探测用 runner 的 PATH 查找、安装用 `extra_path`/`path_dirs`，两边不一致 → 刚装进 `~/.local/bin` 的工具被复核判为 missing | 探测改用 `install.OSEnv` 的查找规则；`extraPathDirs` 与 `bs env path` 同一份来源 |
+| 9 | 探测用 `LookPath` 找到完整路径，执行时却退回裸命令名 → "找得到却执行不了" | 用解析出的路径执行版本探测 |
 
 仍未接线（刻意保留，属 M3）：`ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy`
 四个配置项、`--interactive` 显式开关、`huh` 交互式勾选、自更新。

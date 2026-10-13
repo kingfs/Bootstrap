@@ -157,4 +157,8 @@ make cross     # 交叉编译 6 个平台组合
   等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。
 - 配置里的 `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` 与
   `--interactive` 开关尚未接线（M3 与 `huh` 一起做）。
-- 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（需要网络，不进 `make smoke`）。
+- 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（`make e2e`，需要网络，不进 `make smoke`）；
+  它的离线替身是 `internal/install/artifacts_e2e_test.go`（httptest 冒充 GitHub +
+  真 httpx + 真解压），改 release 路径时优先扩充这条测试。
+- 下载**没有断点续传**：中途断线要从头再来（`httpx.do` 只重试建连阶段），
+  慢网络上限速代理下体验不好。
