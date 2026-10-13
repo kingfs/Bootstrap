@@ -13,6 +13,7 @@ import (
 
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/install"
+	"github.com/kingfs/Bootstrap/internal/manifest"
 )
 
 // toolCmd 是 `bs tool` 的根：清单查询 + 安装/升级/卸载。
@@ -390,6 +391,10 @@ func toolErr(err error) error {
 	var noMethod *install.ErrNoMethod
 	if errors.As(err, &noMethod) {
 		return preconditionErr(err)
+	}
+	var profile *manifest.UnknownProfileError
+	if errors.As(err, &profile) {
+		return usageErr(err)
 	}
 	var notFound *install.ErrMethodNotFound
 	if errors.As(err, &notFound) {

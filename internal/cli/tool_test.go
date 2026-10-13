@@ -672,3 +672,26 @@ func TestInteractiveDetection(t *testing.T) {
 		t.Error("--json 必须强制非交互")
 	}
 }
+
+// TestToolSelectorErrorsAreUsageErrors：写错的 --profile / --via 属于用法错误（退出码 2），
+// 而且即使目标工具已安装、本该跳过，也不能把写错的方式悄悄咽下去。
+func TestToolSelectorErrorsAreUsageErrors(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+
+	code, _, stderr := run(t, rt, "tool", "plan", "--profile", "nosuch")
+	if code != ExitUsage {
+		t.Errorf("unknown profile exit = %d, want %d (stderr=%s)", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("stderr = %s", stderr)
+	}
+
+	// g 在沙箱里是"已安装"（假命令存在），但没有声明 via=release 之外的任何方式。
+	code, _, stderr = run(t, rt, "tool", "install", "g", "--via", "nosuch", "--yes")
+	if code != ExitUsage {
+		t.Errorf("unknown via exit = %d, want %d (stderr=%s)", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "no method via=nosuch") {
+		t.Errorf("stderr = %s", stderr)
+	}
+}

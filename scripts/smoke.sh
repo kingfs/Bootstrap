@@ -226,6 +226,21 @@ assert_not_contains "搜索结果排除无关条目" "tmux" "$out"
 out="$("$BIN" tool plan --profile golang --dry-run 2>&1)"
 assert_contains "计划包含 go 版本管理器 g" "g" "$out"
 assert_contains "计划说明不会执行" "只展示计划" "$out"
+
+# 选择条件写错必须是用法错误（退出码 2），而不是含含糊糊的 1
+# （set -e 下必须先吞掉非 0 状态，否则脚本自己就退出了）
+code=0; out="$("$BIN" tool plan --profile nosuch 2>&1)" || code=$?
+assert_eq "未知 profile 退出码 2" "2" "$code"
+assert_contains "未知 profile 提示可用值" "not found" "$out"
+
+# manifest show 不带 --json 也要有输出（曾静默返回 0）
+out="$("$BIN" tool manifest show git 2>&1)"
+assert_contains "manifest show 默认输出 YAML" "id: git" "$out"
+
+# 方法链全不可用时，install 不能返回 0（fnm 只有 brew/cargo/release，沙箱里都没装）
+code=0; out="$(env PATH=/usr/bin:/bin "$BIN" tool install fnm --yes 2>&1)" || code=$?
+assert_eq "方法链全不可用退出码 4" "4" "$code"
+assert_contains "方法链全不可用给出原因" "no usable install method" "$out"
 assert_missing "计划不创建安装目标" "$WORK/home/.local/bin/g"
 assert_missing "计划不创建 go install 目录" "$WORK/home/go"
 out="$("$BIN" tool install --profile golang --dry-run 2>&1)"

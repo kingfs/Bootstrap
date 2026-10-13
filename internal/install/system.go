@@ -130,16 +130,17 @@ func (s *systemInstaller) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m 
 		update := Command{Name: spec.bin, Args: append([]string{}, spec.update...)}
 		commands = append(commands, rootCommand(update, needsRootParam(m.Params.NeedsRoot, spec.root), e))
 	}
-	main := Command{Name: spec.bin, Args: args}
-	main = rootCommand(main, needsRootParam(m.Params.NeedsRoot, spec.root), e)
-	commands = append(commands, main)
+	// plain 是不带 sudo 的形态：摘要按**实际动作**生成（卸载要显示 remove，
+	// 不能永远显示 install 的 label），但 sudo 只在 JSON/-v 里可见（§16）。
+	plain := Command{Name: spec.bin, Args: args}
+	commands = append(commands, rootCommand(plain, needsRootParam(m.Params.NeedsRoot, spec.root), e))
 
 	return Action{
 		ToolID: t.ID, Via: m.Via, Op: op,
 		Commands:  commands,
 		NeedsRoot: needsRootParam(m.Params.NeedsRoot, spec.root) && !e.IsRoot(),
 		Network:   true,
-		Summary:   spec.label + " " + strings.Join(targets, " "),
+		Summary:   plain.String(),
 		Reason:    fmt.Sprintf("via=%s（系统包管理器）", m.Via),
 	}, nil
 }

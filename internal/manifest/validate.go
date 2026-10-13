@@ -292,9 +292,19 @@ func (l *Loaded) ResolveProfile(name string) ([]string, error) {
 	}
 	ids, ok := all[name]
 	if !ok {
-		return nil, fmt.Errorf("profile %q not found (available: %s)", name, strings.Join(l.ProfileNames(), ", "))
+		return nil, &UnknownProfileError{Name: name, Known: l.ProfileNames()}
 	}
 	return ids, nil
+}
+
+// UnknownProfileError 表示请求的 profile 不在清单里（属于用法错误，退出码 2）。
+type UnknownProfileError struct {
+	Name  string
+	Known []string
+}
+
+func (e *UnknownProfileError) Error() string {
+	return fmt.Sprintf("profile %q not found (available: %s)", e.Name, strings.Join(e.Known, ", "))
 }
 
 func stackList() string {

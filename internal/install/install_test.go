@@ -708,3 +708,43 @@ func TestValidateParams(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestSystemUninstallSummaryUsesRemove：摘要要反映实际动作——
+// 卸载 apt 包必须显示 remove，而不是永远显示 install 的 label。
+func TestSystemUninstallSummaryUsesRemove(t *testing.T) {
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: jq
+    stack: base
+    kind: cli
+    verify: {command: jq}
+    install:
+      - via: apt
+        params: {packages: [jq], allow_system: true}
+`)
+	env := newFakeEnv(t).has("apt-get")
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	tool, _ := loaded.ByID("jq")
+	method := tool.Install[0]
+
+	for _, tc := range []struct {
+		op   Op
+		want string
+	}{{OpInstall, "apt-get install -y jq"}, {OpUninstall, "apt-get remove -y jq"}} {
+		in, ok := eng.Registry().Get("apt")
+		if !ok {
+			t.Fatal("apt installer missing")
+		}
+		action, err := in.Plan(context.Background(), env, tool, method, tc.op)
+		if err != nil {
+			t.Fatalf("%v: %v", tc.op, err)
+		}
+		if action.Summary != tc.want {
+			t.Errorf("%v summary = %q, want %q", tc.op, action.Summary, tc.want)
+		}
+	}
+}

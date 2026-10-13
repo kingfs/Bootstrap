@@ -172,6 +172,22 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 	}
 	plan := Plan{DryRun: e.env.DryRun()}
 
+	// 显式 --via 先按清单校验一遍：`bs tool install git --via nosuch` 不能因为
+	// git 已安装、该步被跳过就悄悄返回 0——用户显然是想指定某种安装方式。
+	if e.opt.DefaultVia != "" {
+		for _, t := range tools {
+			if !explicit[t.ID] {
+				continue
+			}
+			methods := methodsForOp(t, op)
+			if !DeclaresVia(methods, e.opt.DefaultVia) {
+				return Plan{}, &ErrMethodNotFound{
+					ToolID: t.ID, Via: e.opt.DefaultVia, Known: DeclaredVias(methods),
+				}
+			}
+		}
+	}
+
 	// Preflight：依赖是否齐备（依赖不在本次集合里时，按"未安装"处理并提示）。
 	missingDeps := map[string]bool{}
 	for _, t := range tools {

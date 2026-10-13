@@ -158,15 +158,7 @@ func ResolveChain(ctx context.Context, reg *Registry, e ExecEnv, t manifest.Tool
 			chain.Selected = i
 			return chain, nil
 		}
-		var known []string
-		seen := map[string]bool{}
-		for _, cand := range chain.Candidates {
-			if !seen[cand.Via] {
-				seen[cand.Via] = true
-				known = append(known, cand.Via)
-			}
-		}
-		return chain, &ErrMethodNotFound{ToolID: tool.ID, Via: opt.Via, Known: known}
+		return chain, &ErrMethodNotFound{ToolID: tool.ID, Via: opt.Via, Known: ChainVias(chain)}
 	}
 
 	for i, cand := range chain.Candidates {
@@ -257,4 +249,40 @@ func viaString(m manifest.Method) string {
 		return "manager:" + m.Params.Manager
 	}
 	return strings.TrimSpace(m.Via)
+}
+
+// ChainVias 按顺序列出链上出现过的 via（去重），用于错误提示。
+func ChainVias(chain Chain) []string {
+	var known []string
+	seen := map[string]bool{}
+	for _, cand := range chain.Candidates {
+		if !seen[cand.Via] {
+			seen[cand.Via] = true
+			known = append(known, cand.Via)
+		}
+	}
+	return known
+}
+
+// DeclaredVias 按顺序列出方法链里声明过的 via（去重），不看可用性。
+func DeclaredVias(methods []manifest.Method) []string {
+	var known []string
+	seen := map[string]bool{}
+	for _, m := range methods {
+		if !seen[m.Via] {
+			seen[m.Via] = true
+			known = append(known, m.Via)
+		}
+	}
+	return known
+}
+
+// DeclaresVia 报告方法链里是否声明了某个 via。
+func DeclaresVia(methods []manifest.Method, via string) bool {
+	for _, m := range methods {
+		if m.Via == via {
+			return true
+		}
+	}
+	return false
 }
