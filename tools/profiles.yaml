@@ -1,9 +1,69 @@
 # 工具套装定义：bs tool install --profile <name>
 #
-# M2 阶段填充；首批目标为 base / golang / nodejs / python（linux + darwin）。
+# 这里只放**跨平台**的套装；带平台差异的套装（cpp/containers/full）定义在
+# tools/linux.yaml 与 tools/darwin.yaml 里——因为"cpp 要装哪些包"在两边不同，
+# 用 when 硬凑会把清单写成一团浆糊。
+#
+# 加载顺序是 common → <goos> → profiles，同名 profile 后加载的整体替换（§6.3），
+# 所以不要把同名 profile 分散写在这两个地方。
+
 version: 1
+
 profiles:
-  base: []
-  golang: []
-  nodejs: []
-  python: []
+  base:
+    description: 基础 CLI 与日常工具（新机器第一件事）
+    tools:
+      - git
+      - jq
+      - ripgrep
+      - fzf
+      - zoxide
+      - btop
+      - tmux
+      - htop
+      - duf
+      - tree
+      - ncdu
+      - direnv
+      - shellcheck
+      - git-delta
+      - neovim
+      - lazygit
+      - httpie
+
+  golang:
+    description: Go 工具链与开发工具
+    extends: [base]
+    tools: [g, golang, gopls, dlv, staticcheck]
+
+  nodejs:
+    description: Node.js 工具链
+    extends: [base]
+    tools: [fnm, nodejs, pnpm, bun]
+
+  python:
+    description: Python 工具链
+    extends: [base]
+    tools: [uv, python, pipx, ruff]
+
+  rust:
+    description: Rust 工具链
+    tools: [rustup, rust]
+
+  editor:
+    description: 编辑器
+    tools: [neovim]
+
+  infra:
+    description: 集群/基础设施工具
+    tools: [k9s]
+
+  agent:
+    description: AI 编码 CLI
+    tools: [claude-code, codex]
+
+  # 单独一个"版本管理器全套"：想改 managers.<stack> 配置的人先用它把
+  # 所有管理器都装上，再按配置切换（§6.2 的"清单无需分叉"）。
+  managers:
+    description: 全部版本管理器
+    tools: [g, fnm, nvm, uv, rustup, mise]

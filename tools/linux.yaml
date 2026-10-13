@@ -1,3 +1,193 @@
 # Linux 专属工具清单（含发行版差异，通过 when.distro 区分）
+#
+# 这里只放"只有 Linux 才装"的东西。跨平台条目都在 common.yaml，
+# 它们用 when.os / when.distro 表达差异，因此不需要在两边重复。
+#
+# 编译工具链刻意走发行版包（apt/dnf/pacman）：
+#   1. 发行版包之间有 ABI 依赖（libstdc++、glibc 版本），自己编一套更容易踩坑；
+#   2. 这些包都带签名校验，符合 AGENTS.md §8.3；
+#   3. 只在用户目录装东西的原则对"编译工具链"不适用——它本来就该是系统级的。
+
 version: 1
-tools: []
+
+tools:
+  # ─────────────────────── C/C++ 工具链 ───────────────────────
+
+  - id: gcc
+    name: GCC
+    stack: cpp
+    kind: devdep
+    description: C/C++ 编译器（Ubuntu 的 build-essential 元包）
+    when: {os: [linux]}
+    verify: {command: gcc, version_args: [--version], version_regex: 'gcc .* (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [build-essential]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: ["@development-tools"]}
+      - via: pacman
+        when: {distro: [arch, manjaro]}
+        params: {packages: [base-devel]}
+
+  - id: cmake
+    name: CMake
+    stack: cpp
+    kind: devdep
+    description: 跨平台构建系统
+    when: {os: [linux]}
+    verify: {command: cmake, version_args: [--version], version_regex: 'cmake version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [cmake]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [cmake]}
+      - via: pacman
+        when: {distro: [arch, manjaro]}
+        params: {packages: [cmake]}
+
+  - id: ninja
+    name: Ninja
+    stack: cpp
+    kind: devdep
+    description: 小而快的构建后端
+    when: {os: [linux]}
+    verify: {command: ninja, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [ninja-build]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [ninja-build]}
+      - via: pacman
+        when: {distro: [arch, manjaro]}
+        params: {packages: [ninja]}
+
+  - id: pkg-config
+    name: pkg-config
+    stack: cpp
+    kind: devdep
+    description: 库的编译/链接参数查询
+    when: {os: [linux]}
+    verify: {command: pkg-config, version_args: [--version], version_regex: '(?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [pkg-config]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [pkgconf-pkg-config]}
+      - via: pacman
+        when: {distro: [arch, manjaro]}
+        params: {packages: [pkgconf]}
+
+  - id: autoconf
+    name: Autoconf
+    stack: cpp
+    kind: devdep
+    description: configure 脚本生成器（源码编译传统项目时用）
+    when: {os: [linux]}
+    verify: {command: autoconf, version_args: [--version], version_regex: 'autoconf .* (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [autoconf]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [autoconf]}
+
+  - id: clang
+    name: Clang
+    stack: cpp
+    kind: devdep
+    description: LLVM C/C++ 编译器
+    when: {os: [linux]}
+    verify: {command: clang, version_args: [--version], version_regex: 'clang version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [clang]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [clang]}
+
+  - id: gdb
+    name: GDB
+    stack: cpp
+    kind: devdep
+    description: GNU 调试器
+    when: {os: [linux]}
+    verify: {command: gdb, version_args: [--version], version_regex: 'GNU gdb .* (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [gdb]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [gdb]}
+
+  - id: lldb
+    name: LLDB
+    stack: cpp
+    kind: devdep
+    description: LLVM 调试器
+    when: {os: [linux]}
+    verify: {command: lldb, version_args: [--version], version_regex: 'lldb version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [lldb]}
+
+  # ─────────────────────── 其它 Linux 常用项 ───────────────────────
+
+  - id: zsh
+    name: Zsh
+    stack: shell
+    kind: cli
+    description: 交互式 shell（bs shell install 支持 bash/zsh/fish）
+    when: {os: [linux]}
+    verify: {command: zsh, version_args: [--version], version_regex: 'zsh (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [zsh]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [zsh]}
+      - via: pacman
+        when: {distro: [arch, manjaro]}
+        params: {packages: [zsh]}
+
+  - id: rsync
+    name: rsync
+    stack: base
+    kind: cli
+    description: 增量同步（备份脚本常用）
+    when: {os: [linux]}
+    verify: {command: rsync, version_args: [--version], version_regex: 'version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: apt
+        when: {distro: [ubuntu, debian]}
+        params: {packages: [rsync]}
+      - via: dnf
+        when: {distro: [fedora, rhel, centos]}
+        params: {packages: [rsync]}
+      - via: pacman
+        when: {distro: [arch, manjaro]}
+        params: {packages: [rsync]}
+
+profiles:
+  # Linux 独有的成套定义：跨平台的 base/golang/... 在 profiles.yaml 里。
+  cpp:
+    description: C/C++ 工具链（发行版包）
+    tools: [gcc, cmake, ninja, pkg-config, autoconf, clang, gdb, lldb]
+  containers:
+    description: 容器运行时
+    tools: [docker]
+  full:
+    description: 这台机器上"该有都有"（Linux）
+    extends: [base, golang, nodejs, python, rust, cpp, containers, infra, agent]

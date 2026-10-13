@@ -1,3 +1,105 @@
 # macOS 专属工具清单
+#
+# 与 linux.yaml 同样的分工：只放 macOS 独有的东西。
+#
+# 两点 macOS 特性：
+#  1. `/usr/bin/clang` 来自 Xcode Command Line Tools，**不在**这份清单里管理
+#     （它由 `xcode-select --install` 提供，属于系统引导步骤，见 docs/setup-macos.md）。
+#     需要编译器时先手动跑一次那条命令，再来 `bs tool install --profile cpp`。
+#  2. GUI 应用用 brew cask，并且用 verify.file 判断装没装（cask 装的 .app
+#     没有可执行的命令行入口，只能看 /Applications 下的产物在不在）。
+
 version: 1
-tools: []
+
+tools:
+  # ─────────────────────── GUI / 字体（cask） ───────────────────────
+
+  - id: iterm2
+    name: iTerm2
+    stack: base
+    kind: gui
+    description: macOS 终端（cask）
+    homepage: https://iterm2.com
+    when: {os: [darwin]}
+    verify: {file: "/Applications/iTerm.app"}
+    install:
+      - via: brew
+        params: {cask: iterm2}
+
+  - id: nerd-font-hack
+    name: Hack Nerd Font
+    stack: base
+    kind: gui
+    description: 终端/编辑器图标字体（cask）
+    homepage: https://www.nerdfonts.com
+    when: {os: [darwin]}
+    verify: {file: "~/Library/Fonts/HackNerdFont-Regular.ttf"}
+    install:
+      - via: brew
+        params: {cask: font-hack-nerd-font}
+
+  # ─────────────────────── 构建工具（brew 版） ───────────────────────
+
+  - id: cmake
+    name: CMake
+    stack: cpp
+    kind: devdep
+    description: 跨平台构建系统
+    when: {os: [darwin]}
+    verify: {command: cmake, version_args: [--version], version_regex: 'cmake version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        params: {formula: cmake}
+
+  - id: ninja
+    name: Ninja
+    stack: cpp
+    kind: devdep
+    description: 小而快的构建后端
+    when: {os: [darwin]}
+    verify: {command: ninja, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        params: {formula: ninja}
+
+  - id: pkg-config
+    name: pkg-config
+    stack: cpp
+    kind: devdep
+    description: 库的编译/链接参数查询
+    when: {os: [darwin]}
+    verify: {command: pkg-config, version_args: [--version], version_regex: '(?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: brew
+        params: {formula: pkgconf}
+
+  - id: lldb
+    name: LLDB
+    stack: cpp
+    kind: devdep
+    description: LLVM 调试器（随 Xcode CLT 提供）
+    when: {os: [darwin]}
+    verify: {command: lldb, version_args: [--version], version_regex: 'lldb version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        params: {formula: llvm}
+
+  - id: rsync
+    name: rsync
+    stack: base
+    kind: cli
+    description: 增量同步（macOS 自带 2.6.9 太老，用 brew 的新版）
+    when: {os: [darwin]}
+    verify: {command: rsync, version_args: [--version], version_regex: 'version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        params: {formula: rsync}
+
+profiles:
+  # macOS 独有的成套定义（cpp 少了 gcc/gdb：那两个是 Linux 侧的发行版包）。
+  cpp:
+    description: 编译工具（编译器来自 Xcode Command Line Tools）
+    tools: [cmake, ninja, pkg-config, lldb]
+  full:
+    description: 这台机器上"该有都有"（macOS）
+    extends: [base, golang, nodejs, python, rust, cpp, agent]

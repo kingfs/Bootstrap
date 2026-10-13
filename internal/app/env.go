@@ -52,16 +52,10 @@ func (a *App) PathEntries() []PathEntry {
 		if t.Disabled {
 			continue
 		}
-		for _, provide := range t.Provides {
-			p := fsx.ExpandPath(provide, a.Paths.HomeDir)
-			if p == "" {
-				continue
-			}
-			// provides 可能写成具体文件（~/.local/bin/g）或目录本身。
-			if filepath.Ext(p) != "" && !dirExists(p) {
-				p = filepath.Dir(p)
-			}
-			add(p, "tool.provides("+t.ID+")")
+		// 只认清单里显式写出的 path_dirs：provides 可能是文件（nvm.sh），
+		// 靠猜"这是文件还是目录"迟早会猜错。
+		for _, dir := range t.PathDirs {
+			add(fsx.ExpandPath(dir, a.Paths.HomeDir), "tool.path_dirs("+t.ID+")")
 		}
 	}
 	return out

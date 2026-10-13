@@ -75,11 +75,13 @@ func manifestViews(loaded *manifest.Loaded) []ManifestSourceView {
 }
 
 func (rt *Runtime) manifestValidateCmd() *cobra.Command {
-	return &cobra.Command{
+	var goos string
+	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "校验清单（重复 id、未知 via、参数缺失、模板拼写、依赖环）",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			rt.app().GOOSOverride = goos
 			loaded, err := rt.app().ValidateManifest()
 			if err != nil {
 				if loaded == nil {
@@ -97,6 +99,8 @@ func (rt *Runtime) manifestValidateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&goos, "os", "", "按指定系统加载清单（linux/darwin/windows），用于跨平台校验")
+	return cmd
 }
 
 func (rt *Runtime) manifestShowCmd() *cobra.Command {

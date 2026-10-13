@@ -1,6 +1,762 @@
 # 跨平台公共工具清单（随二进制发布，ADR-0002）
 #
 # 字段参考：docs/tool-schema.md
-# M2 阶段填充具体工具；此处先固定文件结构，保证 go:embed 与加载器稳定。
+#
+# 约定（每条都是踩过坑之后定下来的）：
+#  1. 方法按"清单书写顺序"选第一个可用的，所以顺序就是偏好：
+#     不用 sudo 的 → 系统包管理器 → 源码编译。版本管理器（g/fnm/...）例外，
+#     它们是 runtime 条目的唯一落地目标（ADR-0005）。
+#  2. `via: release` 只在**该仓库确实发布校验和**时才用（AGENTS.md §8.3）。
+#     实测：voidint/g 用 sha256sum.txt、lazygit 用 checksums.txt、
+#     uv/ruff/ripgrep 每个产物配 `<asset>.sha256`。没有校验和的仓库
+#     （fnm、bat、fzf 的 tar 包）坚决不用 release，宁可走管理器。
+#  3. 工具装在用户目录（~/.local/bin、~/.cargo/bin），不静默 sudo；
+#     只有 kind=cli/devdep/service 允许回落到 apt/dnf/pacman。
+#  4. Windows 首批清单暂不覆盖（ADR-0014），因此 when 里普遍写 linux/darwin。
+
 version: 1
-tools: []
+
+tools:
+  # ─────────────────────────── 基础 CLI ───────────────────────────
+
+  - id: git
+    name: Git
+    stack: base
+    kind: cli
+    description: 版本控制（bs repo 也依赖它）
+    homepage: https://git-scm.com
+    verify: {command: git, version_args: [--version], version_regex: 'git version (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: git}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [git]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [git]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [git]}
+
+  - id: jq
+    name: jq
+    stack: base
+    kind: cli
+    description: JSON 命令行处理器
+    homepage: https://jqlang.github.io/jq/
+    verify: {command: jq, version_args: [--version], version_regex: 'jq-(?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: jq}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [jq]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [jq]}
+
+  - id: ripgrep
+    name: ripgrep
+    stack: base
+    kind: cli
+    description: 更快的 grep（rg）
+    homepage: https://github.com/BurntSushi/ripgrep
+    path_dirs: ["~/.local/bin"]
+    verify: {command: rg, version_args: [--version], version_regex: 'ripgrep (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: ripgrep}
+      # 官方 release 每个产物都带 <asset>.sha256，因此可以直接下最新版
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: BurntSushi/ripgrep
+          asset: "ripgrep-{{version}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}-{{os|osmap:linux=unknown-linux-musl,darwin=apple-darwin}}.tar.gz"
+          strip_components: 1
+          binary: rg
+          dest: "~/.local/bin"
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [ripgrep]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [ripgrep]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [ripgrep]}
+
+  - id: fzf
+    name: fzf
+    stack: base
+    kind: cli
+    description: 模糊查找（shell 里最有用的一个）
+    homepage: https://github.com/junegunn/fzf
+    verify: {command: fzf, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: fzf}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [fzf]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [fzf]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [fzf]}
+
+  - id: zoxide
+    name: zoxide
+    stack: base
+    kind: cli
+    description: 会学习的 cd
+    homepage: https://github.com/ajeetdsouza/zoxide
+    verify: {command: zoxide, version_args: [--version], version_regex: 'zoxide (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: zoxide}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [zoxide]}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: zoxide}
+
+  - id: btop
+    name: btop
+    stack: base
+    kind: cli
+    description: 资源监控 TUI
+    homepage: https://github.com/aristocratos/btop
+    verify: {command: btop, version_args: [--version], version_regex: 'btop version:? (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: btop}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [btop]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [btop]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [btop]}
+
+  - id: tmux
+    name: tmux
+    stack: base
+    kind: cli
+    description: 终端复用器
+    homepage: https://github.com/tmux/tmux
+    verify: {command: tmux, version_args: [-V], version_regex: 'tmux (?P<v>\d+\.\d+[a-z]?)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: tmux}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [tmux]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [tmux]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [tmux]}
+
+  - id: htop
+    name: htop
+    stack: base
+    kind: cli
+    description: 交互式进程查看器
+    homepage: https://htop.dev
+    verify: {command: htop, version_args: [--version], version_regex: 'htop (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: htop}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [htop]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [htop]}
+
+  - id: duf
+    name: duf
+    stack: base
+    kind: cli
+    description: 更好看的 df
+    homepage: https://github.com/muesli/duf
+    verify: {command: duf, version_args: [--version], version_regex: 'duf (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: duf}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [duf]}
+
+  - id: tree
+    name: tree
+    stack: base
+    kind: cli
+    description: 目录树展示
+    verify: {command: tree, version_args: [--version], version_regex: 'tree v?(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: tree}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [tree]}
+
+  - id: ncdu
+    name: ncdu
+    stack: base
+    kind: cli
+    description: 磁盘占用分析（交互式）
+    verify: {command: ncdu, version_args: [--version], version_regex: 'ncdu (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: ncdu}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [ncdu]}
+
+  - id: direnv
+    name: direnv
+    stack: base
+    kind: cli
+    description: 按目录自动切换环境变量
+    homepage: https://direnv.net
+    verify: {command: direnv, version_args: [version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: direnv}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [direnv]}
+
+  - id: shellcheck
+    name: shellcheck
+    stack: shell
+    kind: devdep
+    description: shell 脚本静态检查
+    homepage: https://www.shellcheck.net
+    verify: {command: shellcheck, version_args: [--version], version_regex: 'version: (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: shellcheck}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [shellcheck]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [ShellCheck]}
+
+  - id: git-delta
+    name: delta
+    stack: base
+    kind: cli
+    description: git diff 的美化分页器
+    homepage: https://github.com/dandavison/delta
+    verify: {command: delta, version_args: [--version], version_regex: 'delta (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: git-delta}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [git-delta]}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: git-delta}
+
+  - id: neovim
+    name: Neovim
+    stack: editor
+    kind: cli
+    description: 编辑器
+    homepage: https://neovim.io
+    verify: {command: nvim, version_args: [--version], version_regex: 'NVIM v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: neovim}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [neovim]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [neovim]}
+
+  - id: lazygit
+    name: lazygit
+    stack: base
+    kind: cli
+    description: git 的 TUI
+    homepage: https://github.com/jesseduffield/lazygit
+    path_dirs: ["~/.local/bin"]
+    verify: {command: lazygit, version_args: [--version], version_regex: 'version=(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: lazygit}
+      # 官方 release 带 checksums.txt（goreleaser 默认）
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: jesseduffield/lazygit
+          asset: "lazygit_{{version}}_{{os}}_{{arch|archmap:amd64=x86_64,arm64=arm64}}.tar.gz"
+          strip_components: 1
+          binary: lazygit
+          dest: "~/.local/bin"
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: github.com/jesseduffield/lazygit@latest}
+
+  - id: httpie
+    name: HTTPie
+    stack: base
+    kind: cli
+    description: 人友好的 HTTP 客户端
+    homepage: https://httpie.io
+    verify: {command: http, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: httpie}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [httpie]}
+      - via: pipx
+        when: {has: [pipx]}
+        params: {package: httpie}
+
+  # ─────────────────────── 版本管理器（先装它们） ───────────────────────
+
+  - id: g
+    name: g (Go version manager)
+    stack: golang
+    kind: versionmgr
+    description: Go 多版本管理器（golang 条目由它落地）
+    homepage: https://github.com/voidint/g
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: g, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      # 官方 release 用 sha256sum.txt（不是 goreleaser 默认的 checksums.txt）
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: voidint/g
+          asset: "g{{version}}.{{os}}-{{arch}}.tar.gz"
+          strip_components: 1
+          binary: g
+          dest: "~/.local/bin"
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: g}
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: github.com/voidint/g@latest}
+
+  - id: fnm
+    name: fnm (Fast Node Manager)
+    stack: nodejs
+    kind: versionmgr
+    description: Node.js 多版本管理器
+    homepage: https://github.com/Schniz/fnm
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: fnm, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: fnm}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: fnm}
+      # fnm 的 release 只有 zip、没有校验和文件，因此默认关闭；
+      # 想用官方二进制就补上 params.sha256（见 docs/tool-schema.md）。
+      - via: release
+        enabled: false
+        when: {os: [linux]}
+        params:
+          repo: Schniz/fnm
+          asset: "fnm-linux.zip"
+          binary: fnm
+          dest: "~/.local/bin"
+
+  - id: nvm
+    name: nvm
+    stack: nodejs
+    kind: versionmgr
+    description: Node.js 版本管理器（shell 函数型；装上后需重开 shell）
+    homepage: https://github.com/nvm-sh/nvm
+    when: {os: [linux, darwin]}
+    provides: ["~/.nvm/nvm.sh"]
+    verify: {file: "~/.nvm/nvm.sh"}
+    install:
+      # 仓库即安装物：按 tag 克隆到 ~/.nvm（git 自身保证完整性）
+      - via: source
+        when: {os: [linux, darwin]}
+        params: {repo: nvm-sh/nvm, ref: v0.40.8, dest: "~/.nvm"}
+
+  - id: uv
+    name: uv
+    stack: python
+    kind: versionmgr
+    description: 极快的 Python 包/版本管理器（uv + uvx）
+    homepage: https://github.com/astral-sh/uv
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: uv, version_args: [--version], version_regex: 'uv (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: uv}
+      # 每个产物都有 <asset>.sha256
+      - via: release
+        when: {os: [linux], arch: [amd64, arm64]}
+        params:
+          repo: astral-sh/uv
+          asset: "uv-{{arch|archmap:amd64=x86_64,arm64=aarch64}}-unknown-linux-gnu.tar.gz"
+          strip_components: 1
+          extract: true
+          dest: "~/.local/share/uv"
+          symlinks:
+            - {from: "~/.local/share/uv/uv", to: "~/.local/bin/uv"}
+            - {from: "~/.local/share/uv/uvx", to: "~/.local/bin/uvx"}
+      - via: release
+        when: {os: [darwin], arch: [amd64, arm64]}
+        params:
+          repo: astral-sh/uv
+          asset: "uv-{{arch|archmap:amd64=x86_64,arm64=aarch64}}-apple-darwin.tar.gz"
+          strip_components: 1
+          extract: true
+          dest: "~/.local/share/uv"
+          symlinks:
+            - {from: "~/.local/share/uv/uv", to: "~/.local/bin/uv"}
+            - {from: "~/.local/share/uv/uvx", to: "~/.local/bin/uvx"}
+
+  - id: rustup
+    name: rustup
+    stack: rust
+    kind: versionmgr
+    description: Rust 工具链管理器
+    homepage: https://rustup.rs
+    when: {os: [linux, darwin]}
+    verify: {command: rustup, version_args: [--version], version_regex: 'rustup (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: rustup}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [rustup], allow_system: true}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [rustup], allow_system: true}
+
+  - id: mise
+    name: mise
+    stack: base
+    kind: versionmgr
+    description: 通用版本管理器（可同时管 go/node/python/rust）
+    homepage: https://mise.jdx.dev
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: mise, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: mise}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: mise}
+
+  # ───────────────────────── 运行时（交给管理器） ─────────────────────────
+
+  - id: golang
+    name: Go
+    stack: golang
+    kind: runtime
+    description: Go 工具链（由 g 管理）
+    homepage: https://go.dev/dl/
+    when: {os: [linux, darwin]}
+    depends_on: [g]
+    verify:
+      command: go
+      version_args: [version]
+      version_regex: 'go version go(?P<v>\d+\.\d+(?:\.\d+)?)'
+      min_version: "1.22"
+    install:
+      - via: manager
+        params: {action: install, version: "{{versions.golang}}"}
+      - via: manager
+        when: {has: [mise]}
+        params: {manager: mise, action: use, version: "go@{{versions.golang}}", global: true}
+      # 全新机器上连 g 都没有时的引导路径：先装发行版自带的 go，
+      # 之后 `bs tool install g` 就能走 goinstall。需要 sudo，故显式放行。
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [golang-go], allow_system: true}
+
+  - id: nodejs
+    name: Node.js
+    stack: nodejs
+    kind: runtime
+    description: Node.js（由 fnm/nvm 管理）
+    homepage: https://nodejs.org
+    when: {os: [linux, darwin]}
+    depends_on: [fnm]
+    verify: {command: node, version_args: [--version], version_regex: 'v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: manager
+        params: {action: install, version: "{{versions.nodejs}}"}
+      # 配置里把 nodejs 的管理器换成 nvm 时，depends_on 与这里都会自动跟着换
+      - via: manager
+        when: {has: [nvm]}
+        params: {manager: nvm, action: install, version: "{{versions.nodejs}}", source: "~/.nvm/nvm.sh"}
+
+  - id: python
+    name: Python
+    stack: python
+    kind: runtime
+    description: Python（由 uv 管理）
+    homepage: https://www.python.org
+    when: {os: [linux, darwin]}
+    depends_on: [uv]
+    verify: {command: python3, version_args: [--version], version_regex: 'Python (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: manager
+        params: {action: install, version: "{{versions.python}}"}
+
+  - id: rust
+    name: Rust toolchain
+    stack: rust
+    kind: runtime
+    description: rustc + cargo（由 rustup 管理）
+    homepage: https://www.rust-lang.org
+    when: {os: [linux, darwin]}
+    depends_on: [rustup]
+    path_dirs: ["~/.cargo/bin"]
+    verify: {command: cargo, version_args: [--version], version_regex: 'cargo (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: manager
+        params: {action: install, version: "{{versions.rust}}"}
+
+  # ─────────────────────── 包管理器 / 生态工具 ───────────────────────
+
+  - id: pnpm
+    name: pnpm
+    stack: nodejs
+    kind: pkgmgr
+    description: 节省磁盘的 Node 包管理器
+    homepage: https://pnpm.io
+    verify: {command: pnpm, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: pnpm}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: pnpm, global: true}
+
+  - id: bun
+    name: Bun
+    stack: nodejs
+    kind: pkgmgr
+    description: JS/TS 运行时与包管理器
+    homepage: https://bun.sh
+    path_dirs: ["~/.local/bin"]
+    verify: {command: bun, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: bun}
+      # Bun 的 release 里有 SHASUMS256.txt
+      - via: release
+        when: {os: [linux], arch: [amd64, arm64]}
+        params:
+          repo: oven-sh/bun
+          asset: "bun-linux-{{arch|archmap:amd64=x64,arm64=aarch64}}.zip"
+          binary: bun
+          dest: "~/.local/bin"
+          checksum_file: SHASUMS256.txt
+
+  - id: ruff
+    name: Ruff
+    stack: python
+    kind: devdep
+    description: 极快的 Python linter/formatter
+    homepage: https://github.com/astral-sh/ruff
+    path_dirs: ["~/.local/bin"]
+    verify: {command: ruff, version_args: [--version], version_regex: 'ruff (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: ruff}
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: astral-sh/ruff
+          asset: "ruff-{{arch|archmap:amd64=x86_64,arm64=aarch64}}-{{os|osmap:linux=unknown-linux-musl,darwin=apple-darwin}}.tar.gz"
+          strip_components: 1
+          binary: ruff
+          dest: "~/.local/bin"
+      - via: uvpm
+        when: {has: [uv]}
+        params: {package: ruff}
+      - via: pipx
+        when: {has: [pipx]}
+        params: {package: ruff}
+
+  - id: pipx
+    name: pipx
+    stack: python
+    kind: pkgmgr
+    description: 把 Python CLI 装进独立虚拟环境
+    homepage: https://pipx.pypa.io
+    verify: {command: pipx, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: pipx}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [pipx], allow_system: true}
+
+  # ───────────────────── Go 生态开发工具（goinstall） ─────────────────────
+
+  - id: gopls
+    name: gopls
+    stack: golang
+    kind: devdep
+    description: Go 官方语言服务器
+    homepage: https://pkg.go.dev/golang.org/x/tools/gopls
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/go/bin"]
+    verify: {command: gopls, version_args: [version], version_regex: 'golang\.org/x/tools/gopls v?(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: golang.org/x/tools/gopls@latest}
+
+  - id: dlv
+    name: Delve
+    stack: golang
+    kind: devdep
+    description: Go 调试器
+    homepage: https://github.com/go-delve/delve
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/go/bin"]
+    verify: {command: dlv, version_args: [version], version_regex: '[Dd]elve [Dd]ebugger v?(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: github.com/go-delve/delve/cmd/dlv@latest}
+
+  - id: staticcheck
+    name: staticcheck
+    stack: golang
+    kind: devdep
+    description: Go 静态分析
+    homepage: https://staticcheck.dev
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/go/bin"]
+    verify: {command: staticcheck, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: honnef.co/go/tools/cmd/staticcheck@latest}
+
+  # ─────────────────────── 容器 / 集群 ───────────────────────
+
+  - id: docker
+    name: Docker Engine
+    stack: containers
+    kind: service
+    description: 容器运行时（发行版包，需要 sudo）
+    homepage: https://docs.docker.com/engine/
+    when: {os: [linux, darwin]}
+    verify: {command: docker, version_args: [--version], version_regex: 'Docker version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {cask: docker}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [docker.io]}
+
+  - id: k9s
+    name: k9s
+    stack: infra
+    kind: cli
+    description: Kubernetes TUI
+    homepage: https://k9scli.io
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: k9s, version_args: [version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: k9s}
+      # 官方 release 的校验和文件叫 checksums.sha256
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: derailed/k9s
+          asset: "k9s_{{os|osmap:linux=Linux,darwin=Darwin}}_{{arch}}.tar.gz"
+          strip_components: 1
+          binary: k9s
+          dest: "~/.local/bin"
+          checksum_file: checksums.sha256
+
+  # ─────────────────────── AI Agent CLI ───────────────────────
+
+  - id: claude-code
+    name: Claude Code
+    stack: agent
+    kind: agent
+    description: Anthropic 官方 CLI
+    homepage: https://claude.com/claude-code
+    when: {os: [linux, darwin]}
+    verify: {command: claude, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: "@anthropic-ai/claude-code", global: true}
+      - via: pnpm
+        when: {has: [pnpm]}
+        params: {package: "@anthropic-ai/claude-code", global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: "@anthropic-ai/claude-code", global: true}
+
+  - id: codex
+    name: Codex CLI
+    stack: agent
+    kind: agent
+    description: OpenAI 官方 CLI
+    homepage: https://github.com/openai/codex
+    when: {os: [linux, darwin]}
+    verify: {command: codex, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: "@openai/codex", global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: "@openai/codex", global: true}

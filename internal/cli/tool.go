@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -475,7 +474,7 @@ func (rt *Runtime) renderToolDetail(d *app.ToolDetail) error {
 		}
 		fmt.Fprintln(out, line)
 		if len(m.Params) > 0 {
-			fmt.Fprintf(out, "        %s\n", formatParams(m.Params))
+			fmt.Fprintf(out, "        %s\n", app.FormatParams(m.Params))
 		}
 	}
 	return nil
@@ -597,19 +596,6 @@ func opLabel(op install.Op) string {
 	default:
 		return "安装"
 	}
-}
-
-func formatParams(params map[string]string) string {
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var parts []string
-	for _, k := range keys {
-		parts = append(parts, k+"="+params[k])
-	}
-	return strings.Join(parts, " ")
 }
 
 // planHasWork 报告计划里是否有真正要执行的动作。

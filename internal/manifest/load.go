@@ -279,7 +279,10 @@ func resolveAppends(l *Loaded) error {
 		if len(t.AppendProvides) > 0 {
 			t.Provides = append(t.Provides, t.AppendProvides...)
 		}
-		t.AppendInstall, t.AppendUninstall, t.AppendTags, t.AppendProvides = nil, nil, nil, nil
+		if len(t.AppendPathDirs) > 0 {
+			t.PathDirs = append(t.PathDirs, t.AppendPathDirs...)
+		}
+		t.AppendInstall, t.AppendUninstall, t.AppendTags, t.AppendProvides, t.AppendPathDirs = nil, nil, nil, nil, nil
 		if t.Disabled {
 			continue
 		}
@@ -318,6 +321,9 @@ func mergeTool(base, over Tool) Tool {
 	if len(over.Provides) > 0 {
 		out.Provides = over.Provides
 	}
+	if len(over.PathDirs) > 0 {
+		out.PathDirs = over.PathDirs
+	}
 	out.Verify = mergeVerify(out.Verify, over.Verify)
 	if len(over.Install) > 0 {
 		out.Install = over.Install
@@ -345,6 +351,9 @@ func mergeTool(base, over Tool) Tool {
 	}
 	if len(over.AppendProvides) > 0 {
 		out.AppendProvides = append(out.AppendProvides, over.AppendProvides...)
+	}
+	if len(over.AppendPathDirs) > 0 {
+		out.AppendPathDirs = append(out.AppendPathDirs, over.AppendPathDirs...)
 	}
 	out.Origin = over.Origin
 	return out

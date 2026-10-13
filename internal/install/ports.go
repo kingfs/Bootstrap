@@ -149,6 +149,8 @@ type Registry struct {
 	order    []string
 	byName   map[string]Installer
 	managers map[string]ManagerSpec
+	// versions 来自配置 tool.versions，模板校验时用它渲染 {{versions.*}}。
+	versions map[string]string
 }
 
 // NewRegistry 注册全部内置安装器。
@@ -177,6 +179,9 @@ func NewRegistry() *Registry {
 	}
 	return r
 }
+
+// SetVersions 注入配置 tool.versions（只影响模板校验的可用变量）。
+func (r *Registry) SetVersions(v map[string]string) { r.versions = v }
 
 // Register 注册一个 Installer（后注册的覆盖同名）。
 func (r *Registry) Register(in Installer) {
@@ -238,7 +243,7 @@ func (r *Registry) ValidateMethod(via string, p manifest.Params) error {
 			return err
 		}
 	}
-	return validateTemplates(p)
+	return validateTemplates(p, r.versions)
 }
 
 // ValidateManagerAction 实现 manifest.MethodValidator。

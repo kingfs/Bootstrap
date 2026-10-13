@@ -348,7 +348,7 @@ profiles:
 		"unknown stack",
 		"unknown kind",
 		"unknown via",
-		"verify.command or verify.version_regex is required",
+		"verify.command, verify.file or verify.version_regex is required",
 		"system package manager",
 		"must have a `via: manager` path",
 		"depends_on \"ghost\" not found",
@@ -512,4 +512,47 @@ func ids(tools []Tool) []string {
 // writeFileRaw 让测试辅助函数少一层依赖。
 func writeFileRaw(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// TestVerifyFileAndCommandExclusive：verify.file 与 verify.command 二选一，
+// 并要求至少声明一个（否则"装没装"无从判断）。
+func TestVerifyFileAndCommandExclusive(t *testing.T) {
+	l := loadFor(t, map[string]string{"v.yaml": `
+version: 1
+tools:
+  - id: both
+    stack: base
+    kind: cli
+    verify: {command: both, file: ~/.both}
+    install:
+      - via: brew
+        params: {formula: both}
+  - id: neither
+    stack: base
+    kind: cli
+    install:
+      - via: brew
+        params: {formula: neither}
+  - id: fileonly
+    stack: base
+    kind: cli
+    verify: {file: ~/.fileonly/nvm.sh}
+    install:
+      - via: brew
+        params: {formula: fileonly}
+`}, "linux")
+	err := Validate(l, ValidateOptions{})
+	if err == nil {
+		t.Fatal("expected validation problems")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "mutually exclusive") {
+		t.Errorf("missing exclusivity problem:\n%s", msg)
+	}
+	if !strings.Contains(msg, "tool \"neither\"") || !strings.Contains(msg, "is required") {
+		t.Errorf("missing 'verify required' problem:\n%s", msg)
+	}
+	if strings.Contains(msg, "fileonly") {
+		t.Errorf("file-only verify must be accepted:\n%s", msg)
+	}
 }

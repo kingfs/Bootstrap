@@ -76,8 +76,15 @@ type Tool struct {
 	DependsOn []string `yaml:"depends_on"`
 	// When 声明适用范围（不匹配则从当前平台的可见清单中隐藏）。
 	When When `yaml:"when"`
-	// Provides 是安装后应纳入 PATH 的路径（可含 ~）。
+	// Provides 是安装后产出的路径（可含 ~），用于探测"装没装"。
+	// 它可能是文件（例如 ~/.nvm/nvm.sh），所以不直接拿来拼 PATH。
 	Provides []string `yaml:"provides"`
+	// PathDirs 是"要加进 PATH 的目录"。
+	//
+	// 与 provides 分开是刻意的：provides 回答"东西装在哪、装没装"，
+	// path_dirs 回答"PATH 要加哪个目录"。让清单把意图写清楚，
+	// 比在代码里猜"这个路径是文件还是目录"可靠得多。
+	PathDirs []string `yaml:"path_dirs"`
 
 	Verify Verify `yaml:"verify"`
 
@@ -95,6 +102,7 @@ type Tool struct {
 	AppendUninstall []Method `yaml:"+uninstall"`
 	AppendTags      []string `yaml:"+tags"`
 	AppendProvides  []string `yaml:"+provides"`
+	AppendPathDirs  []string `yaml:"+path_dirs"`
 
 	// Origin 记录这条工具最终由哪个文件定义/覆盖。
 	Origin string `yaml:"-"`

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -141,6 +142,9 @@ func TestRenderPathPerShell(t *testing.T) {
 // 这让"每次开 shell 都 eval"这件事天然安全。
 func TestRenderPathIsIdempotent(t *testing.T) {
 	a, root := newTestApp(t)
+	// 只看 extra_path 的行为：内置清单里也有 path_dirs，那部分由
+	// TestPathEntriesIncludeManifestPathDirs 覆盖。
+	a.Cfg.Tool.Manifest.Builtin = false
 	already := filepath.Join(root, "already")
 	if err := os.MkdirAll(already, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -157,8 +161,48 @@ func TestRenderPathIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestPathEntriesIncludeManifestPathDirs：清单里显式声明的 path_dirs 要进 PATH，
+// 而 provides（可能是 nvm.sh 这种文件）不能被当成目录塞进 PATH。
+func TestPathEntriesIncludeManifestPathDirs(t *testing.T) {
+	a, root := newTestApp(t)
+	userDir := filepath.Join(root, "config", "tools")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := `
+version: 1
+tools:
+  - id: demo
+    stack: base
+    kind: cli
+    verify: {command: demo}
+    provides: ["~/.demo/rc.sh"]
+    path_dirs: ["~/.demo/bin"]
+    install:
+      - via: brew
+        params: {formula: demo}
+`
+	if err := os.WriteFile(filepath.Join(userDir, "demo.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	a.Cfg.Tool.Manifest = config.ManifestConfig{Builtin: false, UserDirs: []string{userDir}}
+
+	var got []string
+	for _, e := range a.PathEntries() {
+		got = append(got, e.Path)
+		if strings.HasSuffix(e.Path, "rc.sh") {
+			t.Errorf("provides 是文件，不应进 PATH: %v", e)
+		}
+	}
+	want := filepath.Join(a.Paths.HomeDir, ".demo", "bin")
+	if !slices.Contains(got, want) {
+		t.Errorf("path_dirs 缺失: got %v, want %s", got, want)
+	}
+}
+
 func TestPathEntriesReportExistence(t *testing.T) {
 	a, root := newTestApp(t)
+	a.Cfg.Tool.Manifest.Builtin = false
 	existing := filepath.Join(root, "exists")
 	if err := os.MkdirAll(existing, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)

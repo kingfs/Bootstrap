@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -75,7 +77,7 @@ func (a *App) manifestOptions() manifest.LoadOptions {
 	opt := manifest.LoadOptions{
 		Builtin:   a.Cfg.Tool.Manifest.Builtin,
 		BuiltinFS: tools.Manifests,
-		GOOS:      a.Platform.OS,
+		GOOS:      a.manifestGOOS(),
 	}
 	for _, dir := range a.Cfg.Tool.Manifest.UserDirs {
 		opt.UserDirs = append(opt.UserDirs, fsx.ExpandPath(dir, a.Paths.HomeDir))
@@ -84,7 +86,12 @@ func (a *App) manifestOptions() manifest.LoadOptions {
 }
 
 // ToolRegistry 返回安装器注册表（同时实现清单校验用的 schema）。
-func (a *App) ToolRegistry() *install.Registry { return install.NewRegistry() }
+func (a *App) ToolRegistry() *install.Registry {
+	reg := install.NewRegistry()
+	// 模板校验期要用配置里的 tool.versions 渲染 {{versions.*}}。
+	reg.SetVersions(a.Cfg.Tool.Versions)
+	return reg
+}
 
 // ValidateManifest 校验清单，并把安装引擎的 schema 一起接上。
 func (a *App) ValidateManifest() (*manifest.Loaded, error) {
@@ -102,6 +109,7 @@ func (a *App) ValidateManifestChecked(loaded *manifest.Loaded) error {
 		AllowSystemFor:           allowedKinds(a.Cfg.Tool.AllowSystemFor),
 		Managers:                 a.Cfg.Tool.Managers,
 		RequireManagerForRuntime: true,
+		Versions:                 a.Cfg.Tool.Versions,
 	}
 	return manifest.Validate(loaded, opt)
 }
@@ -142,7 +150,7 @@ func (a *App) ToolRows(ctx context.Context, opt ToolListOptions) ([]ToolRow, err
 			ID: t.ID, Name: t.Name, Stack: t.Stack.String(), Kind: string(t.Kind),
 			Tags: t.Tags, Disabled: t.Disabled, Description: t.Description,
 			Homepage: t.Homepage, Provides: t.Provides, Source: t.Origin,
-			ViaDisplay: preferredVia(t),
+			ViaDisplay: preferredVia(t, manifestEnv(env), a.Cfg.Tool.Managers),
 		}
 		if matched, reason := t.When.Matches(manifestEnv(env)); !matched {
 			row.NotMatching = true
@@ -226,7 +234,7 @@ func (a *App) ToolInfo(ctx context.Context, id string, refresh bool) (*ToolDetai
 			ID: tool.ID, Name: tool.Name, Stack: tool.Stack.String(), Kind: string(tool.Kind),
 			Tags: tool.Tags, Disabled: tool.Disabled, Description: tool.Description,
 			Homepage: tool.Homepage, Provides: tool.Provides, Source: tool.Origin,
-			ViaDisplay: preferredVia(tool),
+			ViaDisplay: preferredVia(tool, manifestEnv(env), a.Cfg.Tool.Managers),
 		},
 		Verify: verifySummary(tool),
 	}
@@ -235,7 +243,7 @@ func (a *App) ToolInfo(ctx context.Context, id string, refresh bool) (*ToolDetai
 	})
 	for i, m := range tool.Install {
 		entry := MethodEntry{
-			Index: i, Via: m.Via, Display: displayVia(m), Enabled: m.IsEnabled(),
+			Index: i, Via: m.Via, Display: displayVia(m, tool.Stack.String(), a.Cfg.Tool.Managers), Enabled: m.IsEnabled(),
 			Params: summarizeParams(m.Params),
 		}
 		if cerr == nil {
@@ -368,7 +376,7 @@ func (a *App) installEnv() install.ExecEnv {
 		Env:       mergeMaps(a.Runner.Env, a.NetworkEnv()),
 		ExtraPath: a.extraPathDirs(),
 		HomeDir:   a.Paths.HomeDir,
-		GOOS:      a.Platform.OS,
+		GOOS:      a.manifestGOOS(),
 		Arch:      a.Platform.Arch,
 		Distro:    a.Platform.Distro,
 		DryRun:    a.DryRun,
@@ -511,19 +519,31 @@ func manifestEnv(env install.ExecEnv) manifest.MatchEnv {
 	}
 }
 
-func displayVia(m manifest.Method) string {
-	if m.Via == "manager" && m.Params.Manager != "" {
-		return "manager:" + m.Params.Manager
+func displayVia(m manifest.Method, stack string, managers map[string]string) string {
+	if m.Via == "manager" {
+		name := m.Params.Manager
+		if name == "" && managers != nil {
+			// 清单没写 manager 时由配置决定（§6.2），展示时也要说清楚是哪个管理器。
+			name = managers[stack]
+		}
+		if name != "" {
+			return "manager:" + name
+		}
 	}
 	return m.Via
 }
 
-func preferredVia(t manifest.Tool) string {
+// preferredVia 返回"本机上会走的那种方式"：
+// 跳过禁用方法与 when 不匹配的方法（否则 Linux 上会显示 macOS 才用的 brew）。
+func preferredVia(t manifest.Tool, env manifest.MatchEnv, managers map[string]string) string {
 	for _, m := range t.Install {
 		if !m.IsEnabled() {
 			continue
 		}
-		return displayVia(m)
+		if matched, _ := m.When.Matches(env); !matched {
+			continue
+		}
+		return displayVia(m, t.Stack.String(), managers)
 	}
 	if len(t.Install) > 0 {
 		return t.Install[0].Via
@@ -539,6 +559,16 @@ func verifySummary(t manifest.Tool) VerifySummary {
 		MinVersion:   t.Verify.MinVersion,
 		ExactVersion: t.Verify.ExactVersion,
 	}
+}
+
+// FormatParams 把参数渲染成稳定的 "k=v k=v" 文本（键排序，便于比较与展示）。
+func FormatParams(params map[string]string) string {
+	keys := slices.Sorted(maps.Keys(params))
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+params[k])
+	}
+	return strings.Join(parts, " ")
 }
 
 // summarizeParams 把参数压成"人看得懂"的键值对（脱敏与截断）。
@@ -605,6 +635,22 @@ func matchesSearch(row ToolRow, q string) bool {
 }
 
 // ManifestUserDirs 返回实际参与加载的用户覆盖目录（已展开 ~）。
+// envGOOS 返回构造 ExecEnv 时使用的 GOOS（--os 覆盖优先）。
+func (a *App) envGOOS() string {
+	if a.GOOSOverride != "" {
+		return a.GOOSOverride
+	}
+	return a.Platform.OS
+}
+
+// manifestGOOS 返回清单加载时使用的 GOOS（--os 覆盖优先）。
+func (a *App) manifestGOOS() string {
+	if a.GOOSOverride != "" {
+		return a.GOOSOverride
+	}
+	return a.Platform.OS
+}
+
 func (a *App) ManifestUserDirs() []string {
 	var out []string
 	for _, dir := range a.Cfg.Tool.Manifest.UserDirs {
@@ -678,6 +724,12 @@ func describeToolDiff(a, b manifest.Tool) string {
 		for i := range a.Install {
 			if a.Install[i].Via != b.Install[i].Via {
 				diffs = append(diffs, fmt.Sprintf("install[%d].via %s → %s", i, a.Install[i].Via, b.Install[i].Via))
+				continue
+			}
+			// via 相同但参数不同（比如版本从 1.24.1 变成 1.80）同样会改变安装结果。
+			pa, pb := summarizeParams(a.Install[i].Params), summarizeParams(b.Install[i].Params)
+			if !maps.Equal(pa, pb) {
+				diffs = append(diffs, fmt.Sprintf("install[%d].params %s → %s", i, FormatParams(pa), FormatParams(pb)))
 			}
 		}
 	}

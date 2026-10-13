@@ -47,6 +47,9 @@ type App struct {
 	NonInteractive bool
 	// DefaultViaOverride 是 --via 指定的安装方式（覆盖配置里的 tool.default_via）。
 	DefaultViaOverride string
+	// GOOSOverride 让清单按"另一个系统"加载与校验（`bs tool manifest --os darwin`），
+	// 用于在 Linux/CI 上检查 macOS/Windows 的清单是否写错。
+	GOOSOverride string
 
 	// loaded 缓存已装载的清单，避免一次命令里重复解析 YAML。
 	loaded *manifest.Loaded

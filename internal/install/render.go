@@ -148,23 +148,27 @@ func applyFilter(spec, val string) (string, error) {
 
 // sampleRenderData 用于清单校验：把所有模板用样例数据渲染一遍，
 // 从而在 validate 阶段就能发现拼错的变量名或非法的过滤器。
-func sampleRenderData() RenderData {
+func sampleRenderData(versions map[string]string) RenderData {
+	merged := map[string]string{"golang": "1.24.1", "nodejs": "22.1.0", "python": "3.12.0", "rust": "stable"}
+	for k, v := range versions {
+		merged[k] = v
+	}
 	return RenderData{
 		Version: "1.2.3", Tag: "v1.2.3", OS: "linux", Arch: "amd64",
 		Package: "pkg", Manager: "g", Crate: "crate", Module: "example.com/m",
 		Python: "3.12", Action: "install",
-		Versions: map[string]string{"golang": "1.24.1", "nodejs": "22.1.0", "python": "3.12.0"},
+		Versions: merged,
 	}
 }
 
 // validateTemplates 把 params 里所有可能含模板的字符串渲染一遍，
 // 提前暴露写错的变量名（这是清单最容易出错的地方）。
-func validateTemplates(p manifest.Params) error {
+func validateTemplates(p manifest.Params, versions map[string]string) error {
 	for _, field := range p.TemplateFields() {
 		if !ContainsTemplate(field.Value) {
 			continue
 		}
-		if _, err := Render(field.Value, sampleRenderData()); err != nil {
+		if _, err := Render(field.Value, sampleRenderData(versions)); err != nil {
 			return fmt.Errorf("%s: %w", field.Name, err)
 		}
 	}

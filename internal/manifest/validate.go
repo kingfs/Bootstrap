@@ -34,6 +34,9 @@ type ValidateOptions struct {
 	// RequireManagerForRuntime 为 true 时，runtime 条目必须有一条 via: manager 路径
 	// （除非声明 manager_optional: true）。见 docs/design.md §6.4。
 	RequireManagerForRuntime bool
+	// Versions 是配置 tool.versions；模板校验时用它渲染 {{versions.*}}，
+	// 否则清单里写 {{versions.rust}} 会被误判成"没定义"。
+	Versions map[string]string
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
@@ -88,8 +91,9 @@ func Validate(l *Loaded, opts ValidateOptions) error {
 		if t.Verify.File != "" && t.Verify.Command != "" {
 			p.Add("%s: verify.file and verify.command are mutually exclusive (command wins)", where)
 		}
-		if t.Kind == config.KindVersionMgr && t.Verify.Command == "" {
-			p.Add("%s: a versionmgr must declare verify.command (depends_on/manager 委托都靠它探测)", where)
+		if t.Kind == config.KindVersionMgr && t.Verify.Command == "" && t.Verify.File == "" {
+			p.Add("%s: a versionmgr must declare verify.command or verify.file "+
+				"(depends_on/manager 委托都靠它探测)", where)
 		}
 
 		// install 链
@@ -169,6 +173,7 @@ func Validate(l *Loaded, opts ValidateOptions) error {
 }
 
 func validateMethod(p *Problems, opts ValidateOptions, where string, t *Tool, m Method) {
+	_ = opts.Versions
 	if m.Via == "" {
 		p.Add("%s: via is required", where)
 		return

@@ -442,3 +442,76 @@ func diffTree(t *testing.T, before map[string]int64, root string) string {
 	}
 	return sb.String()
 }
+
+// TestToolInstallEndToEndWithFakeManager 走完整的 plan → execute → verify → report：
+// 用一个假 g（记录自己收到的参数）证明"委托管理器安装"这条主线真的能跑通，
+// 同时证明 --dry-run 时一行都不会执行。
+func TestToolInstallEndToEndWithFakeManager(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假命令用 POSIX shell 脚本实现")
+	}
+	rt, _, _, root := sandboxWithManifest(t)
+	logPath := filepath.Join(root, "fake-g.log")
+	t.Setenv("FAKE_G_LOG", logPath)
+	writeFakeBin(t, filepath.Join(root, "bin"), "g", `#!/bin/sh
+case "$1" in
+  ls-remote) echo "1.23.0"; echo "1.24.1" ;;
+  install)   echo "$@" >> "$FAKE_G_LOG" ;;
+esac
+`)
+
+	// dry-run：必须一行都不执行
+	code, stdout, stderr := run(t, rt, "tool", "install", "golang", "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry-run exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "dry-run") {
+		t.Errorf("dry-run output:\n%s", stdout)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("dry-run must not execute anything")
+	}
+
+	// 真跑：g install <解析出的最新版本>
+	code, stdout, stderr = run(t, rt, "tool", "install", "golang", "--yes")
+	if code != 0 {
+		t.Fatalf("install exit = %d, stderr = %s\nstdout=%s", code, stderr, stdout)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("fake g was not called: %v", err)
+	}
+	if !strings.Contains(string(log), "install 1.24.1") {
+		t.Errorf("g log = %q, want it to contain `install 1.24.1`", log)
+	}
+	if !strings.Contains(stdout, "完成 1") {
+		t.Errorf("stdout =\n%s", stdout)
+	}
+	// 装完立刻用真实探测复核：假 go 仍报 1.20（低于 min_version）→ 不能算完成
+	if strings.Contains(stdout, "golang\t完成") {
+		t.Errorf("verification should have failed (fake go is still 1.20):\n%s", stdout)
+	}
+}
+
+// TestToolInstallSkipsInstalled：已安装的工具会直接跳过，不执行任何命令。
+func TestToolInstallSkipsInstalled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假命令用 POSIX shell 脚本实现")
+	}
+	rt, _, _, root := sandboxWithManifest(t)
+	logPath := filepath.Join(root, "fake-g.log")
+	t.Setenv("FAKE_G_LOG", logPath)
+	// go 报 1.24.1（>= min_version）→ 视为已安装
+	writeFakeBin(t, filepath.Join(root, "bin"), "go", "#!/bin/sh\necho 'go version go1.24.1 linux/amd64'\n")
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "golang", "--yes")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "0 个需要处理") {
+		t.Errorf("stdout =\n%s", stdout)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Error("nothing should be executed for an installed tool")
+	}
+}
