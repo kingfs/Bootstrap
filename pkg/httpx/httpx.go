@@ -23,8 +23,15 @@ import (
 	"github.com/kingfs/Bootstrap/pkg/fsx"
 )
 
-// DefaultTimeout 是单次请求的默认超时。
+// DefaultTimeout 是通用 GET（元数据、checksums 文件）的默认超时。
 const DefaultTimeout = 60 * time.Second
+
+// DefaultDownloadTimeout 是下载归档的默认超时。
+//
+// 刻意与 GET 分开：元数据慢说明网络有问题，应当快速失败；
+// 而下载慢是正常的（几十 MB 的 Go 工具链、限速的代理），
+// 一个全局 60s 会把"能下完"变成"永远装不上"。
+const DefaultDownloadTimeout = 15 * time.Minute
 
 // maxBody 是 GetBytes 的默认上限（防止把大文件读进内存）。
 const maxBody = 8 << 20
@@ -38,6 +45,10 @@ type Client struct {
 	UserAgent string
 	// Retries 是失败重试次数（默认 1 次重试）。
 	Retries int
+	// Timeout 是通用 GET 的单次预算。
+	Timeout time.Duration
+	// DownloadTimeout 是下载单个文件的预算。
+	DownloadTimeout time.Duration
 }
 
 // New 构造客户端。env 为 nil 时使用进程环境。
@@ -45,7 +56,7 @@ func New(timeout time.Duration, env map[string]string) *Client {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	c := &Client{Env: env, UserAgent: "bootstrap", Retries: 1}
+	c := &Client{Env: env, UserAgent: "bootstrap", Retries: 1, Timeout: timeout, DownloadTimeout: DefaultDownloadTimeout}
 	transport := &http.Transport{
 		Proxy:                 c.proxyFunc,
 		ForceAttemptHTTP2:     true,
@@ -54,8 +65,41 @@ func New(timeout time.Duration, env map[string]string) *Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
-	c.HTTP = &http.Client{Transport: transport, Timeout: timeout}
+	// 不设 http.Client.Timeout：超时由每个操作各自的预算（Timeout/DownloadTimeout）决定，
+	// 否则一个全局上限会把"下载 100MB 工具链"和"读一个 1KB 的 checksums 文件"
+	// 绑成同一个约束，二者只能取其一。
+	c.HTTP = &http.Client{Transport: transport}
 	return c
+}
+
+// GetCtx 发一个带预算的 GET，返回未读取的响应体（调用方负责关闭）。
+//
+// 给"需要看响应头/最终跳转地址"的调用方使用（例如跟随 /releases/latest 的重定向）。
+func (c *Client) GetCtx(ctx context.Context, rawURL string) (*http.Response, error) {
+	ctx, cancel := withBudget(ctx, c.Timeout)
+	defer cancel()
+	return c.HTTP.Do(mustRequest(ctx, rawURL, c.UserAgent))
+}
+
+// withBudget 给 ctx 套上单次操作的预算（已有更短 deadline 时以更短者为准）。
+func withBudget(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		budget = DefaultTimeout
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+func mustRequest(ctx context.Context, rawURL, userAgent string) *http.Request {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		// 只在 URL 非法时发生；把错误留到 Do 里报，调用方已有 URL 校验。
+		req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "http://invalid.invalid/", nil)
+		return req
+	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	return req
 }
 
 func (c *Client) getenv(key string) string {
@@ -71,6 +115,8 @@ func (c *Client) proxyFunc(req *http.Request) (*url.URL, error) {
 
 // GetBytes 取回一个较小的响应体（用于 API 与 checksums 文件）。
 func (c *Client) GetBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	ctx, cancel := withBudget(ctx, c.Timeout)
+	defer cancel()
 	resp, err := c.do(ctx, rawURL)
 	if err != nil {
 		return nil, err
@@ -102,6 +148,9 @@ func (c *Client) Download(ctx context.Context, rawURL, dest, wantSHA256 string, 
 	if mode == 0 {
 		mode = 0o644
 	}
+	// 下载用独立的（更长的）预算，见 DefaultDownloadTimeout 的说明。
+	ctx, cancel := withBudget(ctx, c.DownloadTimeout)
+	defer cancel()
 	resp, err := c.do(ctx, rawURL)
 	if err != nil {
 		return "", err

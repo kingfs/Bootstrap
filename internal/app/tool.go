@@ -353,8 +353,11 @@ func (a *App) ToolApply(ctx context.Context, plan install.Plan, op install.Op) (
 func (a *App) engine(loaded *manifest.Loaded) (*install.Engine, error) {
 	env := a.installEnv()
 	var rec *install.Recorder
+	logDir := ""
 	if !a.DryRun {
 		rec = &install.Recorder{Path: filepath.Join(a.Paths.StateDir, "installed.yaml")}
+		// 只有真执行时才准备日志目录（--dry-run 必须零写入）。
+		logDir = a.Paths.StateDir
 	}
 	return install.NewEngine(install.EngineOptions{
 		Registry:   a.ToolRegistry(),
@@ -366,6 +369,7 @@ func (a *App) engine(loaded *manifest.Loaded) (*install.Engine, error) {
 		Fallback:   a.fallbackEnabled(),
 		Versions:   a.Cfg.Tool.Versions,
 		Recorder:   rec,
+		LogDir:     logDir,
 		Now:        Now,
 	})
 }

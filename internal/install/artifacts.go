@@ -215,7 +215,9 @@ func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifes
 	for _, name := range candidates {
 		text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, name))
 		if ferr != nil {
-			tried = append(tried, name)
+			// 区分"这个文件不存在"与"取不到这个文件"：
+			// 网络不通时如果说成"找不到校验和"，会把人引向错误的排查方向。
+			tried = append(tried, fmt.Sprintf("%s (fetch failed: %v)", name, firstLineOf(ferr.Error())))
 			continue
 		}
 		sha, cerr := ghrelease.ChecksumFor(text, asset)
@@ -469,4 +471,12 @@ func executableName(name, goos string) string {
 		return name
 	}
 	return name + ".exe"
+}
+
+// firstLineOf 只取错误的第一行：终端表格与 JSON 里都不需要多行栈式错误。
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

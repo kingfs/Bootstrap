@@ -188,8 +188,10 @@ func (p *pkgManager) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m manif
 		ToolID: t.ID, Via: p.via, Op: op,
 		Commands: commands,
 		Network:  p.network,
-		Summary:  p.label + " " + strings.Join(args, " "),
-		Reason:   fmt.Sprintf("via=%s", p.via),
+		// Summary 用真实命令（bin + args）：label 里已经含动词，
+		// 再拼上 args 里的动词就会出现 "cargo install install fnm" 这种重复。
+		Summary: strings.Join(append([]string{p.bin}, args...), " "),
+		Reason:  fmt.Sprintf("via=%s", p.via),
 	}, nil
 }
 

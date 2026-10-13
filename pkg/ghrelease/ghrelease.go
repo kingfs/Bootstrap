@@ -50,7 +50,8 @@ func LatestTag(ctx context.Context, c *httpx.Client, repo string) (string, error
 
 func latestTagViaRedirect(ctx context.Context, c *httpx.Client, repo string) (string, error) {
 	// 不依赖 API 的兜底：/releases/latest 会 302 到 /releases/tag/<tag>。
-	resp, err := c.HTTP.Get(AssetBaseURL + "/" + repo + "/releases/latest")
+	// 用 GetCtx 而不是 http.Client.Get：后者不带 context，请求无法被取消。
+	resp, err := c.GetCtx(ctx, AssetBaseURL+"/"+repo+"/releases/latest")
 	if err != nil {
 		return "", err
 	}

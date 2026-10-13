@@ -38,6 +38,8 @@ type EngineOptions struct {
 	Versions map[string]string
 	// Recorder 记录安装结果（可空，测试时不需要落盘）。
 	Recorder *Recorder
+	// LogDir 非空时，每个工具的命令输出会留一份日志（<LogDir>/logs/...）。
+	LogDir string
 	// Now 便于测试注入时间。
 	Now func() time.Time
 }
@@ -87,24 +89,26 @@ const (
 
 // Step 是一个工具的计划（或执行结果）。
 type Step struct {
-	ToolID         string         `json:"tool_id"`
-	Name           string         `json:"name,omitempty"`
-	Stack          string         `json:"stack,omitempty"`
-	Kind           string         `json:"kind,omitempty"`
-	Status         StepStatus     `json:"status"`
-	Via            string         `json:"via,omitempty"`
-	Manager        string         `json:"manager,omitempty"`
-	Summary        string         `json:"summary,omitempty"`
-	Reason         string         `json:"reason,omitempty"`
-	Action         *Action        `json:"action,omitempty"`
-	Chain          Chain          `json:"-"`
-	Detection      *detect.Result `json:"detection,omitempty"`
-	Skipped        []Candidate    `json:"skipped,omitempty"`
-	FallbackFrom   string         `json:"fallback_from,omitempty"`
-	FallbackReason string         `json:"fallback_reason,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	Duration       time.Duration  `json:"-"`
-	TriedMethods   []string       `json:"tried_methods,omitempty"`
+	ToolID    string         `json:"tool_id"`
+	Name      string         `json:"name,omitempty"`
+	Stack     string         `json:"stack,omitempty"`
+	Kind      string         `json:"kind,omitempty"`
+	Status    StepStatus     `json:"status"`
+	Via       string         `json:"via,omitempty"`
+	Manager   string         `json:"manager,omitempty"`
+	Summary   string         `json:"summary,omitempty"`
+	Reason    string         `json:"reason,omitempty"`
+	Action    *Action        `json:"action,omitempty"`
+	Chain     Chain          `json:"-"`
+	Detection *detect.Result `json:"detection,omitempty"`
+	Skipped   []Candidate    `json:"skipped,omitempty"`
+	// LogPath 是这个工具完整命令输出的日志文件（未写日志时为空）。
+	LogPath        string        `json:"log_path,omitempty"`
+	FallbackFrom   string        `json:"fallback_from,omitempty"`
+	FallbackReason string        `json:"fallback_reason,omitempty"`
+	Error          string        `json:"error,omitempty"`
+	Duration       time.Duration `json:"-"`
+	TriedMethods   []string      `json:"tried_methods,omitempty"`
 }
 
 // Plan 是一次完整安装计划。
@@ -374,6 +378,27 @@ func (e *Engine) Apply(ctx context.Context, plan Plan, op Op) (Report, error) {
 	return report, report.Failed()
 }
 
+// stepEnv 为一次工具安装准备"带日志的执行环境"（docs/design.md §7.5 的日志与审计）。
+//
+// 返回的 closeLog 一定非 nil，调用方 defer 或显式调用都安全。
+func (e *Engine) stepEnv(toolID string) (ExecEnv, string, func()) {
+	if e.opt.LogDir == "" || e.env.DryRun() {
+		return e.env, "", func() {}
+	}
+	path := LogPath(e.opt.LogDir, toolID, e.opt.Now())
+	if err := fsx.EnsureDir(filepath.Dir(path), 0o755); err != nil {
+		// 日志写不出来不该让安装失败：退回无日志环境，只记一条警告。
+		e.env.Log().Warn("cannot create log dir", "path", path, "err", err)
+		return e.env, "", func() {}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		e.env.Log().Warn("cannot open log file", "path", path, "err", err)
+		return e.env, "", func() {}
+	}
+	return &logEnv{ExecEnv: e.env, w: f}, path, func() { f.Close() }
+}
+
 // applyStep 执行一个步骤并做安装后验证。
 func (e *Engine) applyStep(ctx context.Context, s Step, op Op) (Step, error) {
 	out := s
@@ -387,7 +412,12 @@ func (e *Engine) applyStep(ctx context.Context, s Step, op Op) (Step, error) {
 	log := e.env.Log()
 	log.Info("apply", "tool", s.ToolID, "via", s.Via, "op", string(op))
 
-	if err := in.Execute(ctx, *s.Action, e.env); err != nil {
+	// 每条命令的完整输出留一份日志（无副作用路径：干跑不写）。
+	env, logPath, closeLog := e.stepEnv(s.ToolID)
+	out.LogPath = logPath
+	err := in.Execute(ctx, *s.Action, env)
+	closeLog()
+	if err != nil {
 		out.Status = StepFailed
 		out.Error = err.Error()
 		return out, err
@@ -510,6 +540,61 @@ func (e *Engine) normalize(l *manifest.Loaded) *manifest.Loaded {
 	return out
 }
 
+// resolveParams 展开清单参数里的模板（{{versions.*}} → 真实值）。
+//
+// 与 normalize 分开：normalize 管"管理器选择"，这里管"参数取值"，两者都只在
+// 真的发生改动时才拷贝清单。
+func (e *Engine) resolveParams(l *manifest.Loaded) (*manifest.Loaded, error) {
+	if l == nil {
+		return l, nil
+	}
+	data := RenderData{OS: e.env.OS(), Arch: e.env.Arch(), Versions: e.env.Versions()}
+	changed := false
+	out := &manifest.Loaded{Tools: make([]manifest.Tool, len(l.Tools)), Profiles: l.Profiles, Sources: l.Sources}
+	copy(out.Tools, l.Tools)
+	for i := range out.Tools {
+		t := out.Tools[i]
+		var err error
+		if t.Install, err = resolveMethodParams(t.Install, data, &changed); err != nil {
+			return nil, fmt.Errorf("tool %q: install: %w", t.ID, err)
+		}
+		if t.Uninstall, err = resolveMethodParams(t.Uninstall, data, &changed); err != nil {
+			return nil, fmt.Errorf("tool %q: uninstall: %w", t.ID, err)
+		}
+		if t.Update != nil {
+			upd := []manifest.Method{*t.Update}
+			if upd, err = resolveMethodParams(upd, data, &changed); err != nil {
+				return nil, fmt.Errorf("tool %q: update: %w", t.ID, err)
+			}
+			t.Update = &upd[0]
+		}
+		out.Tools[i] = t
+	}
+	if !changed {
+		return l, nil
+	}
+	return out, nil
+}
+
+// resolveMethodParams 展开一组方法里的参数模板（始终返回新切片，避免改到原清单）。
+func resolveMethodParams(methods []manifest.Method, data RenderData, changed *bool) ([]manifest.Method, error) {
+	if methods == nil {
+		return nil, nil
+	}
+	out := make([]manifest.Method, len(methods))
+	copy(out, methods)
+	for i := range out {
+		c, err := resolveNameParams(&out[i].Params, data)
+		if err != nil {
+			return nil, err
+		}
+		if c {
+			*changed = true
+		}
+	}
+	return out, nil
+}
+
 // fillManager 给没写 manager 的 `via: manager` 方法补上配置里的管理器名。
 func fillManager(methods []manifest.Method, mgr string, changed *bool) []manifest.Method {
 	for i := range methods {
@@ -538,7 +623,11 @@ func (e *Engine) selectTools(ids []string) ([]manifest.Tool, map[string]bool, er
 	if len(ids) == 0 {
 		return nil, explicit, nil
 	}
-	tools, err := manifest.ExpandDeps(e.normalize(e.loaded), ids)
+	normalized, err := e.resolveParams(e.normalize(e.loaded))
+	if err != nil {
+		return nil, explicit, err
+	}
+	tools, err := manifest.ExpandDeps(normalized, ids)
 	if err != nil {
 		return nil, explicit, err
 	}

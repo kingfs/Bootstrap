@@ -174,3 +174,53 @@ func validateTemplates(p manifest.Params, versions map[string]string) error {
 	}
 	return nil
 }
+
+// nameParamFields 是"会被当作值塞进命令模板"的参数。
+//
+// 为什么需要提前展开：清单里写 `version: "{{versions.golang}}"` 是让
+// "用哪个 Go 版本"由配置（而不是清单）决定；而安装器把 params.version
+// 当成**值**再插进命令模板的 {{version}}。不提前展开，命令里就会出现
+// 字面量 `g install {{versions.golang}}`。
+//
+// 反过来 asset/url/sha256/dest/build 这些必须在真实版本号确定之后由各自的
+// Installer 渲染（它们的模板本来就引用 {{version}}），绝不能在这里提前渲染。
+var nameParamFields = []struct {
+	Name  string
+	Value func(*manifest.Params) *string
+}{
+	{"params.version", func(p *manifest.Params) *string { return &p.Version }},
+	{"params.package", func(p *manifest.Params) *string { return &p.Package }},
+	{"params.formula", func(p *manifest.Params) *string { return &p.Formula }},
+	{"params.cask", func(p *manifest.Params) *string { return &p.Cask }},
+	{"params.crate", func(p *manifest.Params) *string { return &p.Crate }},
+	{"params.module", func(p *manifest.Params) *string { return &p.Module }},
+	{"params.id", func(p *manifest.Params) *string { return &p.ID }},
+	{"params.python", func(p *manifest.Params) *string { return &p.Python }},
+	{"params.version_source", func(p *manifest.Params) *string { return &p.VersionSource }},
+	{"params.source", func(p *manifest.Params) *string { return &p.Source }},
+	{"params.repo", func(p *manifest.Params) *string { return &p.Repo }},
+}
+
+// resolveNameParams 原地展开"名字类"参数里的模板，返回是否有改动。
+//
+// 渲染结果为空（例如写了 `{{version}}` 这种只有安装时才成立的引用）时保持原样，
+// 让后续流程按原值报错，而不是悄悄把参数变成空字符串。
+func resolveNameParams(p *manifest.Params, data RenderData) (bool, error) {
+	changed := false
+	for _, f := range nameParamFields {
+		ptr := f.Value(p)
+		if !ContainsTemplate(*ptr) {
+			continue
+		}
+		out, err := Render(*ptr, data)
+		if err != nil {
+			return changed, fmt.Errorf("%s: %w", f.Name, err)
+		}
+		if out == "" {
+			continue
+		}
+		*ptr = out
+		changed = true
+	}
+	return changed, nil
+}

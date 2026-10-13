@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/manifest"
@@ -123,7 +124,17 @@ func (rt *Runtime) manifestShowCmd() *cobra.Command {
 					tools = append(tools, t)
 				}
 			}
-			return rt.emit(tools)
+			if rt.Opts.JSON {
+				return rt.emit(tools)
+			}
+			// 默认输出就是 YAML：这个子命令的用途是"看清合并后的结果"，
+			// 只支持 --json 的话不加参数就什么都不打印，等于骗人。
+			data, err := yaml.Marshal(map[string]any{"version": 1, "tools": tools})
+			if err != nil {
+				return failf("渲染 YAML 失败：%v", err)
+			}
+			_, err = rt.out().Write(data)
+			return err
 		},
 	}
 }

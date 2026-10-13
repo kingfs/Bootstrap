@@ -316,6 +316,11 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 			return err
 		}
 	}
+	// 计划期就失败（所有候选方式都不可用、缺校验和等）时不能返回 0：
+	// 那会让脚本以为"装好了"。这里的失败属于前置条件不满足（退出码 4）。
+	if failed := failedSteps(plan); len(failed) > 0 {
+		return preconditionErrf("%s失败：%s", install.OpLabel(op), strings.Join(failed, "；"))
+	}
 	if !planHasWork(plan) {
 		return nil
 	}
@@ -647,6 +652,14 @@ func (rt *Runtime) renderReport(report install.Report, op install.Op) error {
 		fmt.Fprintf(out, "，不支持 %d", unsupported)
 	}
 	fmt.Fprintf(out, "（耗时 %s）\n", report.Elapsed.Round(1e6))
+	if failed > 0 {
+		// 失败时把日志位置说清楚：apt/cargo 的输出很长，只在终端刷一遍是不够的。
+		for _, s := range report.Steps {
+			if s.Status == install.StepFailed && s.LogPath != "" {
+				fmt.Fprintf(out, "日志：%s\n", s.LogPath)
+			}
+		}
+	}
 	if report.Changed() {
 		fmt.Fprintln(out, "提示：新装的工具可能需要重开 shell 或执行 `eval \"$(bs env path)\"` 才能进入 PATH。")
 	}
@@ -674,6 +687,17 @@ func plannedCount(plan install.Plan) int {
 		}
 	}
 	return n
+}
+
+// failedSteps 收集计划期就失败的步骤（按 "id: 原因" 描述），没有则返回 nil。
+func failedSteps(plan install.Plan) []string {
+	var out []string
+	for _, s := range plan.Steps {
+		if s.Status == install.StepFailed {
+			out = append(out, s.ToolID+": "+firstLine(s.Error))
+		}
+	}
+	return out
 }
 
 // planHasWork 报告计划里是否有真正要执行的动作。

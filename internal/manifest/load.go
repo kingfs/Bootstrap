@@ -388,6 +388,9 @@ func mergeVerify(base, over Verify) Verify {
 	if over.Command != "" {
 		base.Command = over.Command
 	}
+	if over.File != "" {
+		base.File = over.File
+	}
 	if len(over.VersionArgs) > 0 {
 		base.VersionArgs = over.VersionArgs
 	}

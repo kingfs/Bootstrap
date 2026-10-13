@@ -967,3 +967,65 @@ tools:
 		}
 	}
 }
+
+// TestApplyWritesPerToolLog：真执行时每个工具的命令输出要留一份日志，
+// 干跑则一行都不写（--dry-run 零副作用）。
+func TestApplyWritesPerToolLog(t *testing.T) {
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: demo
+    stack: base
+    kind: cli
+    verify: {command: demo, version_args: [--version], version_regex: 'v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        params: {formula: demo}
+`)
+	stateDir := t.TempDir()
+	env := newFakeEnv(t).has("brew")
+	env.runOut["brew"] = "demo 1.2.3\n"
+	eng, err := NewEngine(EngineOptions{
+		Env: env, Loaded: loaded, LogDir: stateDir,
+		Detector: newDetector(t, newFakeDetector(map[string]detect.Status{"demo": detect.StatusMissing})),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	plan, err := eng.PlanTools(context.Background(), []string{"demo"}, OpInstall)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	report, _ := eng.Apply(context.Background(), plan, OpInstall)
+	if len(report.Steps) == 0 || report.Steps[0].LogPath == "" {
+		t.Fatalf("no log path: %+v", report.Steps)
+	}
+	if !strings.HasPrefix(report.Steps[0].LogPath, filepath.Join(stateDir, "logs")) {
+		t.Errorf("log path = %q", report.Steps[0].LogPath)
+	}
+	data, err := os.ReadFile(report.Steps[0].LogPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), "brew install demo") || !strings.Contains(string(data), "demo 1.2.3") {
+		t.Errorf("log content = %q", data)
+	}
+
+	// 干跑：同样的计划，不该产生任何日志（LogPath 为空，logs 目录不存在）。
+	dry := newFakeEnv(t).has("brew")
+	dry.dry = true
+	eng2, err := NewEngine(EngineOptions{
+		Env: dry, Loaded: loaded, LogDir: stateDir,
+		Detector: newDetector(t, newFakeDetector(map[string]detect.Status{"demo": detect.StatusMissing})),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	plan2, err := eng2.PlanTools(context.Background(), []string{"demo"}, OpInstall)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if rep, _ := eng2.Apply(context.Background(), plan2, OpInstall); len(rep.Steps) > 0 && rep.Steps[0].LogPath != "" {
+		t.Errorf("dry-run must not write logs: %q", rep.Steps[0].LogPath)
+	}
+}

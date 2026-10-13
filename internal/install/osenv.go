@@ -84,6 +84,7 @@ func NewOSEnv(opt OSEnvOptions) *OSEnv {
 		dryRun:   opt.DryRun,
 		log:      log,
 		extraBin: opt.ExtraPath,
+		versions: opt.Versions,
 	}
 }
 

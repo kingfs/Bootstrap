@@ -3,7 +3,9 @@ package install
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
+	"time"
 )
 
 // splitArgs 把命令行拆成 argv，支持单引号与双引号（不做变量展开）。
@@ -101,4 +103,36 @@ func needsRootParam(p *bool, def bool) bool {
 		return def
 	}
 	return *p
+}
+
+// logEnv 把一次工具安装里所有命令的输出写进日志文件。
+//
+// 用装饰器而不是改 ExecEnv 接口或各个 Installer：所有 via 共用同一条执行路径，
+// 拦在这里就天然覆盖全部安装方式，而且每个工具一个实例，不存在并发写同一文件。
+type logEnv struct {
+	ExecEnv
+	w io.Writer
+}
+
+// Run 执行命令并把"命令行 + 输出 + 退出码"追加到日志。
+func (l *logEnv) Run(ctx context.Context, c Command) (Result, error) {
+	res, err := l.ExecEnv.Run(ctx, c)
+	fmt.Fprintf(l.w, "=== %s $ %s\n", time.Now().Format(time.RFC3339), c.String())
+	if res.Stdout != "" {
+		fmt.Fprintf(l.w, "%s", ensureTrailingNewline(res.Stdout))
+	}
+	if res.Stderr != "" {
+		fmt.Fprintf(l.w, "--- stderr ---\n%s", ensureTrailingNewline(res.Stderr))
+	}
+	if err != nil {
+		fmt.Fprintf(l.w, "!!! exit %d: %v\n", res.ExitCode, err)
+	}
+	return res, err
+}
+
+func ensureTrailingNewline(s string) string {
+	if strings.HasSuffix(s, "\n") {
+		return s
+	}
+	return s + "\n"
 }
