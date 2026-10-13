@@ -54,20 +54,30 @@ type Runtime struct {
 
 // Execute 是 cmd/bs 的唯一入口，返回进程退出码。
 func Execute() int {
-	opts := &Options{Out: os.Stdout, Err: os.Stderr}
-	rt := &Runtime{Opts: opts}
+	rt := &Runtime{Opts: &Options{Out: os.Stdout, Err: os.Stderr}}
+	return rt.Run(os.Args[1:])
+}
+
+// Run 解析并执行一次命令行调用，返回进程退出码。
+//
+// 错误报告也放在这里（而不是 main）：这样"命令 → 退出码 → 用户看到什么"
+// 这条链路可以在进程内被完整测试，不必 fork 子进程。
+func (rt *Runtime) Run(args []string) int {
 	root := rt.newRootCmd()
-	root.SetOut(opts.Out)
-	root.SetErr(opts.Err)
+	root.SetOut(rt.Opts.Out)
+	root.SetErr(rt.Opts.Err)
+	root.SetArgs(args)
+
 	if err := root.Execute(); err != nil {
 		code := ExitCode(err)
 		if msg := strings.TrimSpace(err.Error()); msg != "" {
-			fmt.Fprintf(opts.Err, "bs: %s\n", msg)
+			fmt.Fprintf(rt.Opts.Err, "bs: %s\n", msg)
 		}
-		if code == ExitUsage {
-			fmt.Fprintf(opts.Err, "提示：运行 `bs --help` 查看用法。\n")
-		} else if code == ExitPrecondition {
-			fmt.Fprintf(opts.Err, "提示：运行 `bs doctor` 检查环境。\n")
+		switch code {
+		case ExitUsage:
+			fmt.Fprint(rt.Opts.Err, "提示：运行 `bs --help` 查看用法。\n")
+		case ExitPrecondition:
+			fmt.Fprint(rt.Opts.Err, "提示：运行 `bs doctor` 检查环境。\n")
 		}
 		return code
 	}

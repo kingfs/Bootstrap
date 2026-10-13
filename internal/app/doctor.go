@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/buildinfo"
+	"github.com/kingfs/Bootstrap/pkg/cmdx"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
 	"github.com/kingfs/Bootstrap/pkg/hostinfo"
 )
@@ -77,31 +78,38 @@ func (a *App) Doctor(ctx context.Context) []Check {
 	}
 
 	// 4. 外部命令
+	//
+	// 只做路径检查 + 无副作用的版本查询。刻意**不**执行 `go version`：
+	// 即便设置 GOTELEMETRY=off，Go 工具链仍会在 os.UserConfigDir() 下创建
+	// go/telemetry 计数文件，而 doctor 承诺"只读"。Go 版本探测留给
+	// `bs tool`（M2），届时会把 HOME 指向 bs 自己的缓存目录再探测。
 	for _, bin := range []struct {
-		name string
-		args []string
-		want bool
+		name    string
+		args    []string
+		probe   bool
+		require bool
 	}{
-		{"git", []string{"--version"}, true},
-		{"curl", []string{"--version"}, false},
-		{"go", []string{"version"}, false},
+		{"git", []string{"--version"}, true, true},
+		{"curl", []string{"--version"}, true, false},
+		{"go", nil, false, false},
 	} {
 		path, ok := a.lookPath(bin.name)
 		if !ok {
 			st := StatusSkip
 			hint := ""
-			if bin.want {
+			if bin.require {
 				st = StatusFail
 				hint = fmt.Sprintf("`bs repo` 依赖 git，请先安装 %s", bin.name)
 			}
 			add(Check{Name: bin.name, Status: st, Detail: "未找到", Hint: hint})
 			continue
 		}
-		res, err := a.Runner.Run(ctx, cmdxCommand(bin.name, bin.args...))
 		detail := path
-		if err == nil {
-			if line := firstLine(strings.TrimSpace(res.Stdout + res.Stderr)); line != "" {
-				detail += " — " + line
+		if bin.probe {
+			if res, err := a.Runner.Run(ctx, cmdx.Command{Name: bin.name, Args: bin.args}); err == nil {
+				if line := firstLine(strings.TrimSpace(res.Stdout + res.Stderr)); line != "" {
+					detail += " — " + line
+				}
 			}
 		}
 		add(Check{Name: bin.name, Status: StatusOK, Detail: detail})

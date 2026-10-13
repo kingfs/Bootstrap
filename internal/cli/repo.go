@@ -140,7 +140,7 @@ func renderRepoResults(rt *Runtime, results []app.RepoGetResult) {
 			status = string(r.Action)
 		}
 		fmt.Fprintf(w, "%-8s %s\n", status, r.Path)
-		if rt.Opts.Verbose > 0 || status == "failed" || status == "skipped" {
+		if rt.Opts.Verbose > 0 || status == "failed" || status == "skipped" || status == "planned" {
 			fmt.Fprintf(w, "\t%s\n", r.Message)
 			// 跳过的计划不会执行，打印命令只会让人误以为它跑过了。
 			if status != "skipped" {

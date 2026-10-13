@@ -50,6 +50,10 @@ make cross     # 交叉编译 6 个平台组合
    - 文件读写只用 `t.TempDir()`，绝不写真实 `$HOME`、`/etc`、注册表；
    - 不改真实 rc 文件（用 `--rc` / 注入路径）；
    - 单元测试与 `scripts/smoke.sh` 都不发网络请求（网络路径用 `--dry-run` 或假 Runner 覆盖）。
+   - "FakeExecEnv"在本仓库的落地方式：
+     `hostinfo.Env` / `config.EnvFunc`（注入环境）、`config.ResolvePathsWith`（注入 goos/home）、
+     `gitrepo.Runner` 接口（假命令执行器）、`internal/cli` 进程内测试（`Runtime.Run` +
+     临时 `BS_*_HOME` + 缓冲区输出）、`scripts/smoke.sh`（真实二进制 + 沙箱目录）。
 2. **`--dry-run` 必须真的什么都不做**：任何新增的破坏性操作都要先过 `Runner.DryRun`，
    并补一条"执行后目标路径不存在"的断言（参考 `internal/gitrepo/manager_test.go`、
    `pkg/cmdx/cmdx_test.go`）。
@@ -109,6 +113,9 @@ make cross     # 交叉编译 6 个平台组合
 2. 修改用户文件（rc、配置文件）之前先备份（`fsx.BackupFile`），并优先用 `AtomicWriteFile`。
 3. 下载内容必须校验 sha256；校验文件拿不到就中止（见 `scripts/install.sh`）。
 4. `bs doctor` 是**只读**的：不创建目录、不写配置、不发网络请求；网络检查只放在 `bs proxy test`。
+   唯一的写动作是"目录可写性探测"——在最近的已存在祖先目录里创建并立刻删除一个临时文件。
+   另外它**不执行** `go version`：Go 工具链会借此往 `~/.config/go/telemetry` 写计数文件
+   （`GOTELEMETRY=off` / `GOTELEMETRYDIR` 都拦不住），这与"只读"冲突。
 5. 新增破坏性命令时，必须在 `--dry-run` 下走通，并在 README/`--help` 里说明。
 
 ## 9. 提交与文档

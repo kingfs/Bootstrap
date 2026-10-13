@@ -1,0 +1,511 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// sandbox 把配置/状态/缓存目录全部重定向到临时目录，并返回一个可注入输出缓冲区的 Runtime。
+//
+// 测试在进程内直接执行 cobra 命令（不 fork 子进程），因此能精确断言退出码与
+// stdout/stderr 内容；同时因为所有路径都在 t.TempDir() 下，绝不会碰到真实 $HOME。
+func sandbox(t *testing.T) (*Runtime, *bytes.Buffer, *bytes.Buffer, string) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
+	t.Setenv("BS_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("BS_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("BS_CACHE_HOME", filepath.Join(root, "cache"))
+	t.Setenv("NO_COLOR", "1")
+	// 清掉可能影响代理判定的继承变量，保证用例确定。
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "NO_PROXY"} {
+		t.Setenv(k, "")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	out, errBuf := &bytes.Buffer{}, &bytes.Buffer{}
+	rt := &Runtime{Opts: &Options{Out: out, Err: errBuf}}
+	return rt, out, errBuf, root
+}
+
+// run 在进程内执行一条命令，返回退出码与输出。
+//
+// 走的是与真实二进制完全相同的 Runtime.Run 路径（含错误报告与退出码映射），
+// 因此不需要 fork 子进程就能断言 CLI 行为。
+func run(t *testing.T, rt *Runtime, args ...string) (int, string, string) {
+	t.Helper()
+	outBuf, errBuf := rt.Opts.Out.(*bytes.Buffer), rt.Opts.Err.(*bytes.Buffer)
+	outBuf.Reset()
+	errBuf.Reset()
+	code := rt.Run(args)
+	return code, outBuf.String(), errBuf.String()
+}
+
+func writeConfig(t *testing.T, root, content string) {
+	t.Helper()
+	path := filepath.Join(root, "config", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+const proxyConfig = `version: 1
+log:
+  level: info
+  color: never
+repo:
+  root: ~/src
+proxy:
+  default_profile: local
+  profiles:
+    local:
+      http_proxy: http://127.0.0.1:7890
+      https_proxy: http://127.0.0.1:7890
+      no_proxy: 127.0.0.1,localhost
+    corp:
+      http_proxy: http://user:pw@proxy.corp:8123
+      https_proxy: http://user:pw@proxy.corp:8123
+tool:
+  extra_path:
+    - ~/.local/bin
+`
+
+func TestVersionCommand(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+	code, out, _ := run(t, rt, "version")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, out = %s", code, out)
+	}
+	if !strings.HasPrefix(out, "bs ") {
+		t.Errorf("out = %q", out)
+	}
+
+	code, out, _ = run(t, rt, "version", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	var info map[string]any
+	if err := json.Unmarshal([]byte(out), &info); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\n%s", err, out)
+	}
+	for _, key := range []string{"version", "commit", "go_version", "os", "arch"} {
+		if _, ok := info[key]; !ok {
+			t.Errorf("json missing %q: %v", key, info)
+		}
+	}
+}
+
+func TestConfigPathUsesSandbox(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	code, out, _ := run(t, rt, "config", "path")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, out = %s", code, out)
+	}
+	if !strings.Contains(out, filepath.Join(root, "config")) {
+		t.Errorf("config path should point into the sandbox:\n%s", out)
+	}
+}
+
+func TestConfigInitIsIdempotent(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	code, out, _ := run(t, rt, "config", "init")
+	if code != ExitOK || !strings.Contains(out, "已生成") {
+		t.Fatalf("exit = %d, out = %s", code, out)
+	}
+	cfgPath := filepath.Join(root, "config", "config.yaml")
+	before, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	code, out, _ = run(t, rt, "config", "init")
+	if code != ExitOK || !strings.Contains(out, "已存在") {
+		t.Fatalf("second init: exit = %d, out = %s", code, out)
+	}
+	after, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("repeated config init modified the file")
+	}
+
+	code, out, _ = run(t, rt, "config", "validate")
+	if code != ExitOK || !strings.Contains(out, "配置合法") {
+		t.Fatalf("validate: exit = %d, out = %s", code, out)
+	}
+}
+
+func TestConfigValidateReportsAllProblems(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, "version: 1\nlog:\n  level: loud\nrepo:\n  pull:\n    strategy: yolo\n")
+
+	code, _, errOut := run(t, rt, "config", "validate")
+	if code != ExitPrecondition {
+		t.Fatalf("exit = %d, want %d (precondition)", code, ExitPrecondition)
+	}
+	for _, want := range []string{"log.level", "repo.pull.strategy"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr should mention %s:\n%s", want, errOut)
+		}
+	}
+}
+
+func TestMissingExplicitConfigIsPreconditionError(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	code, _, _ := run(t, rt, "--config", filepath.Join(root, "nope.yaml"), "doctor")
+	if code != ExitPrecondition {
+		t.Fatalf("exit = %d, want %d", code, ExitPrecondition)
+	}
+}
+
+func TestUnknownCommandIsUsageError(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+	code, _, _ := run(t, rt, "definitely-not-a-command")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, ExitUsage)
+	}
+	code, _, _ = run(t, rt, "proxy", "env", "--shell", "nonsense")
+	if code != ExitUsage {
+		t.Fatalf("invalid --shell exit = %d, want %d", code, ExitUsage)
+	}
+}
+
+func TestProxyCommandsAndShellRendering(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+
+	code, out, _ := run(t, rt, "proxy", "list")
+	if code != ExitOK || !strings.Contains(out, "local") || !strings.Contains(out, "corp") {
+		t.Fatalf("proxy list: exit = %d, out = %s", code, out)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "env", "--apply")
+	if code != ExitOK || !strings.Contains(out, "export HTTPS_PROXY='http://127.0.0.1:7890'") {
+		t.Fatalf("proxy env: exit = %d, out = %s", code, out)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "env", "--shell", "fish")
+	if code != ExitOK || !strings.Contains(out, "set -gx HTTPS_PROXY") {
+		t.Fatalf("fish env: exit = %d, out = %s", code, out)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "env", "--shell", "json")
+	if code != ExitOK {
+		t.Fatalf("json env exit = %d", code)
+	}
+	var env map[string]string
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("json env output invalid: %v\n%s", err, out)
+	}
+	if env["HTTPS_PROXY"] != "http://127.0.0.1:7890" {
+		t.Errorf("json env = %v", env)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "use", "corp")
+	if code != ExitOK || !strings.Contains(out, "corp") {
+		t.Fatalf("proxy use: exit = %d, out = %s", code, out)
+	}
+	code, out, _ = run(t, rt, "proxy", "status")
+	if code != ExitOK {
+		t.Fatalf("status exit = %d", code)
+	}
+	if strings.Contains(out, "user:pw") {
+		t.Errorf("credentials leaked:\n%s", out)
+	}
+	if !strings.Contains(out, "***@proxy.corp:8123") {
+		t.Errorf("expected masked proxy in status:\n%s", out)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "off")
+	if code != ExitOK || !strings.Contains(out, "停用") {
+		t.Fatalf("off: exit = %d, out = %s", code, out)
+	}
+	code, out, _ = run(t, rt, "proxy", "env", "--apply")
+	if code != ExitOK || !strings.HasPrefix(out, "unset ") {
+		t.Fatalf("off env: exit = %d, out = %s", code, out)
+	}
+}
+
+func TestProxyUseUnknownProfileIsPreconditionError(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+	code, _, errOut := run(t, rt, "proxy", "use", "nope")
+	if code != ExitPrecondition {
+		t.Fatalf("exit = %d, want %d (stderr=%s)", code, ExitPrecondition, errOut)
+	}
+}
+
+func TestProxyAddDefaultsToDrySnippet(t *testing.T) {
+	rt, out, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+	before, err := os.Stat(filepath.Join(root, "config", "config.yaml"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	code, _, _ := run(t, rt, "proxy", "add", "smoke", "--http", "http://127.0.0.1:7890")
+	if code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "http_proxy: http://127.0.0.1:7890") {
+		t.Errorf("expected a YAML snippet:\n%s", out.String())
+	}
+	after, err := os.Stat(filepath.Join(root, "config", "config.yaml"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("proxy add without --write modified the config file")
+	}
+}
+
+// TestShellInstallAndUninstallThroughCLI 走完整命令行路径，验证 rc 处理与幂等。
+func TestShellInstallAndUninstallThroughCLI(t *testing.T) {
+	rt, out, _, root := sandbox(t)
+	rc := filepath.Join(root, "home", ".bashrc")
+	if err := os.MkdirAll(filepath.Dir(rc), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	original := "# 我的配置\nexport EDITOR=vim\n"
+	if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	code, _, _ := run(t, rt, "shell", "init", "bash")
+	if code != ExitOK {
+		t.Fatalf("shell init exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "command bs") {
+		t.Errorf("shell init output missing the wrapper:\n%s", out.String())
+	}
+
+	code, _, _ = run(t, rt, "shell", "install", "--shell", "bash", "--rc", rc)
+	if code != ExitOK || !strings.Contains(out.String(), "已更新") {
+		t.Fatalf("install: exit = %d, out = %s", code, out.String())
+	}
+	installed := readFileString(t, rc)
+	if !strings.Contains(installed, ">>> bootstrap") || !strings.Contains(installed, "export EDITOR=vim") {
+		t.Fatalf("rc after install:\n%s", installed)
+	}
+
+	code, _, _ = run(t, rt, "shell", "install", "--shell", "bash", "--rc", rc)
+	if code != ExitOK || !strings.Contains(out.String(), "已是最新") {
+		t.Fatalf("second install should be a no-op: exit = %d, out = %s", code, out.String())
+	}
+
+	code, _, _ = run(t, rt, "shell", "status", "--shell", "bash", "--rc", rc)
+	if code != ExitOK || !strings.Contains(out.String(), "已安装且为最新") {
+		t.Fatalf("status: exit = %d, out = %s", code, out.String())
+	}
+
+	code, _, _ = run(t, rt, "shell", "uninstall", "--shell", "bash", "--rc", rc)
+	if code != ExitOK {
+		t.Fatalf("uninstall exit = %d", code)
+	}
+	if got := readFileString(t, rc); got != original {
+		t.Errorf("rc not restored:\n%q\nwant\n%q", got, original)
+	}
+}
+
+// TestShellInstallDryRunDoesNotWrite 是命令层的 dry-run 断言。
+func TestShellInstallDryRunDoesNotWrite(t *testing.T) {
+	rt, out, _, root := sandbox(t)
+	rc := filepath.Join(root, "home", ".bashrc")
+
+	code, _, _ := run(t, rt, "--dry-run", "shell", "install", "--shell", "bash", "--rc", rc)
+	if code != ExitOK {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "dry-run") {
+		t.Errorf("expected a dry-run notice:\n%s", out.String())
+	}
+	if _, err := os.Stat(rc); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created the rc file (%v)", err)
+	}
+}
+
+func TestEnvPathAndShow(t *testing.T) {
+	rt, out, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+
+	code, _, _ := run(t, rt, "env", "path")
+	if code != ExitOK {
+		t.Fatalf("env path exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "export PATH=") {
+		t.Errorf("env path output = %q", out.String())
+	}
+
+	code, _, _ = run(t, rt, "env", "path", "--shell", "fish")
+	if code != ExitOK || !strings.Contains(out.String(), "set -gx PATH") {
+		t.Fatalf("fish env path: exit = %d, out = %s", code, out.String())
+	}
+
+	code, _, _ = run(t, rt, "env", "show")
+	if code != ExitOK || !strings.Contains(out.String(), "tool.extra_path") {
+		t.Fatalf("env show: exit = %d, out = %s", code, out.String())
+	}
+
+	code, _, _ = run(t, rt, "env", "show", "--json")
+	if code != ExitOK {
+		t.Fatalf("env show --json exit = %d", code)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
+	}
+	if _, ok := report["path_entries"]; !ok {
+		t.Errorf("json missing path_entries: %v", report)
+	}
+}
+
+// TestRepoGetDryRunThroughCLI 断言命令行路径下 dry-run 不创建任何目录。
+func TestRepoGetDryRunThroughCLI(t *testing.T) {
+	rt, out, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+
+	code, _, _ := run(t, rt, "repo", "get", "kingfs/Bootstrap", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, out = %s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "git clone") {
+		t.Errorf("expected the clone command in the plan:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "home", "src")); !os.IsNotExist(err) {
+		t.Fatal("dry-run created the repo root")
+	}
+
+	code, _, _ = run(t, rt, "repo", "root")
+	if code != ExitOK || !strings.Contains(out.String(), filepath.Join(root, "home", "src")) {
+		t.Fatalf("repo root: exit = %d, out = %s", code, out.String())
+	}
+
+	code, _, _ = run(t, rt, "repo", "list")
+	if code != ExitOK {
+		t.Fatalf("repo list on a missing root should succeed, exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "暂未发现仓库") {
+		t.Errorf("repo list output = %q", out.String())
+	}
+}
+
+func TestRepoGetRejectsGarbageInput(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+	code, _, _ := run(t, rt, "repo", "get", "not a repo at all", "--dry-run")
+	if code != ExitPartial {
+		t.Fatalf("exit = %d, want %d (partial)", code, ExitPartial)
+	}
+}
+
+func TestDoctorRunsOfflineAndReadOnly(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+	before := listTree(t, root)
+
+	code, doctorOut, _ := run(t, rt, "doctor")
+	if code != ExitOK && code != ExitPrecondition {
+		t.Fatalf("doctor exit = %d, out = %s", code, doctorOut)
+	}
+	if !strings.Contains(doctorOut, "platform") || !strings.Contains(doctorOut, "git") {
+		t.Errorf("doctor output incomplete:\n%s", doctorOut)
+	}
+	if got := listTree(t, root); strings.Join(before, "\n") != strings.Join(got, "\n") {
+		t.Errorf("doctor modified the filesystem:\n新增：%v\n消失：%v", diffPaths(got, before), diffPaths(before, got))
+	}
+
+	code, jsonOut, _ := run(t, rt, "doctor", "--json")
+	if code != ExitOK && code != ExitPrecondition {
+		t.Fatalf("doctor --json exit = %d", code)
+	}
+	var payload struct {
+		Checks  []map[string]any `json:"checks"`
+		Summary map[string]int   `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, jsonOut)
+	}
+	if len(payload.Checks) == 0 {
+		t.Error("doctor --json returned no checks")
+	}
+}
+
+// TestShellStartupSurvivesBrokenConfig 断言"开 shell 时会被调用的命令"不会因为
+// 配置损坏而失败——否则一个手误就会让人登录不进 shell。
+func TestShellStartupSurvivesBrokenConfig(t *testing.T) {
+	rt, out, errOut, root := sandbox(t)
+	writeConfig(t, root, "this: [is: not: valid: yaml\n")
+
+	code, _, _ := run(t, rt, "shell", "init", "bash")
+	if code != ExitOK {
+		t.Fatalf("shell init must survive a broken config, exit = %d, stderr = %s", code, errOut)
+	}
+	if !strings.Contains(out.String(), "command bs") {
+		t.Errorf("shell init should still emit the wrapper:\n%s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "警告") {
+		t.Errorf("expected a warning on stderr, got %q", errOut)
+	}
+
+	code, _, _ = run(t, rt, "env", "path")
+	if code != ExitOK {
+		t.Errorf("env path must survive a broken config, exit = %d", code)
+	}
+	code, _, _ = run(t, rt, "proxy", "env", "--apply")
+	if code != ExitOK {
+		t.Errorf("proxy env must survive a broken config, exit = %d", code)
+	}
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func listTree(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			out = append(out, path+"|dir")
+			return nil
+		}
+		out = append(out, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return out
+}
+
+// diffPaths 返回 a 中有而 b 中没有的路径（用于展示文件系统差异）。
+func diffPaths(a, b []string) []string {
+	index := make(map[string]bool, len(b))
+	for _, p := range b {
+		index[p] = true
+	}
+	var out []string
+	for _, p := range a {
+		if !index[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}

@@ -203,10 +203,17 @@ func (m *Manager) Apply(ctx context.Context, plan Plan, opts Options) (Outcome, 
 		out.Message = plan.Reason
 		return out, nil
 	case ActionClone:
-		if _, err := m.Runner.Run(ctx, plan.Commands[0]); err != nil {
+		res, err := m.Runner.Run(ctx, plan.Commands[0])
+		if err != nil {
 			out.Status = "failed"
 			out.Message = err.Error()
 			return out, err
+		}
+		if res.DryRun {
+			// 干跑时命令没有真正执行，报告"计划"比谎报"已克隆"诚实得多。
+			out.Status = "planned"
+			out.Message = "dry-run：未执行任何命令"
+			return out, nil
 		}
 		out.Status = "cloned"
 		out.Message = plan.Ref.Slug()
@@ -222,10 +229,16 @@ func (m *Manager) applyPull(ctx context.Context, plan Plan, opts Options) (Outco
 	out := Outcome{Plan: plan}
 
 	// 1) fetch
-	if _, err := m.Runner.Run(ctx, plan.Commands[0]); err != nil {
+	fetchRes, err := m.Runner.Run(ctx, plan.Commands[0])
+	if err != nil {
 		out.Status = "failed"
 		out.Message = err.Error()
 		return out, err
+	}
+	if fetchRes.DryRun {
+		out.Status = "planned"
+		out.Message = "dry-run：未执行任何命令"
+		return out, nil
 	}
 
 	// 2) 脏工作区检查（运行时信息，Plan 阶段无法得知）
