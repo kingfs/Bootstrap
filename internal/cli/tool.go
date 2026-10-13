@@ -204,7 +204,8 @@ func (rt *Runtime) toolPlanCmd() *cobra.Command {
 			if err != nil {
 				return toolErr(err)
 			}
-			return rt.renderPlan(plan, false)
+			// plan 本身就不执行任何东西，所以这里永远提示（而不是只在 --dry-run 时）。
+			return rt.renderPlan(plan, "（只展示计划，不会执行任何操作）")
 		},
 	}
 	f.bind(cmd)
@@ -296,11 +297,11 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 	}
 	if rt.Opts.DryRun {
 		// 干跑到这里就结束：一行命令、一个字节都不会写（安全红线 §8）。
-		return rt.renderPlan(plan, true)
+		return rt.renderPlan(plan, "（dry-run：以下操作都不会被执行）")
 	}
 	if !rt.Opts.JSON {
 		// 先让人看清"要做什么、按什么顺序、用哪种方式"，再动手。
-		if err := rt.renderPlan(plan, false); err != nil {
+		if err := rt.renderPlan(plan, ""); err != nil {
 			return err
 		}
 	}
@@ -480,7 +481,9 @@ func (rt *Runtime) renderToolDetail(d *app.ToolDetail) error {
 	return nil
 }
 
-func (rt *Runtime) renderPlan(plan install.Plan, dryRun bool) error {
+// renderPlan 渲染计划。banner 是首行提示（空表示不提示）——
+// 由调用方说明"为什么不会执行"，比在渲染函数里猜调用场景更清楚。
+func (rt *Runtime) renderPlan(plan install.Plan, banner string) error {
 	if rt.Opts.JSON {
 		return rt.emit(plan)
 	}
@@ -489,8 +492,8 @@ func (rt *Runtime) renderPlan(plan install.Plan, dryRun bool) error {
 		fmt.Fprintln(out, "没有需要处理的工具。")
 		return nil
 	}
-	if dryRun {
-		fmt.Fprintln(out, "（dry-run：以下操作都不会被执行）")
+	if banner != "" {
+		fmt.Fprintln(out, banner)
 	}
 	w := rt.newTable()
 	fmt.Fprintln(w, "工具\t动作\t方式\t说明")
