@@ -235,7 +235,11 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		if explicit[t.ID] {
 			via = e.opt.DefaultVia
 		}
-		chain, cerr := ResolveChain(ctx, e.reg, e.env, t, ChainOptions{Via: via, Managers: e.opt.Managers})
+		// 方法链按操作类型取：升级/卸载可以各自声明方法，没声明就复用 install 链
+		// （多数安装器能从 op 推导出对应命令，例如 brew install ↔ brew uninstall）。
+		chainTool := t
+		chainTool.Install = methodsForOp(t, op)
+		chain, cerr := ResolveChain(ctx, e.reg, e.env, chainTool, ChainOptions{Via: via, Managers: e.opt.Managers})
 		step.Chain = chain
 		step.Skipped = chain.Skipped()
 		// --via / tool.default_via 指定错了属于用户输入问题，必须整体失败，
@@ -256,7 +260,7 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		step.Via = cand.Via
 		step.Manager = cand.Method.Params.Manager
 		in, _ := e.reg.Get(cand.Via)
-		action, aerr := in.Plan(ctx, e.env, t, cand.Method, op)
+		action, aerr := in.Plan(ctx, e.env, chainTool, cand.Method, op)
 		if aerr != nil {
 			if _, unsupported := aerr.(*ErrUnsupported); unsupported {
 				step.Status = StepUnsupported
@@ -283,6 +287,24 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		plan.Order = append(plan.Order, t.ID)
 	}
 	return plan, nil
+}
+
+// methodsForOp 选出该操作要用的方法链。
+//
+// tool.update / tool.uninstall 是可选的显式声明：写了就用它，
+// 没写就复用 install 链（安装器会按 op 换成对应的卸载/升级命令）。
+func methodsForOp(t manifest.Tool, op Op) []manifest.Method {
+	switch op {
+	case OpUpgrade:
+		if t.Update != nil {
+			return []manifest.Method{*t.Update}
+		}
+	case OpUninstall:
+		if len(t.Uninstall) > 0 {
+			return t.Uninstall
+		}
+	}
+	return t.Install
 }
 
 // Apply 执行计划。

@@ -5,7 +5,7 @@
 ## 1. 这个项目是什么
 
 `bs`（仓库名 Bootstrap）是维护者个人的开发环境重建工具：新机器上用它拉回仓库、
-恢复代理与 shell 环境，后续还会用它安装/更新工具链。
+恢复代理与 shell 环境、按清单安装/更新工具链（M1 + M2 已完成）。
 
 - 语言：Go（版本见 `go.mod`），命令框架 cobra + 配置 viper
 - 支持平台：Linux / macOS / Windows；Linux 与 macOS 的 `amd64`、`arm64` 都必须可用
@@ -81,7 +81,9 @@ make cross     # 交叉编译 6 个平台组合
 | 新的持久化状态字段 | `internal/state`，并保证内容不变时不写盘 |
 | 新的平台差异 | `pkg/hostinfo` 或 `internal/config/paths.go` |
 | 新的内置 shell 片段 | `tools/snippets/<posix|fish|pwsh>/NN-名字.{sh,fish,ps1}` |
-| 新的内置工具清单条目（M2） | `tools/{common,linux,darwin,windows}.yaml` |
+| 新的内置工具清单条目 | `tools/{common,linux,darwin}.yaml`（字段说明见 `docs/tool-schema.md`） |
+| 新的工具套装（profile） | 跨平台的写 `tools/profiles.yaml`，有平台差异的写 `tools/<os>.yaml` |
+| 新的安装方式（`via`） | `internal/install/` 里新增 Installer 并注册到 `NewRegistry`，同时补 `docs/tool-schema.md §7` |
 
 ### 内置 shell 片段约定
 
@@ -124,10 +126,25 @@ make cross     # 交叉编译 6 个平台组合
 - 改动了 CLI 表面（命令、参数、退出码）→ 同步更新 `README.md`。
 - 改动了架构、分层或关键决策 → 同步更新 `docs/design.md`（必要时追加 ADR）。
 - 新增/修改配置字段 → 同步更新 `docs/configuration.md`。
+- 改动清单字段或 `via` 参数 → 同步更新 `docs/tool-schema.md`（清单作者看的唯一权威说明）。
+
+### 写工具清单的硬纪律（M2 起）
+
+1. **优先交给已有的包管理器**：能 `brew`/`apt`/`npm`/`cargo`/`uv` 装，就别下官方二进制。
+2. **`via: release` 只在仓库确实发布校验和时使用**（实测：voidint/g 用 `sha256sum.txt`、
+   lazygit 用 `checksums.txt`、k9s 用 `checksums.sha256`、uv/ruff/ripgrep 每个产物配 `<asset>.sha256`；
+   fnm/bat/fzf 的 tar 包**没有**校验和）。拿不到校验和就中止，因此这类工具走管理器。
+   内置清单里**不使用** `via: script`（官方脚本没有稳定哈希，用 `insecure` 等于放弃校验）。
+3. **不静默提权**：系统包管理器会被护栏拦住（默认只允许 `devdep`/`service`/`cli`），
+   确实需要时显式写 `params.allow_system: true` 并在注释里说明理由。
+4. **平台差异用 `when` 表达，不要复制 id**；只有"整个工具只属于某个系统"才写进 `<os>.yaml`。
+5. **改完必须校验**：`bs tool manifest validate`（含 `--os linux|darwin|windows` 交叉校验），
+   再 `bs tool plan` 看实际会选哪个方式。清单字段见 `docs/tool-schema.md`。
 
 ## 10. 已知未完成项
 
-- `bs tool ...`（清单解析、安装引擎、版本管理）属 M2，尚未实现；`tools/*.yaml` 目前是占位。
-- Windows 的工具清单与 `repo.root` 默认值仍待细化（设计文档 §18.3）。
-- `bs init` 的交互式向导（`charmbracelet/huh`）属 M3。
-- 自更新（sha256 校验，ADR-0009）尚未实现。
+- **Windows 工具清单尚未编写**（`tools/windows.yaml` 为空，ADR-0014）：只保证能加载、不报错。
+- Windows 的 `repo.root` 默认值仍待细化（设计文档 §18.3）。
+- `bs init` 的交互式向导（`charmbracelet/huh`，ADR-0003）与自更新（sha256 校验，ADR-0009）属 M3。
+- 内置清单未覆盖 `fd`/`bat`：Ubuntu 上二进制名是 `fdfind`/`batcat`，与其它平台不一致，
+  等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。

@@ -902,3 +902,68 @@ tools:
 	mustContain(t, joined, filepath.Join(env.home, ".nvm"))
 	mustContain(t, action.Summary, "git 克隆")
 }
+
+// TestUpdateAndUninstallChainsAreHonored：tool.update / tool.uninstall 写了就用它，
+// 没写才复用 install 链（否则这两个字段就是纯装饰，写清单的人会被骗）。
+func TestUpdateAndUninstallChainsAreHonored(t *testing.T) {
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: demo
+    stack: base
+    kind: cli
+    verify: {command: demo, version_args: [--version], version_regex: 'v(?P<v>\d+\.\d+\.\d+)', min_version: "2.0"}
+    install:
+      - via: brew
+        params: {formula: demo}
+    update:
+      via: cargo
+      params: {crate: demo}
+    uninstall:
+      - via: npm
+        params: {package: demo, global: true}
+  - id: plain
+    stack: base
+    kind: cli
+    verify: {command: plain, version_args: [--version], version_regex: 'v(?P<v>\d+\.\d+\.\d+)', min_version: "2.0"}
+    install:
+      - via: brew
+        params: {formula: plain}
+`)
+	env := newFakeEnv(t).has("brew").has("cargo").has("npm")
+	eng, err := NewEngine(EngineOptions{
+		Env: env, Loaded: loaded,
+		// outdated：install 会继续（已安装才跳过），uninstall 也不会被当成"没装"。
+		Detector: newDetector(t, newFakeDetector(map[string]detect.Status{
+			"demo": detect.StatusOutdated, "plain": detect.StatusOutdated,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	cases := []struct {
+		op   Op
+		id   string
+		want string
+	}{
+		{OpInstall, "demo", "brew"},
+		{OpUpgrade, "demo", "cargo"},
+		{OpUninstall, "demo", "npm"},
+		{OpUpgrade, "plain", "brew"},
+		{OpUninstall, "plain", "brew"},
+	}
+	for _, tc := range cases {
+		plan, err := eng.PlanTools(context.Background(), []string{tc.id}, tc.op)
+		if err != nil {
+			t.Fatalf("%v/%s: %v", tc.op, tc.id, err)
+		}
+		if len(plan.Steps) != 1 {
+			t.Fatalf("%v/%s: steps = %+v", tc.op, tc.id, plan.Steps)
+		}
+		if got := plan.Steps[0].Via; got != tc.want {
+			t.Errorf("%v/%s: via = %s, want %s (status=%s reason=%s skipped=%v)",
+				tc.op, tc.id, got, tc.want, plan.Steps[0].Status, plan.Steps[0].Reason, plan.Steps[0].Skipped)
+		}
+	}
+}

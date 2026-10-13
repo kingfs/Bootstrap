@@ -7,7 +7,8 @@
 - **先看后做**：所有会改动文件系统或外部状态的命令都支持 `--dry-run`
 - **可脚本化**：`--json` 输出 + 明确区分的退出码
 
-> 当前进度：M1（仓库拉取、代理、shell 集成、体检）已完成。工具清单/安装引擎（`bs tool`）在 M2。
+> 当前进度：M1（仓库拉取、代理、shell 集成、体检）与 M2（工具清单 / 安装引擎，`bs tool`）已完成。
+> 交互式向导（`bs init`）与自更新在 M3；Windows 的工具清单尚未编写。
 
 ## 安装
 
@@ -37,6 +38,10 @@ bs doctor                       # 看看环境还缺什么
 
 bs proxy use local              # 启用代理（当前 shell 立即生效）
 bs repo get kingfs/Bootstrap    # 克隆或更新到 ~/src/github.com/kingfs/Bootstrap
+
+bs tool list                    # 看清单里哪些装了、哪些缺（实时探测）
+bs tool plan --profile golang   # 先看要做什么
+bs tool install --profile golang  # 再动手（含依赖，按拓扑序）
 ```
 
 ## 命令一览
@@ -125,6 +130,50 @@ eval "$(bs shell init bash)"
 | `bs env path` | 输出 PATH 装配语句（供 `eval`，幂等） |
 | `bs env export` | 输出 PATH + 代理的完整语句 |
 
+### 工具（`bs tool`）
+
+工具清单是**声明式 YAML**：每个条目说清"怎么判断装没装"（`verify`）和"按优先级排列的安装方式"（`install`）。
+`bs` 严格按清单里的书写顺序选第一个可用方式，不在代码里硬编码偏好。
+
+| 命令 | 说明 |
+| --- | --- |
+| `bs tool list` | 列出工具及状态（`installed`/`outdated`/`missing`/`unknown`） |
+| `bs tool search <关键词>` | 按名字/描述/标签搜索 |
+| `bs tool info <工具>` | 单个工具的详情、方式链（哪个可用、哪个会选中）与依赖 |
+| `bs tool plan [...]` | 只打印将要执行的步骤，不做任何修改 |
+| `bs tool install [...]` | 安装（幂等：已装的跳过；含依赖，按拓扑序） |
+| `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
+| `bs tool uninstall [...]` | 卸载（系统包管理器装的请用系统工具卸载） |
+| `bs tool manifest path\|validate\|show\|diff` | 清单来自哪里、是否写错、合并后长什么样 |
+
+选择方式（`plan`/`install`/`upgrade`/`uninstall` 通用）：`--profile`、`--stack`、`--kind`、`--tag`、`--missing`，
+以及位置参数指定的工具 id 或 `前缀/*`。`--via <方式>` 强制某一种方式（**只约束显式点名的工具**，依赖仍按自己的清单解析）。
+
+```sh
+bs tool list --missing                 # 这台机器上还缺什么
+bs tool install --profile golang        # 装整套：g → golang → gopls/dlv/staticcheck
+bs tool install uv --via brew           # 只对 uv 强制用 brew
+bs tool plan --tag monitor --json       # 计划也能机读
+```
+
+常用 profile：`base`（日常 CLI）、`golang`、`nodejs`、`python`、`rust`、`cpp`、`containers`、`infra`、`agent`、`full`、
+`managers`（只装全部版本管理器）。用 `bs tool manifest show` 查看当前平台实际有哪些。
+
+清单来源（后者覆盖前者，同名 id 按字段合并）：
+
+```
+二进制内置 tools/{common,<os>}.yaml + profiles.yaml   # 随 bs 发布，换机器不用同步文件
+<config>/tools/*.yaml                                 # 你的覆盖层，支持 `+install` / `+tags` 追加
+```
+
+跨平台校验清单（在 Linux 上检查 macOS/Windows 的清单）：
+
+```sh
+bs tool manifest validate --os darwin
+```
+
+字段速查见 [docs/tool-schema.md](docs/tool-schema.md)。
+
 ### 配置与体检
 
 | 命令 | 说明 |
@@ -133,7 +182,7 @@ eval "$(bs shell init bash)"
 | `bs config show` | 合并后的生效配置 |
 | `bs config validate` | 校验配置（一次性列出全部问题） |
 | `bs config init [--force]` | 生成默认配置（已存在不覆盖） |
-| `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、受管块 |
+| `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |
 | `bs version` | 版本信息（`--json` 可脚本消费） |
 
 ## 退出码
