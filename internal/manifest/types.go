@@ -39,6 +39,9 @@ var AllStacks = []Stack{
 	StackJava, StackShell, StackContainers, StackCloud, StackInfra, StackEditor, StackAgent,
 }
 
+// String 实现 fmt.Stringer（便于把它当作配置里的键）。
+func (s Stack) String() string { return string(s) }
+
 // ValidStack 报告 s 是否是合法 stack。
 func ValidStack(s Stack) bool {
 	for _, k := range AllStacks {
@@ -229,10 +232,12 @@ type Params struct {
 	ID          string `yaml:"id"`
 
 	// via: script
-	URL    string   `yaml:"url"`
-	SHA256 string   `yaml:"sha256"`
-	Args   []string `yaml:"args"`
-	Shell  string   `yaml:"shell"`
+	URL    string `yaml:"url"`
+	SHA256 string `yaml:"sha256"`
+	// Insecure 显式放弃 sha256 校验（官方脚本没有稳定校验和时才允许）。
+	Insecure *bool    `yaml:"insecure"`
+	Args     []string `yaml:"args"`
+	Shell    string   `yaml:"shell"`
 
 	// via: release
 	Asset           string   `yaml:"asset"`
@@ -249,6 +254,42 @@ type Params struct {
 
 	// 逃生口：清单表达不了的怪命令（仍属于该方法的语义范围）。
 	Command string `yaml:"command"`
+}
+
+// TemplateField 是一个可能含模板的参数字段。
+type TemplateField struct {
+	// Name 用 YAML 路径命名（例如 install[0].params.asset），便于定位问题。
+	Name  string
+	Value string
+}
+
+// TemplateFields 返回可能含模板的参数值。
+//
+// 安装引擎在清单校验期用它预渲染一遍，从而把"{{verison}} 这种拼写错误"
+// 挡在 validate 阶段，而不是等到真正安装时才失败。
+func (p Params) TemplateFields() []TemplateField {
+	return []TemplateField{
+		{"params.asset", p.Asset},
+		{"params.version_source", p.VersionSource},
+		{"params.dest", p.Dest},
+		{"params.binary", p.Binary},
+		{"params.url", p.URL},
+		{"params.sha256", p.SHA256},
+		{"params.package", p.Package},
+		{"params.crate", p.Crate},
+		{"params.module", p.Module},
+		{"params.formula", p.Formula},
+		{"params.cask", p.Cask},
+		{"params.id", p.ID},
+		{"params.version", p.Version},
+		{"params.command", p.Command},
+		{"params.build", p.Build},
+		{"params.install", p.Install},
+		{"params.prefix", p.Prefix},
+		{"params.repo", p.Repo},
+		{"params.source", p.Source},
+		{"params.python", p.Python},
+	}
 }
 
 // Symlink 描述安装后的软链：from 是真实路径，to 是暴露到 PATH 的路径。

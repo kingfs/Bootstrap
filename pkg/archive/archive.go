@@ -20,6 +20,17 @@ import (
 // maxFileSize 限制单个解出的文件大小（防止把磁盘写满）。
 const maxFileSize = 2 << 30
 
+// IsArchive 报告文件名看起来是不是受支持的归档。
+func IsArchive(name string) bool {
+	lower := strings.ToLower(name)
+	for _, suffix := range []string{".tar.gz", ".tgz", ".zip"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // Extract 按扩展名自动选择解压方式。
 //
 // strip 表示去掉路径最前面的 N 层目录（release 归档常见的
