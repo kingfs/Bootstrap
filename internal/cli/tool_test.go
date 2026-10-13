@@ -530,6 +530,29 @@ func TestToolInstallSkipsInstalled(t *testing.T) {
 	}
 }
 
+// TestToolInstallFailsWhenNoMethodIsUsable：方法链全部不可用时，
+// 计划里那一行是 failed，命令必须以非 0 结束（否则脚本会误判为装好了）。
+func TestToolInstallFailsWhenNoMethodIsUsable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假命令用 POSIX shell 脚本实现")
+	}
+	rt, _, _, _ := sandboxWithManifest(t)
+	// btop 只有 brew 一条路，而沙箱的 PATH 里没有 brew。
+	code, stdout, stderr := run(t, rt, "tool", "install", "btop", "--yes")
+	if code != ExitPrecondition {
+		t.Fatalf("exit = %d, want %d\nstdout=%s\nstderr=%s", code, ExitPrecondition, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "no usable install method") {
+		t.Errorf("stderr 应说明为什么装不了：\n%s", stderr)
+	}
+	// plan 只是预览，仍然是 0
+	if code, _, _ := run(t, rt, "tool", "plan", "btop"); code != 0 {
+		t.Errorf("plan exit = %d, want 0", code)
+	}
+	// 不带 --yes 的非交互调用应该先撞上"需要确认"（退出码 5），
+	// 但那要等计划里真的有活干；这里 failed 计划优先报 4。
+}
+
 // TestToolPlanIsOffline：plan 只做预览，因此不联网解析"最新版本"，
 // 也不该在磁盘上留下任何东西（缓存/工作目录都不行）。
 func TestToolPlanIsOffline(t *testing.T) {

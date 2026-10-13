@@ -115,9 +115,14 @@ type logEnv struct {
 }
 
 // Run 执行命令并把"命令行 + 输出 + 退出码"追加到日志。
+//
+// 命令行**先写**再执行：慢下载/被中断时日志里至少留下"在跑什么"，
+// 否则一个中途被 kill 的长时间命令只会留下一个空文件。
+// （输出只能等命令返回后补写——ExecEnv 没有流式接口，真实 Runner 的实时透传
+// 仍然走 `-v` 的 stdout/stderr。）
 func (l *logEnv) Run(ctx context.Context, c Command) (Result, error) {
-	res, err := l.ExecEnv.Run(ctx, c)
 	fmt.Fprintf(l.w, "=== %s $ %s\n", time.Now().Format(time.RFC3339), c.String())
+	res, err := l.ExecEnv.Run(ctx, c)
 	if res.Stdout != "" {
 		fmt.Fprintf(l.w, "%s", ensureTrailingNewline(res.Stdout))
 	}
