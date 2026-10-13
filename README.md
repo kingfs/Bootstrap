@@ -143,7 +143,7 @@ eval "$(bs shell init bash)"
 | `bs tool plan [...]` | 只打印将要执行的步骤，不做任何修改（离线预览，不解析"最新版本"） |
 | `bs tool install [...]` | 安装（幂等：已装的跳过；含依赖，按拓扑序） |
 | `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
-| `bs tool uninstall [...]` | 卸载（系统包管理器装的请用系统工具卸载） |
+| `bs tool uninstall [...]` | 卸载（交给各自的包管理器/官方方式；清单可单独写 `uninstall:` 链） |
 | `bs tool manifest path\|validate\|show\|diff` | 清单来自哪里、是否写错、合并后长什么样 |
 
 选择方式（`plan`/`install`/`upgrade`/`uninstall` 通用）：`--profile`、`--stack`、`--kind`、`--tag`、`--missing`，

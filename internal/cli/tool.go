@@ -254,7 +254,11 @@ func (rt *Runtime) toolUninstallCmd() *cobra.Command {
 	var f toolSelectFlags
 	cmd := &cobra.Command{
 		Use:   "uninstall [工具...]",
-		Short: "卸载工具（系统包管理器安装的请用系统工具卸载）",
+		Short: "卸载工具（交给各自的包管理器/官方方式执行）",
+		Long: "按工具声明的卸载方式链执行卸载。\n\n" +
+			"清单可以单独写 `uninstall:` 链；没写就沿用安装链（apt 会变成 apt-get remove）。\n" +
+			"系统包管理器需要 root，bs 不会静默提权；缺权限时会明确报错。\n" +
+			"只会移除清单里那个安装位置的东西，不会去删用户手动装到别处的副本。",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return rt.runToolOp(cmd, f, args, install.OpUninstall)
 		},
