@@ -122,9 +122,13 @@ func (a *App) detector() *detect.Detector {
 	// 而"计划"必须反映机器真实状态，否则预览会把已装的工具全列成"要安装"。
 	probe := *a.Runner
 	probe.DryRun = false
+	// 查找规则必须与安装期一致（`extra_path` + 清单 `path_dirs` + 家目录下的 bin）：
+	// 否则新机器上"刚装进 ~/.local/bin 的工具"会因为还没进 shell PATH 而复核失败——
+	// 明明装好了却报 failed，或者 `bs tool list` 把它显示成 missing。
+	lookup, _ := a.installEnv().(*install.OSEnv)
 	return &detect.Detector{
 		Executor:    &probe,
-		LookPath:    a.Runner,
+		LookPath:    lookup,
 		HomeDir:     a.Paths.HomeDir,
 		Timeout:     detect.ProbeTimeout,
 		Concurrency: detect.MaxConcurrency,
@@ -394,10 +398,10 @@ func (a *App) installEnv() install.ExecEnv {
 // extraPathDirs 是参与 LookPath 的额外目录（配置 + 约定俗成的用户 bin 目录）。
 func (a *App) extraPathDirs() []string {
 	var out []string
-	for _, p := range a.Cfg.Tool.ExtraPath {
-		if p = fsx.ExpandPath(p, a.Paths.HomeDir); p != "" {
-			out = append(out, p)
-		}
+	// 与 `bs env path` 用同一份来源：配置 extra_path + 清单里的 path_dirs。
+	// 两边不一致会导致"PATH 里有它、但安装期查找看不到"这类灵异现象。
+	for _, e := range a.PathEntries() {
+		out = append(out, e.Path)
 	}
 	if home := a.Paths.HomeDir; home != "" {
 		out = append(out,

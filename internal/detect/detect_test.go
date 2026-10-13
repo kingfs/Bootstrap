@@ -32,13 +32,28 @@ func (f *fakeExec) Run(_ context.Context, c cmdx.Command) (cmdx.Result, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, c)
 	f.mu.Unlock()
-	if err, ok := f.errs[c.Name]; ok {
-		return f.outputs[c.Name], err
+	// 探测会用 LookPath 解析出的完整路径执行命令（新机器上工具可能还没进 PATH），
+	// 因此按 basename 匹配，才不会被"绝对路径 vs 命令名"这种无关差异绊住。
+	key := c.Name
+	if base := filepath.Base(c.Name); f.has(base) {
+		key = base
 	}
-	if res, ok := f.outputs[c.Name]; ok {
+	if err, ok := f.errs[key]; ok {
+		return f.outputs[key], err
+	}
+	if res, ok := f.outputs[key]; ok {
 		return res, nil
 	}
 	return cmdx.Result{}, errors.New("command not found: " + c.Name)
+}
+
+// has 报告是否登记过这个名字（含绝对路径的 basename 形式）。
+func (f *fakeExec) has(name string) bool {
+	if _, ok := f.outputs[name]; ok {
+		return true
+	}
+	_, ok := f.errs[name]
+	return ok
 }
 
 func (f *fakeExec) called(name string) int {
@@ -46,7 +61,7 @@ func (f *fakeExec) called(name string) int {
 	defer f.mu.Unlock()
 	n := 0
 	for _, c := range f.calls {
-		if c.Name == name {
+		if c.Name == name || filepath.Base(c.Name) == name {
 			n++
 		}
 	}

@@ -396,23 +396,19 @@ func (e *Engine) Apply(ctx context.Context, plan Plan, op Op) (Report, error) {
 
 // stepEnv 为一次工具安装准备"带日志的执行环境"（docs/design.md §7.5 的日志与审计）。
 //
-// 返回的 closeLog 一定非 nil，调用方 defer 或显式调用都安全。
-func (e *Engine) stepEnv(toolID string) (ExecEnv, string, func()) {
+// 返回的 finishLog 一定要在 Execute 之后调用：它负责关文件并给出日志路径
+// （什么都没写时返回空串）。日志本身出问题不该让安装失败，只记警告。
+func (e *Engine) stepEnv(toolID string) (ExecEnv, func() string) {
 	if e.opt.LogDir == "" || e.env.DryRun() {
-		return e.env, "", func() {}
+		return e.env, func() string { return "" }
 	}
 	path := LogPath(e.opt.LogDir, toolID, e.opt.Now())
 	if err := fsx.EnsureDir(filepath.Dir(path), 0o755); err != nil {
-		// 日志写不出来不该让安装失败：退回无日志环境，只记一条警告。
 		e.env.Log().Warn("cannot create log dir", "path", path, "err", err)
-		return e.env, "", func() {}
+		return e.env, func() string { return "" }
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		e.env.Log().Warn("cannot open log file", "path", path, "err", err)
-		return e.env, "", func() {}
-	}
-	return &logEnv{ExecEnv: e.env, w: f}, path, func() { f.Close() }
+	l := &logEnv{ExecEnv: e.env, path: path}
+	return l, func() string { p := l.Path(); l.close(); return p }
 }
 
 // applyStep 执行一个步骤并做安装后验证。
@@ -429,10 +425,9 @@ func (e *Engine) applyStep(ctx context.Context, s Step, op Op) (Step, error) {
 	log.Info("apply", "tool", s.ToolID, "via", s.Via, "op", string(op))
 
 	// 每条命令的完整输出留一份日志（无副作用路径：干跑不写）。
-	env, logPath, closeLog := e.stepEnv(s.ToolID)
-	out.LogPath = logPath
+	env, finishLog := e.stepEnv(s.ToolID)
 	err := in.Execute(ctx, *s.Action, env)
-	closeLog()
+	out.LogPath = finishLog()
 	if err != nil {
 		out.Status = StepFailed
 		out.Error = err.Error()

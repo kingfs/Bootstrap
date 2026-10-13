@@ -247,7 +247,14 @@ func (d *Detector) probeVersion(ctx context.Context, t manifest.Tool, res Result
 	defer cancel()
 
 	args := t.Verify.VersionArgs
-	cmd := cmdx.Command{Name: t.Verify.Command, Args: args, Timeout: d.timeout()}
+	// 用 LookPath 解析出的**完整路径**执行：查找规则里包含 extra_path 与
+	// `~/.local/bin` 这类"还没进 shell PATH"的目录，若这里退回裸命令名，
+	// 就会出现"找得到、却执行不了"的自相矛盾（新机器上刚装好的工具最典型）。
+	name := t.Verify.Command
+	if res.Command != "" {
+		name = res.Command
+	}
+	cmd := cmdx.Command{Name: name, Args: args, Timeout: d.timeout()}
 	out, err := d.Executor.Run(runCtx, cmd)
 	text := out.Stdout + "\n" + out.Stderr
 

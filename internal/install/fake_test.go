@@ -203,11 +203,17 @@ func (f *fakeDetector) LookPath(name string) (string, bool) {
 func (f *fakeDetector) executor() detect.Executor { return f }
 func (f *fakeDetector) Run(_ context.Context, c cmdx.Command) (cmdx.Result, error) {
 	f.probes++
-	st, ok := f.status[c.Name]
+	// 探测用 LookPath 解析出的完整路径执行（工具可能还没进 PATH），
+	// 因此按 basename 匹配登记名。
+	name := c.Name
+	if _, ok := f.status[filepath.Base(name)]; ok {
+		name = filepath.Base(name)
+	}
+	st, ok := f.status[name]
 	if !ok || st == detect.StatusMissing {
 		return cmdx.Result{}, errors.New("not found")
 	}
-	v := f.version[c.Name]
+	v := f.version[name]
 	if v == "" {
 		v = "1.0.0"
 	}

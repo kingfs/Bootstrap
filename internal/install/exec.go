@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -109,9 +111,16 @@ func needsRootParam(p *bool, def bool) bool {
 //
 // 用装饰器而不是改 ExecEnv 接口或各个 Installer：所有 via 共用同一条执行路径，
 // 拦在这里就天然覆盖全部安装方式，而且每个工具一个实例，不存在并发写同一文件。
+//
+// 日志文件**惰性创建**：纯下载型安装（release/source）一条命令都不跑，
+// 那就不要留下一个 0 字节的日志文件。
 type logEnv struct {
 	ExecEnv
-	w io.Writer
+	path string
+
+	mu     sync.Mutex
+	f      *os.File
+	opened bool
 }
 
 // Run 执行命令并把"命令行 + 输出 + 退出码"追加到日志。
@@ -121,18 +130,54 @@ type logEnv struct {
 // （输出只能等命令返回后补写——ExecEnv 没有流式接口，真实 Runner 的实时透传
 // 仍然走 `-v` 的 stdout/stderr。）
 func (l *logEnv) Run(ctx context.Context, c Command) (Result, error) {
-	fmt.Fprintf(l.w, "=== %s $ %s\n", time.Now().Format(time.RFC3339), c.String())
+	fmt.Fprintf(l.writer(), "=== %s $ %s\n", time.Now().Format(time.RFC3339), c.String())
 	res, err := l.ExecEnv.Run(ctx, c)
 	if res.Stdout != "" {
-		fmt.Fprintf(l.w, "%s", ensureTrailingNewline(res.Stdout))
+		fmt.Fprintf(l.writer(), "%s", ensureTrailingNewline(res.Stdout))
 	}
 	if res.Stderr != "" {
-		fmt.Fprintf(l.w, "--- stderr ---\n%s", ensureTrailingNewline(res.Stderr))
+		fmt.Fprintf(l.writer(), "--- stderr ---\n%s", ensureTrailingNewline(res.Stderr))
 	}
 	if err != nil {
-		fmt.Fprintf(l.w, "!!! exit %d: %v\n", res.ExitCode, err)
+		fmt.Fprintf(l.writer(), "!!! exit %d: %v\n", res.ExitCode, err)
 	}
 	return res, err
+}
+
+// writer 惰性打开日志文件；打不开就丢弃（日志不该让安装失败）。
+func (l *logEnv) writer() io.Writer {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f != nil {
+		return l.f
+	}
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		l.ExecEnv.Log().Warn("cannot open log file", "path", l.path, "err", err)
+		return io.Discard
+	}
+	l.f, l.opened = f, true
+	return f
+}
+
+// Path 返回日志路径；一次都没写过时返回空串（调用方据此决定要不要展示）。
+func (l *logEnv) Path() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.opened {
+		return ""
+	}
+	return l.path
+}
+
+// close 关闭日志文件（可重复调用）。
+func (l *logEnv) close() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f != nil {
+		_ = l.f.Close()
+		l.f = nil
+	}
 }
 
 func ensureTrailingNewline(s string) string {
