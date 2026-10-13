@@ -437,6 +437,74 @@ func (e *Engine) tryFallbacks(ctx context.Context, s Step, op Op) (Step, error) 
 	return out, errors.Join(errs...)
 }
 
+// normalize 把"配置里的管理器选择"落到清单上（§6.2：清单无需分叉）。
+//
+// 两件事：
+//  1. `via: manager` 没写 params.manager 时，用 tool.managers.<stack> 补上；
+//  2. `depends_on: [fnm]` 这类依赖，若该 stack 配的管理器换成了清单里另一个
+//     版本管理器条目（如 nvm），自动改写依赖指向它。
+//
+// 只在真的用到配置映射时才拷贝清单。
+func (e *Engine) normalize(l *manifest.Loaded) *manifest.Loaded {
+	if l == nil || len(e.opt.Managers) == 0 {
+		return l
+	}
+	changed := false
+	out := &manifest.Loaded{Tools: make([]manifest.Tool, len(l.Tools)), Profiles: l.Profiles, Sources: l.Sources}
+	copy(out.Tools, l.Tools)
+	for i := range out.Tools {
+		t := out.Tools[i]
+		mgr := e.opt.Managers[t.Stack.String()]
+		if mgr == "" {
+			continue
+		}
+		// 1) depends_on 改写
+		for j, dep := range t.DependsOn {
+			if dep == mgr {
+				continue
+			}
+			d, ok := l.ByID(dep)
+			if !ok || d.Kind.String() != "versionmgr" || d.Stack != t.Stack {
+				continue
+			}
+			if _, ok := l.ByID(mgr); !ok {
+				continue // 清单里没有对应条目，别把依赖改成一个不存在的 id
+			}
+			t.DependsOn[j] = mgr
+			changed = true
+		}
+		// 2) via: manager 缺 params.manager
+		t.Install = fillManager(t.Install, mgr, &changed)
+		t.Uninstall = fillManager(t.Uninstall, mgr, &changed)
+		if t.Update != nil {
+			upd := fillManager([]manifest.Method{*t.Update}, mgr, &changed)
+			t.Update = &upd[0]
+		}
+		out.Tools[i] = t
+	}
+	if !changed {
+		return l
+	}
+	return out
+}
+
+// fillManager 给没写 manager 的 `via: manager` 方法补上配置里的管理器名。
+func fillManager(methods []manifest.Method, mgr string, changed *bool) []manifest.Method {
+	for i := range methods {
+		if methods[i].Via != "manager" || methods[i].Params.Manager != "" {
+			continue
+		}
+		if methods == nil {
+			continue
+		}
+		out := methods
+		out[i].Params.Manager = mgr
+		methods = out
+		*changed = true
+	}
+	return methods
+}
+
 // selectTools 按 id 选取并拓扑排序（含依赖自动补全）。
 //
 // 第二个返回值是"用户显式点名的 id"集合，用来决定 --via 的作用范围。
@@ -448,7 +516,7 @@ func (e *Engine) selectTools(ids []string) ([]manifest.Tool, map[string]bool, er
 	if len(ids) == 0 {
 		return nil, explicit, nil
 	}
-	tools, err := manifest.ExpandDeps(e.loaded, ids)
+	tools, err := manifest.ExpandDeps(e.normalize(e.loaded), ids)
 	if err != nil {
 		return nil, explicit, err
 	}

@@ -21,6 +21,9 @@ const (
 	KindAgent      Kind = "agent"
 )
 
+// String 实现 fmt.Stringer，便于把 kind 当作字符串比较与展示。
+func (k Kind) String() string { return string(k) }
+
 // AllKinds 是全部合法的 kind，用于校验配置与清单。
 var AllKinds = []Kind{KindRuntime, KindVersionMgr, KindPkgMgr, KindCLI, KindDevDep, KindService, KindGUI, KindAgent}
 
@@ -144,7 +147,14 @@ func Defaults() Config {
 				"rust":      "rustup",
 				"universal": "mise",
 			},
-			Versions:  map[string]string{},
+			// 清单模板里的 {{versions.<stack>}} 用这里的值。默认给"最新/稳定"，
+			// 由各自的版本管理器在安装时解析；想可复现就写死具体版本。
+			Versions: map[string]string{
+				"golang": "latest",
+				"nodejs": "latest",
+				"python": "3.12",
+				"rust":   "stable",
+			},
 			ExtraPath: []string{"~/.local/bin", "~/go/bin"},
 		},
 		Shell: ShellConfig{

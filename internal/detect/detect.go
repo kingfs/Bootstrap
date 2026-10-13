@@ -197,6 +197,17 @@ func (d *Detector) Probe(ctx context.Context, t manifest.Tool) Result {
 		}
 	}
 
+	// 文件型探针：nvm 这类工具是 shell 函数，PATH 里没有可执行文件，
+	// 只能看"安装出来的那个文件在不在"。
+	if t.Verify.File != "" {
+		if full := fsx.ExpandPath(t.Verify.File, d.HomeDir); full != "" && fsx.Exists(full) {
+			res.Command = full
+			res.Status = StatusInstalled
+			res.Detail = "文件存在：" + full
+			return res
+		}
+	}
+
 	// 命令不在 PATH 里：release/source 类工具可能装在 provides 路径上，
 	// 这些路径要等 shell 装配 PATH 之后才可见，所以单独检查一次。
 	if path, ok := d.providesExecutable(t); ok {
@@ -207,9 +218,12 @@ func (d *Detector) Probe(ctx context.Context, t manifest.Tool) Result {
 	}
 
 	res.Status = StatusMissing
-	if t.Verify.Command != "" {
+	switch {
+	case t.Verify.Command != "":
 		res.Detail = "未找到命令 " + t.Verify.Command
-	} else {
+	case t.Verify.File != "":
+		res.Detail = "未找到文件 " + t.Verify.File
+	default:
 		res.Detail = "未声明 verify.command，且 provides 路径不存在"
 	}
 	return res

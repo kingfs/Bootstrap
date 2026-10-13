@@ -470,3 +470,28 @@ func withErr(name string, res cmdx.Result, err error) *fakeExec {
 	f.errs[name] = err
 	return f
 }
+
+// TestProbeFileProbe：nvm 这类"shell 函数型"工具没有可执行文件，
+// 只能靠 verify.file 判断装没装。
+func TestProbeFileProbe(t *testing.T) {
+	home := t.TempDir()
+	tool := manifest.Tool{ID: "nvm", Verify: manifest.Verify{File: "~/.nvm/nvm.sh"}}
+	d := &Detector{HomeDir: home, Executor: newFakeExec(), LookPath: fakePath{}}
+	// 文件不存在 → missing
+	if res := d.Probe(context.Background(), tool); res.Status != StatusMissing {
+		t.Fatalf("status = %s, want missing (%s)", res.Status, res.Detail)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".nvm"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".nvm", "nvm.sh"), []byte("# nvm\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	res := d.Probe(context.Background(), tool)
+	if res.Status != StatusInstalled {
+		t.Fatalf("status = %s (%s)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "nvm.sh") {
+		t.Errorf("detail = %s", res.Detail)
+	}
+}

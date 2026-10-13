@@ -82,8 +82,11 @@ func Validate(l *Loaded, opts ValidateOptions) error {
 		}
 
 		// verify
-		if t.Verify.Command == "" && t.Verify.VersionRegex == "" {
-			p.Add("%s: verify.command or verify.version_regex is required", where)
+		if t.Verify.Command == "" && t.Verify.File == "" && t.Verify.VersionRegex == "" {
+			p.Add("%s: verify.command, verify.file or verify.version_regex is required", where)
+		}
+		if t.Verify.File != "" && t.Verify.Command != "" {
+			p.Add("%s: verify.file and verify.command are mutually exclusive (command wins)", where)
 		}
 		if t.Kind == config.KindVersionMgr && t.Verify.Command == "" {
 			p.Add("%s: a versionmgr must declare verify.command (depends_on/manager 委托都靠它探测)", where)

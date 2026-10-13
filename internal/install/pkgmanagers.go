@@ -108,7 +108,7 @@ func (p *pkgManager) Available(_ context.Context, e ExecEnv, _ manifest.Tool, _ 
 
 // Plan 实现 Installer。
 func (p *pkgManager) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, op Op) (Action, error) {
-	data := RenderData{Version: m.Params.Version, Tag: m.Params.Version, OS: e.OS(), Arch: e.Arch()}
+	data := RenderData{Version: m.Params.Version, Tag: m.Params.Version, OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}
 	global := m.Params.Global == nil || *m.Params.Global
 
 	var verb string

@@ -616,3 +616,289 @@ func TestLogPath(t *testing.T) {
 		t.Errorf("LogPath = %q", got)
 	}
 }
+
+// TestReleaseInstallerExtractTree：目录型发布物整包解压（Go 工具链、nvm 用得上）。
+func TestReleaseInstallerExtractTree(t *testing.T) {
+	env := newFakeEnv(t)
+	env.tags["owner/tree"] = "v1.2.0"
+	archiveBytes := tarGz(t, map[string]string{
+		"tree-1.2.0/bin/tree":     "#!/bin/sh\necho tree\n",
+		"tree-1.2.0/lib/notes.md": "docs\n",
+	})
+	asset := "tree-1.2.0-linux-amd64.tar.gz"
+	env.files["https://github.com/owner/tree/releases/download/v1.2.0/"+asset] = string(archiveBytes)
+	env.files["https://github.com/owner/tree/releases/download/v1.2.0/checksums.txt"] =
+		strings.Repeat("c", 64) + "  " + asset + "\n"
+
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: tree
+    stack: base
+    kind: cli
+    verify: {command: tree}
+    install:
+      - via: release
+        params:
+          repo: owner/tree
+          asset: tree-{{version}}-{{os}}-{{arch}}.tar.gz
+          strip_components: 1
+          extract: true
+          dest: ~/.local/tree
+          symlink: {from: ~/.local/tree/bin/tree, to: ~/.local/bin/tree}
+`)
+	tool, _ := loaded.ByID("tree")
+	in, _ := NewRegistry().Get("release")
+	action, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	mustContain(t, action.Summary, "解压到")
+	if err := in.Execute(context.Background(), action, env); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// 整棵树都在，而不是只挑出 bin/tree
+	for _, rel := range []string{"bin/tree", "lib/notes.md"} {
+		if _, err := os.Stat(filepath.Join(env.home, ".local", "tree", rel)); err != nil {
+			t.Errorf("missing %s: %v", rel, err)
+		}
+	}
+	link := filepath.Join(env.home, ".local", "bin", "tree")
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("symlink missing: %v", err)
+	}
+}
+
+// TestReleaseExtractNeedsArchive：extract 只能用在归档资源上，写错要在计划期就报错。
+func TestReleaseExtractNeedsArchive(t *testing.T) {
+	env := newFakeEnv(t)
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: flat
+    stack: base
+    kind: cli
+    verify: {command: flat}
+    install:
+      - via: release
+        params:
+          repo: owner/flat
+          asset: flat-{{version}}-{{os}}
+          extract: true
+          dest: ~/.local/flat
+`)
+	tool, _ := loaded.ByID("flat")
+	in, _ := NewRegistry().Get("release")
+	if _, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall); err == nil {
+		t.Fatal("extract without an archive must fail")
+	}
+}
+
+// TestNormalizeManagerConfig：把 nodejs 的管理器从 fnm 换成 nvm 时，
+// 依赖与 via=manager 的落地目标都应自动跟着换，清单不用分叉（§6.2）。
+func TestNormalizeManagerConfig(t *testing.T) {
+	env := newFakeEnv(t)
+	// nvm 是 shell 函数型管理器：需要 source 脚本存在，且要有 sh 可用。
+	env.has("sh")
+	if err := os.MkdirAll(filepath.Join(env.home, ".nvm"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(env.home, ".nvm", "nvm.sh"), []byte("# nvm\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: fnm
+    stack: nodejs
+    kind: versionmgr
+    verify: {command: fnm}
+    install:
+      - via: brew
+        params: {formula: fnm}
+  - id: nvm
+    stack: nodejs
+    kind: versionmgr
+    verify: {command: nvm}
+    install:
+      - via: script
+        params: {url: "https://example.com/nvm.sh", insecure: true}
+  - id: nodejs
+    stack: nodejs
+    kind: runtime
+    depends_on: [fnm]
+    verify: {command: node}
+    install:
+      - via: manager
+        params: {action: install, version: "22.0.0"}
+`)
+	eng, err := NewEngine(EngineOptions{
+		Env: env, Loaded: loaded, Registry: NewRegistry(),
+		Detector: newDetector(t, newFakeDetector(map[string]detect.Status{})),
+		Managers: map[string]string{"nodejs": "nvm"},
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	plan, err := eng.PlanTools(context.Background(), []string{"nodejs"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	var order []string
+	for _, s := range plan.Steps {
+		order = append(order, s.ToolID)
+		if s.ToolID != "nodejs" {
+			continue
+		}
+		if s.Via != "manager" || s.Manager != "nvm" {
+			t.Errorf("nodejs should be installed by nvm, got via=%s manager=%s (%s)", s.Via, s.Manager, s.Error)
+		}
+	}
+	if len(order) != 2 || order[0] != "nvm" || order[1] != "nodejs" {
+		t.Fatalf("order = %v, want [nvm nodejs]", order)
+	}
+}
+
+// TestReleaseChecksumCandidates：真实仓库的校验和文件名五花八门，
+// 必须能顺着候选列表找到（g 用 sha256sum.txt，k9s 用 checksums.sha256，
+// Rust 生态用 <asset>.sha256）。
+func TestReleaseChecksumCandidates(t *testing.T) {
+	asset := "tool-1.0.0-linux-amd64.tar.gz"
+	hash := strings.Repeat("d", 64)
+	cases := []struct {
+		name  string
+		files map[string]string
+		param string
+	}{
+		{"sha256sum.txt", map[string]string{"sha256sum.txt": hash + "  " + asset + "\n"}, ""},
+		{"checksums.sha256", map[string]string{"checksums.sha256": hash + " *" + asset + "\n"}, ""},
+		{"bare asset.sha256", map[string]string{asset + ".sha256": hash + "\n"}, ""},
+		{"explicit checksum_file", map[string]string{"SUMS-1.0.0": hash + "  " + asset + "\n"}, "SUMS-{{version}}"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFakeEnv(t)
+			env.tags["owner/tool"] = "v1.0.0"
+			for name, body := range tc.files {
+				env.files["https://github.com/owner/tool/releases/download/v1.0.0/"+name] = body
+			}
+			loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: tool
+    stack: base
+    kind: cli
+    verify: {command: tool}
+    install:
+      - via: release
+        params:
+          repo: owner/tool
+          asset: tool-{{version}}-{{os}}-{{arch}}.tar.gz
+          dest: ~/.local/bin
+`+checksumFileLine(tc.param))
+			tool, _ := loaded.ByID("tool")
+			in, _ := NewRegistry().Get("release")
+			action, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+			if err != nil {
+				t.Fatalf("Plan: %v", err)
+			}
+			if action.Downloads[0].SHA256 != hash {
+				t.Fatalf("sha = %q, want %q", action.Downloads[0].SHA256, hash)
+			}
+		})
+	}
+}
+
+func checksumFileLine(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "          checksum_file: " + name + "\n"
+}
+
+// TestReleaseChecksumMissing：找不到校验和就必须失败（AGENTS.md §8.3），
+// 而不是"提示一下照样装"。
+func TestReleaseChecksumMissing(t *testing.T) {
+	env := newFakeEnv(t)
+	env.tags["owner/tool"] = "v1.0.0"
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: tool
+    stack: base
+    kind: cli
+    verify: {command: tool}
+    install:
+      - via: release
+        params:
+          repo: owner/tool
+          asset: tool-{{version}}-{{os}}.tar.gz
+          dest: ~/.local/bin
+`)
+	tool, _ := loaded.ByID("tool")
+	in, _ := NewRegistry().Get("release")
+	_, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+	if err == nil {
+		t.Fatal("missing checksum must fail the plan")
+	}
+	mustContain(t, err.Error(), "cannot find a sha256")
+}
+
+// TestReleasePinnedSHA256：清单里固化 sha256 时不再联网找校验文件。
+func TestReleasePinnedSHA256(t *testing.T) {
+	env := newFakeEnv(t)
+	env.tags["owner/tool"] = "v1.0.0"
+	hash := strings.Repeat("e", 64)
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: tool
+    stack: base
+    kind: cli
+    verify: {command: tool}
+    install:
+      - via: release
+        params:
+          repo: owner/tool
+          asset: tool-linux.zip
+          dest: ~/.local/bin
+          sha256: `+hash+`
+`)
+	tool, _ := loaded.ByID("tool")
+	in, _ := NewRegistry().Get("release")
+	action, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if action.Downloads[0].SHA256 != hash {
+		t.Fatalf("sha = %q", action.Downloads[0].SHA256)
+	}
+}
+
+// TestSourceCloneToDest：nvm 这类"仓库即安装物"的工具，直接按固定 tag 克隆到目标目录。
+func TestSourceCloneToDest(t *testing.T) {
+	env := newFakeEnv(t)
+	env.has("git")
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: nvm
+    stack: nodejs
+    kind: versionmgr
+    verify: {command: nvm}
+    install:
+      - via: source
+        params: {repo: nvm-sh/nvm, ref: v0.40.3, dest: ~/.nvm}
+`)
+	tool, _ := loaded.ByID("nvm")
+	in, _ := NewRegistry().Get("source")
+	action, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	args := action.Commands[0].Args
+	joined := strings.Join(args, " ")
+	mustContain(t, joined, "--branch v0.40.3")
+	mustContain(t, joined, filepath.Join(env.home, ".nvm"))
+	mustContain(t, action.Summary, "git 克隆")
+}

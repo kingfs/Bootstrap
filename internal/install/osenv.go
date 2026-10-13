@@ -35,6 +35,7 @@ type OSEnv struct {
 	workOnce sync.Once
 	log      *slog.Logger
 	extraBin []string
+	versions map[string]string
 }
 
 // OSEnvOptions 是 OSEnv 的构造参数。
@@ -50,6 +51,8 @@ type OSEnvOptions struct {
 	DryRun    bool
 	// WorkRoot 是临时工作目录的父目录（默认 cache 目录）；真正用到时才创建。
 	WorkRoot string
+	// Versions 来自配置 tool.versions，供清单模板使用。
+	Versions map[string]string
 	Log      *slog.Logger
 	// Runner 允许注入自定义执行器（默认是 cmdx.OSRunner）。
 	Runner *cmdx.Runner
@@ -185,6 +188,9 @@ func (e *OSEnv) Distro() string { return e.distro }
 
 // HomeDir 实现 ExecEnv。
 func (e *OSEnv) HomeDir() string { return e.home }
+
+// Versions 实现 ExecEnv。
+func (e *OSEnv) Versions() map[string]string { return e.versions }
 
 // WorkDir 实现 ExecEnv。
 //

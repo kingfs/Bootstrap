@@ -175,7 +175,10 @@ func (w When) Matches(env MatchEnv) (bool, string) {
 
 // Verify 描述"如何判断这个工具装好了、版本是多少"。
 type Verify struct {
-	Command      string   `yaml:"command"`
+	Command string `yaml:"command"`
+	// File 用于"没有稳定可执行文件"的工具（nvm 是 shell 函数，rvm/pyenv 类似）：
+	// 只要这个文件存在就认为已安装。command 存在时优先用 command。
+	File         string   `yaml:"file"`
 	VersionArgs  []string `yaml:"version_args"`
 	VersionRegex string   `yaml:"version_regex"`
 	MinVersion   string   `yaml:"min_version"`
@@ -231,7 +234,11 @@ type Params struct {
 	NeedsRoot   *bool  `yaml:"needs_root"`
 	ID          string `yaml:"id"`
 
-	// via: script
+	// via: script / release
+	//
+	// 语义统一为"下载物应有的 sha256"：
+	//   - via=script  必填（除非 insecure: true），否则拒绝执行远程脚本；
+	//   - via=release 可选；填了就固定校验和，不再联网找校验文件。
 	URL    string `yaml:"url"`
 	SHA256 string `yaml:"sha256"`
 	// Insecure 显式放弃 sha256 校验（官方脚本没有稳定校验和时才允许）。
@@ -245,12 +252,21 @@ type Params struct {
 	Dest            string   `yaml:"dest"`
 	StripComponents int      `yaml:"strip_components"`
 	Symlink         *Symlink `yaml:"symlink"`
-	Checksum        string   `yaml:"checksum"`
-	Binary          string   `yaml:"binary"`
+	// Symlinks 是复数形式，用于一次暴露多个可执行文件（uv+uvx、go+gofmt）。
+	Symlinks []Symlink `yaml:"symlinks"`
+	Checksum string    `yaml:"checksum"`
+	// ChecksumFile 指定校验和文件名/模板（默认按常见名字逐个尝试）。
+	ChecksumFile string `yaml:"checksum_file"`
+	Binary       string `yaml:"binary"`
+	// Extract 为真时把归档整棵解压到 dest（用于 Go 工具链、nvm 这类"目录型"发布物）；
+	// 默认为假，即"从归档里挑出那一个可执行文件复制到 dest"。
+	Extract *bool `yaml:"extract"`
 
 	// via: source
 	Build   string `yaml:"build"`
 	Install string `yaml:"install"`
+	// Ref 是 git 克隆时固定的 tag/分支/commit（固定版本比跟 HEAD 更可控）。
+	Ref string `yaml:"ref"`
 
 	// 逃生口：清单表达不了的怪命令（仍属于该方法的语义范围）。
 	Command string `yaml:"command"`
@@ -275,6 +291,8 @@ func (p Params) TemplateFields() []TemplateField {
 		{"params.binary", p.Binary},
 		{"params.url", p.URL},
 		{"params.sha256", p.SHA256},
+		{"params.checksum_file", p.ChecksumFile},
+		{"params.ref", p.Ref},
 		{"params.package", p.Package},
 		{"params.crate", p.Crate},
 		{"params.module", p.Module},

@@ -39,6 +39,7 @@ type fakeEnv struct {
 	downloads []Download
 	runErr    map[string]error // 命令名 → 故意失败
 	runOut    map[string]string
+	versions  map[string]string
 	log       *slog.Logger
 }
 
@@ -130,8 +131,14 @@ func (f *fakeEnv) OS() string             { return f.os }
 func (f *fakeEnv) Arch() string           { return f.arch }
 func (f *fakeEnv) Distro() string         { return f.distro }
 func (f *fakeEnv) HomeDir() string        { return f.home }
-func (f *fakeEnv) WorkDir() string        { return f.work }
-func (f *fakeEnv) Log() *slog.Logger      { return f.log }
+func (f *fakeEnv) Versions() map[string]string {
+	if f.versions == nil {
+		f.versions = map[string]string{}
+	}
+	return f.versions
+}
+func (f *fakeEnv) WorkDir() string   { return f.work }
+func (f *fakeEnv) Log() *slog.Logger { return f.log }
 
 func (f *fakeEnv) ran(name string) []Command {
 	f.mu.Lock()

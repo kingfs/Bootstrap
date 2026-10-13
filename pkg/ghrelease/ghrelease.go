@@ -77,6 +77,32 @@ func ChecksumsURL(repo, tag string) string {
 
 var checksumLine = regexp.MustCompile(`^([0-9a-fA-F]{64})\s+\*?(.+)$`)
 
+// ChecksumFileNames 是 GitHub Release 里校验和文件最常见的几种叫法。
+//
+// 实测：goreleaser 默认写 checksums.txt；voidint/g 用 sha256sum.txt；
+// k9s 用 checksums.sha256；Rust 生态（uv/ruff/ripgrep）干脆每个产物配一个
+// `<asset>.sha256`。逐个试比强制清单作者记住某个项目的习惯更可靠。
+var ChecksumFileNames = []string{"checksums.txt", "sha256sum.txt", "checksums.sha256", "SHA256SUMS"}
+
+// BareChecksum 从"只有一个哈希"的文件里取 sha256（`<asset>.sha256` 的格式）。
+func BareChecksum(text string) (string, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if m := checksumLine.FindStringSubmatch(line); m != nil {
+			return strings.ToLower(m[1]), true
+		}
+		if bareSHA256.MatchString(line) {
+			return strings.ToLower(line), true
+		}
+	}
+	return "", false
+}
+
+var bareSHA256 = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
 // ChecksumFor 从 checksums.txt 内容里取出某个文件的 sha256。
 //
 // 兼容两种格式：`<hash>  <name>`（sha256sum）与 `<hash> *<name>`（二进制模式）。

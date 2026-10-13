@@ -98,6 +98,9 @@ type ExecEnv interface {
 	Distro() string
 	// HomeDir 用于展开 `~`。
 	HomeDir() string
+	// Versions 是配置 tool.versions 的映射（清单模板 `{{versions.golang}}` 用它）。
+	Versions() map[string]string
+
 	// WorkDir 是本次安装可用的临时目录（惰性：只算路径，不创建目录）。
 	WorkDir() string
 	// Log 用于结构化日志。

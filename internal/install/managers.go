@@ -200,7 +200,7 @@ func (m *managerInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 			return Action{}, err
 		}
 	}
-	data := RenderData{Version: ver, Tag: ver, OS: e.OS(), Arch: e.Arch(), Versions: map[string]string{}}
+	data := RenderData{Version: ver, Tag: ver, OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}
 	line, err := Render(template, data)
 	if err != nil {
 		return Action{}, fmt.Errorf("tool %q: %w", t.ID, err)

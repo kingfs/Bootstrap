@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/manifest"
@@ -54,7 +56,7 @@ func (s *scriptInstaller) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m 
 	shell := scriptShell(m)
 	dest := filepath.Join(e.WorkDir(), t.ID+"-install.sh")
 	args := append([]string{dest}, m.Params.Args...)
-	dl := Download{URL: renderOr(m.Params.URL, RenderData{OS: e.OS(), Arch: e.Arch()}), SHA256: m.Params.SHA256, Dest: dest, Mode: 0o700}
+	dl := Download{URL: renderOr(m.Params.URL, RenderData{OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}), SHA256: m.Params.SHA256, Dest: dest, Mode: 0o700}
 	return Action{
 		ToolID: t.ID, Via: "script", Op: op,
 		Commands:  []Command{{Name: shell, Args: args}},
@@ -124,8 +126,10 @@ type releasePlan struct {
 	Dest     string
 	Strip    int
 	Binary   string
-	Symlink  *manifest.Symlink
+	Symlinks []manifest.Symlink
 	Archive  bool
+	// Tree 为真时整包解压到 Dest（目录型发布物），否则只取 Binary。
+	Tree bool
 }
 
 // Plan 实现 Installer。
@@ -138,7 +142,7 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 		return Action{}, fmt.Errorf("tool %q: %w", t.ID, err)
 	}
 
-	data := RenderData{Version: version, Tag: tag, OS: e.OS(), Arch: e.Arch(), Versions: map[string]string{}}
+	data := RenderData{Version: version, Tag: tag, OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}
 	asset, err := Render(m.Params.Asset, data)
 	if err != nil {
 		return Action{}, fmt.Errorf("tool %q: params.asset: %w", t.ID, err)
@@ -146,21 +150,9 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 	url := ghrelease.AssetURL(m.Params.Repo, tag, asset)
 	dest := fsx.ExpandPath(renderOr(m.Params.Dest, data), e.HomeDir())
 
-	sha := ""
-	if m.Params.Checksum != "none" {
-		if tag == latestPlaceholder {
-			// 干跑且无法解析最新版本时，不做校验和查询，避免预览阶段报错。
-			sha = ""
-		} else {
-			text, ferr := e.FetchText(ctx, ghrelease.ChecksumsURL(m.Params.Repo, tag))
-			if ferr != nil {
-				return Action{}, fmt.Errorf("tool %q: cannot fetch checksums.txt for %s@%s: %w", t.ID, m.Params.Repo, tag, ferr)
-			}
-			sha, ferr = ghrelease.ChecksumFor(text, asset)
-			if ferr != nil {
-				return Action{}, fmt.Errorf("tool %q: %w", t.ID, ferr)
-			}
-		}
+	sha, err := r.checksumFor(ctx, e, t, m, tag, asset)
+	if err != nil {
+		return Action{}, err
 	}
 
 	binary := m.Params.Binary
@@ -172,17 +164,89 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 		Dest:     dest,
 		Strip:    m.Params.StripComponents,
 		Binary:   binary,
-		Symlink:  m.Params.Symlink,
+		Symlinks: releaseSymlinks(m.Params),
 		Archive:  archive.IsArchive(asset),
+		Tree:     m.Params.Extract != nil && *m.Params.Extract,
+	}
+	if plan.Tree && !plan.Archive {
+		return Action{}, fmt.Errorf("tool %q: params.extract needs an archive asset, got %q", t.ID, asset)
+	}
+	summary := fmt.Sprintf("release %s@%s → %s", m.Params.Repo, tag, dest)
+	if plan.Tree {
+		summary = fmt.Sprintf("release %s@%s 解压到 %s", m.Params.Repo, tag, dest)
 	}
 	return Action{
 		ToolID: t.ID, Via: "release", Op: op,
 		Downloads: []Download{plan.Download},
 		Network:   true,
-		Summary:   fmt.Sprintf("release %s@%s → %s", m.Params.Repo, tag, dest),
+		Summary:   summary,
 		Reason:    "via=release（GitHub Release 二进制）",
 	}.WithResolved(plan), nil
 }
+
+// checksumFor 解析产物的 sha256。
+//
+// 顺序：显式固化 → 显式文件名 → 常见文件名 → `<asset>.sha256`。
+// 拿不到校验和就报错（AGENTS.md §8.3：宁可失败，也不装一个来路不明的东西）。
+func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, tag, asset string) (string, error) {
+	if m.Params.Checksum == "none" {
+		return "", nil
+	}
+	if p := strings.TrimSpace(m.Params.SHA256); p != "" {
+		return validateSHA256(t.ID, p)
+	}
+	if tag == latestPlaceholder {
+		// 干跑且无法解析最新版本时，不做校验和查询，避免预览阶段报错。
+		return "", nil
+	}
+	data := RenderData{Version: strings.TrimPrefix(tag, "v"), Tag: tag, OS: e.OS(), Arch: e.Arch(),
+		Versions: e.Versions()}
+	var candidates []string
+	if m.Params.ChecksumFile != "" {
+		name, rerr := Render(m.Params.ChecksumFile, data)
+		if rerr != nil {
+			return "", fmt.Errorf("tool %q: params.checksum_file: %w", t.ID, rerr)
+		}
+		candidates = append(candidates, name)
+	} else {
+		candidates = append(candidates, ghrelease.ChecksumFileNames...)
+	}
+	var tried []string
+	for _, name := range candidates {
+		text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, name))
+		if ferr != nil {
+			tried = append(tried, name)
+			continue
+		}
+		sha, cerr := ghrelease.ChecksumFor(text, asset)
+		if cerr != nil {
+			tried = append(tried, name+"(无 "+asset+" 条目)")
+			continue
+		}
+		return validateSHA256(t.ID, sha)
+	}
+	// 最后试 Rust 生态的 `<asset>.sha256`（文件里通常只有一个裸哈希）
+	if !slices.Contains(candidates, asset+".sha256") {
+		if text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, asset+".sha256")); ferr == nil {
+			if sha, ok := ghrelease.BareChecksum(text); ok {
+				return validateSHA256(t.ID, sha)
+			}
+		}
+	}
+	return "", fmt.Errorf("tool %q: cannot find a sha256 for %s in %s@%s (tried %s); "+
+		"set params.checksum_file, params.sha256, or params.checksum: none to opt out",
+		t.ID, asset, m.Params.Repo, tag, strings.Join(tried, ", "))
+}
+
+func validateSHA256(toolID, sha string) (string, error) {
+	sha = strings.ToLower(strings.TrimSpace(sha))
+	if len(sha) != 64 || !hexSHA256.MatchString(sha) {
+		return "", fmt.Errorf("tool %q: invalid sha256 %q", toolID, sha)
+	}
+	return sha, nil
+}
+
+var hexSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Execute 实现 Installer。
 func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) error {
@@ -204,9 +268,17 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 	source := local
 	if plan.Archive {
 		extractDir := filepath.Join(e.WorkDir(), "extract-"+a.ToolID)
+		// 目录型发布物（Go 工具链、nvm）直接落到 dest，不再去挑单个可执行文件。
+		if plan.Tree {
+			extractDir = plan.Dest
+		}
 		files, err := archive.Extract(local, extractDir, plan.Strip)
 		if err != nil {
 			return fmt.Errorf("extract %s: %w", filepath.Base(local), err)
+		}
+		if plan.Tree {
+			e.Log().Info("extracted", "tool", a.ToolID, "files", len(files), "dest", plan.Dest)
+			return applySymlink(plan, e)
 		}
 		found, ok := archive.FindBinary(files, plan.Binary)
 		if !ok {
@@ -219,14 +291,31 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 	if err := copyExecutable(source, target); err != nil {
 		return err
 	}
-	if plan.Symlink != nil {
-		from := fsx.ExpandPath(plan.Symlink.From, e.HomeDir())
-		to := fsx.ExpandPath(plan.Symlink.To, e.HomeDir())
+	if err := applySymlink(plan, e); err != nil {
+		return err
+	}
+	e.Log().Info("installed", "tool", a.ToolID, "path", target)
+	return nil
+}
+
+// releaseSymlinks 合并单数/复数两种写法（单数保留是为了兼容早期清单）。
+func releaseSymlinks(p manifest.Params) []manifest.Symlink {
+	out := append([]manifest.Symlink{}, p.Symlinks...)
+	if p.Symlink != nil {
+		out = append(out, *p.Symlink)
+	}
+	return out
+}
+
+// applySymlink 建立"真实路径 → PATH 里的名字"的软链（可选）。
+func applySymlink(plan releasePlan, e ExecEnv) error {
+	for _, l := range plan.Symlinks {
+		from := fsx.ExpandPath(l.From, e.HomeDir())
+		to := fsx.ExpandPath(l.To, e.HomeDir())
 		if err := replaceSymlink(from, to); err != nil {
 			return err
 		}
 	}
-	e.Log().Info("installed", "tool", a.ToolID, "path", target)
 	return nil
 }
 
@@ -297,8 +386,8 @@ func (s *sourceInstaller) Validate(p manifest.Params) error {
 	if p.Repo == "" && p.URL == "" {
 		return fmt.Errorf("via=source requires params.repo or params.url")
 	}
-	if p.Build == "" && p.Install == "" && p.Command == "" {
-		return fmt.Errorf("via=source requires params.build, params.install or params.command")
+	if p.Build == "" && p.Install == "" && p.Command == "" && p.Dest == "" {
+		return fmt.Errorf("via=source requires params.build, params.install, params.command or params.dest")
 	}
 	return nil
 }
@@ -319,7 +408,17 @@ func (s *sourceInstaller) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m 
 	if url == "" {
 		url = "https://github.com/" + strings.Trim(m.Params.Repo, "/") + ".git"
 	}
-	commands := []Command{{Name: "git", Args: []string{"clone", "--depth", "1", url, dir}}}
+	cloneArgs := []string{"clone", "--depth", "1"}
+	if m.Params.Ref != "" {
+		// 固定到 tag/commit：源码编译同样要可复现（比跟 HEAD 安全）。
+		cloneArgs = append(cloneArgs, "--branch", m.Params.Ref)
+	}
+	if m.Params.Dest != "" {
+		// 直接克隆到目标目录（nvm 这类"仓库即安装物"的工具）。
+		dir = fsx.ExpandPath(renderOr(m.Params.Dest, RenderData{OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}), e.HomeDir())
+	}
+	cloneArgs = append(cloneArgs, url, dir)
+	commands := []Command{{Name: "git", Args: cloneArgs}}
 	if m.Params.Build != "" {
 		commands = append(commands, Command{Name: "sh", Args: []string{"-c", m.Params.Build}, Dir: dir})
 	}
@@ -327,13 +426,17 @@ func (s *sourceInstaller) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m 
 		commands = append(commands, Command{Name: "sh", Args: []string{"-c", m.Params.Install}, Dir: dir})
 	}
 	if m.Params.Command != "" {
-		commands = append(commands, Command{Name: "sh", Args: []string{"-c", renderOr(m.Params.Command, RenderData{OS: e.OS(), Arch: e.Arch()})}, Dir: dir})
+		commands = append(commands, Command{Name: "sh", Args: []string{"-c", renderOr(m.Params.Command, RenderData{OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()})}, Dir: dir})
+	}
+	summary := "源码编译 " + shortURL(url)
+	if m.Params.Dest != "" && m.Params.Build == "" && m.Params.Install == "" {
+		summary = "git 克隆 " + shortURL(url) + " → " + dir
 	}
 	return Action{
 		ToolID: t.ID, Via: "source", Op: op,
 		Commands: commands,
 		Network:  true,
-		Summary:  "源码编译 " + shortURL(url),
+		Summary:  summary,
 		Reason:   "via=source（最后兜底）",
 	}, nil
 }
