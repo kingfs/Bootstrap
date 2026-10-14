@@ -151,6 +151,54 @@ func AutoProxyContent(family Family) (string, error) {
 	return "", fmt.Errorf("unsupported shell family %q", family)
 }
 
+// CompletionContent 返回"加载 bs 补全脚本"的片段内容。
+//
+// 与 AutoProxyContent 一样，它是由配置开关（`shell.completion`）生成的片段，不放进
+// tools/snippets：它必须区分**具体 shell**（bash 与 zsh 同属 posix 家族，补全脚本却不同），
+// 而且默认关闭（见 config.ShellConfig.Completion 的注释）。
+//
+// 三种写法的共同前提是"这段代码每次开 shell 都会跑"：因此一律先探测 bs 在不在 PATH，
+// 不在就静默跳过，绝不能让用户的 shell 报错。
+func CompletionContent(family Family, shell string) (string, error) {
+	name := normalizeShellName(shell)
+	switch family {
+	case FamilyPosix:
+		if name == "zsh" {
+			// cobra 的 zsh 补全脚本以 compdef 注册，而 compdef 由 compinit 提供。受管块
+			// 通常追加在 rc 末尾，用户自己的 compinit 早已跑过；裸 zsh 在这里补一次默认
+			// 初始化，否则每次开 shell 都会报 `compdef: command not found`。
+			// -C 只跳过"不安全目录"的完整校验，避免把这笔开销加到每次启动上。
+			return "# 由 shell.completion=true 生成：加载 bs 补全（zsh）\n" +
+				"if command -v bs >/dev/null 2>&1; then\n" +
+				"  if ! typeset -f compdef >/dev/null 2>&1; then\n" +
+				"    autoload -Uz compinit && compinit -C\n" +
+				"  fi\n" +
+				"  eval \"$(command bs completion zsh)\"\n" +
+				"fi\n", nil
+		}
+		// bash 分支要挡住 dash/ksh：FamilyForShell 把它们都归到 posix，但 cobra 的
+		// bash 补全脚本依赖 complete/compgen，在 dash 下执行只会报错。
+		// 注意脚本运行时还会用 bash-completion 包的 _get_comp_words_by_ref，
+		// 所以"光有脚本"不代表能用——`bs completion install` 会就此给出提示。
+		return "# 由 shell.completion=true 生成：加载 bs 补全（bash）\n" +
+			"if [ -n \"${BASH_VERSION:-}\" ] && command -v bs >/dev/null 2>&1; then\n" +
+			"  eval \"$(command bs completion bash)\"\n" +
+			"fi\n", nil
+	case FamilyFish:
+		return "# 由 shell.completion=true 生成：加载 bs 补全（fish）\n" +
+			"if command -q bs\n" +
+			"    command bs completion fish | source\n" +
+			"end\n", nil
+	case FamilyPwsh:
+		return "# 由 shell.completion=true 生成：加载 bs 补全（pwsh）\n" +
+			"$completionExe = (Get-Command bs -CommandType Application -ErrorAction SilentlyContinue).Source\n" +
+			"if ($completionExe) {\n" +
+			"    (& $completionExe completion powershell | Out-String) | Invoke-Expression\n" +
+			"}\n", nil
+	}
+	return "", fmt.Errorf("unsupported shell family %q", family)
+}
+
 // Render 把片段拼接为可直接 eval 的文本；每段前加注释标明来源，便于排障。
 func (s *Set) Render() string {
 	var b strings.Builder

@@ -178,6 +178,10 @@ type ShellConfig struct {
 	RCFiles     map[string]string `mapstructure:"rc_files" yaml:"rc_files"`
 	AutoPath    bool              `mapstructure:"auto_path" yaml:"auto_path"`
 	AutoProxy   bool              `mapstructure:"auto_proxy" yaml:"auto_proxy"`
+	// Completion 为真时，`bs shell init` 会在受管内容末尾追加"加载 bs 补全"的片段。
+	// 默认关：理由与 AutoProxy 相同——不在用户没要求时改变每个新 shell 的启动行为。
+	// 打开它的正规入口是 `bs completion install [shell]`（内部就是把这个键置真）。
+	Completion bool `mapstructure:"completion" yaml:"completion"`
 }
 
 // UIConfig 控制交互行为。

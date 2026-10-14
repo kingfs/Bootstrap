@@ -153,6 +153,9 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   # <<< bootstrap <<<
   ```
   块外内容必须字节级不变；`Upsert`/`Remove` 的行为由 `internal/shellsnip` 的单测锁定。
+- 补全**复用这同一个受管块**（ADR-0016）：`bs completion install [shell]` 只做"把 `shell.completion`
+  置真 + 确保受管块最新"两件事，补全片段由 `bs shell init` 现算，rc 里不会出现第二组标记。
+  开关默认关（与 `auto_proxy` 同理：不擅自改变每个新 shell 的行为）。
 - `bs proxy off` 是**显式关闭**（state 里记 `mode=off`）：此后不再回退到环境变量，
   直到用户重新 `bs proxy use <name>`。
 - 凭据只能在日志/输出里以 `***` 出现（`proxyenv.MaskProxyURL`、`cmdx.Runner.Redact`）。
@@ -305,3 +308,9 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 - `make docker-matrix` **依赖 `cross` 而不是 `build`**：本地 build 是动态链接的，
   容器里可能因 libc 版本而失败，而发布产物正是 cross 那一份（`CGO_ENABLED=0`）。
   容器内 `--network none`：所以"在裸机上能跑"这件事不是靠网络蒙混的。
+- **cobra 的补全命令在构造时就抓走了 writer**：`InitDefaultCompletionCmd()` 内部有
+  `out := c.OutOrStdout()`（闭包捕获），所以 `newRootCmd` 里必须**先** `cmd.SetOut/SetErr`、
+  **后**调用它——否则 `bs completion <shell>` 的脚本会写到 `os.Stdout`，
+  进程内测试（`Runtime.Run` + 缓冲区）拿到空输出，`--json`/重定向也会失效。
+  同理，`__complete` 这条隐藏命令在 `Execute` 时才挂上命令树，拿不到注解，
+  它在 `rt.init` 里只能按名字识别为"容忍配置损坏"（否则配置写坏一次，Tab 补全就整个不工作）。

@@ -87,8 +87,6 @@ func Execute() int {
 // 这条链路可以在进程内被完整测试，不必 fork 子进程。
 func (rt *Runtime) Run(args []string) int {
 	root := rt.newRootCmd()
-	root.SetOut(rt.Opts.Out)
-	root.SetErr(rt.Opts.Err)
 	root.SetArgs(args)
 
 	// 总时限在 init（PersistentPreRunE）里才知道（配置里有 timeouts.global），
@@ -171,8 +169,17 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 		rt.toolCmd(),
 		rt.doctorCmd(),
 	)
+	// 输出目标必须在 InitDefaultCompletionCmd **之前**设好：cobra 的补全子命令在构造时
+	// 就把 OutOrStdout() 存进了闭包（completions.go：`out := c.OutOrStdout()`），
+	// 之后再 root.SetOut(...) 就晚了——脚本会写到 os.Stdout 而不是注入的 writer
+	// （进程内测试因此拿到空输出，`--json` 之类的重定向也会失效）。
+	cmd.SetOut(rt.Opts.Out)
+	cmd.SetErr(rt.Opts.Err)
+
 	cmd.InitDefaultCompletionCmd()
 	cmd.InitDefaultHelpCmd()
+	// cobra 注入的 completion 只有英文、且没有"bs 帮你装"的入口，这里补上中文说明与 install。
+	rt.decorateCompletionCmd(cmd)
 	return cmd
 }
 
@@ -187,7 +194,14 @@ func (rt *Runtime) init(cmd *cobra.Command) error {
 	}
 	rt.Log = logger
 
-	tolerate := cmd.Annotations[AnnotationTolerateConfigErrors] == "true"
+	// cobra 的补全请求命令（`bs __complete ...`）在 Execute 时才被挂上命令树，
+	// 拿不到我们在别的命令上打的注解，只能按名字识别。它同样必须容忍配置损坏：
+	// 否则配置写错一次，用户的 Tab 补全就彻底不工作。cobra 的补全脚本把这条命令的
+	// stderr 丢进 /dev/null（`out=$(eval "${requestComp}" 2>/dev/null)`），
+	// 所以这里退回默认值打印的警告不会在每次按 Tab 时刷屏。
+	tolerate := cmd.Annotations[AnnotationTolerateConfigErrors] == "true" ||
+		cmd.Name() == cobra.ShellCompRequestCmd ||
+		cmd.Name() == cobra.ShellCompNoDescRequestCmd
 
 	paths, err := config.ResolvePaths()
 	if err != nil {

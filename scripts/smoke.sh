@@ -600,6 +600,34 @@ done
 out="$("$BIN" completion zsh 2>&1)"
 assert_contains "zsh 补全以 compdef 开头" "compdef _bs bs" "$out"
 
+# 帮助里要说清"两种用法"并给出 install 入口（用户实测反馈：生成完不知道下一步该干什么）。
+out="$("$BIN" completion --help 2>&1)"
+assert_contains "completion 帮助含 install 用法" "bs completion install" "$out"
+assert_contains "completion 帮助提到 shell.completion" "shell.completion" "$out"
+out="$("$BIN" completion bash --help 2>&1)"
+assert_contains "shell 子命令帮助指向 install" "bs completion install <shell>" "$out"
+
+# install：dry-run 不落盘 → 真装（配置开关 + rc 受管块）→ 重复执行幂等。
+COMP_RC="$WORK/home/.completion-rc"
+"$BIN" completion install bash --rc "$COMP_RC" --dry-run >/dev/null
+assert_missing "completion install --dry-run 不创建 rc" "$COMP_RC"
+assert_eq "dry-run 未打开 shell.completion" "false" "$("$BIN" config get shell.completion)"
+out="$("$BIN" completion install bash --rc "$COMP_RC" 2>/dev/null)"
+assert_contains "install 汇报打开了开关" "shell.completion" "$out"
+assert_eq "install 后 shell.completion 为 true" "true" "$("$BIN" config get shell.completion)"
+out="$(cat "$COMP_RC")"
+assert_contains "补全复用同一个受管块" "# >>> bootstrap (managed by 'bs shell install') >>>" "$out"
+assert_eq "补全没有多写第二个受管块" "1" "$(grep -c '>>> bootstrap' "$COMP_RC")"
+out="$("$BIN" shell init bash)"
+assert_contains "shell init 渲染补全片段" "bs completion bash" "$out"
+before="$(stat -c %Y "$COMP_RC" 2>/dev/null || stat -f %m "$COMP_RC")"
+sleep 1
+out="$("$BIN" completion install bash --rc "$COMP_RC" 2>/dev/null)"
+assert_contains "重复 install 幂等（开关）" "已是 true" "$out"
+assert_contains "重复 install 幂等（受管块）" "已是最新" "$out"
+after="$(stat -c %Y "$COMP_RC" 2>/dev/null || stat -f %m "$COMP_RC")"
+assert_eq "重复 install 未修改 rc" "$before" "$after"
+
 step "退出码约定"
 set +e
 "$BIN" definitely-not-a-command >/dev/null 2>&1

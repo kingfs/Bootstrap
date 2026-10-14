@@ -101,6 +101,16 @@ Write-Host "`n== shell 片段" -ForegroundColor Cyan
 $out = & $Bin shell init pwsh | Out-String
 Assert-Contains 'pwsh 片段含包装函数' 'function bs' $out
 
+Write-Host "`n== 补全" -ForegroundColor Cyan
+$out = & $Bin completion powershell 2>&1 | Out-String
+Assert-Contains 'completion powershell 输出脚本' 'powershell completion for bs' $out
+$out = & $Bin completion --help 2>&1 | Out-String
+Assert-Contains 'completion 帮助含 install 用法' 'bs completion install' $out
+$compRc = Join-Path $homeDir '.completion-profile.ps1'
+$out = & $Bin completion install pwsh --rc $compRc 2>&1 | Out-String
+Assert-Contains 'install 汇报打开开关' 'shell.completion' $out
+Assert-Contains 'shell init 渲染补全片段' 'completion powershell' (& $Bin shell init pwsh | Out-String)
+
 Write-Host "`n== 仓库计划（dry-run）" -ForegroundColor Cyan
 $out = & $Bin repo get kingfs/Bootstrap --dry-run 2>&1 | Out-String
 Assert-Contains 'dry-run 显示 clone' 'git clone' $out

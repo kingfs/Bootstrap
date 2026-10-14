@@ -37,7 +37,7 @@ func (a *App) ShellInit(shell string) (ShellInitResult, error) {
 	if err != nil {
 		return ShellInitResult{}, err
 	}
-	set.Snippets, err = a.applyShellOptions(family, set.Snippets)
+	set.Snippets, err = a.applyShellOptions(family, shell, set.Snippets)
 	if err != nil {
 		return ShellInitResult{}, err
 	}
@@ -60,12 +60,16 @@ func (a *App) ShellInit(shell string) (ShellInitResult, error) {
 
 // applyShellOptions 按配置调整要渲染的片段：
 //   - `shell.auto_path=false` → 去掉 PATH 装配片段（20-path）；
-//   - `shell.auto_proxy=true` → 追加"启动时自动应用代理"片段（默认关，见配置说明）。
+//   - `shell.auto_proxy=true` → 追加"启动时自动应用代理"片段（默认关，见配置说明）；
+//   - `shell.completion=true` → 追加"加载 bs 补全"片段（默认关，由 `bs completion install` 打开）。
 //
 // 放在渲染阶段而不是写受管块阶段：受管块只有一行 `eval "$(bs shell init <shell>)"`，
 // 真正的内容每次开 shell 时现算，改配置后无需重写 rc 文件即可生效。
-func (a *App) applyShellOptions(family shellsnip.Family, snippets []shellsnip.Snippet) ([]shellsnip.Snippet, error) {
-	out := make([]shellsnip.Snippet, 0, len(snippets)+1)
+//
+// shell 与 family 都要传：补全脚本按**具体 shell** 生成（bash 与 zsh 同属 posix 家族，
+// 补全脚本却完全不同），而片段筛选按家族。
+func (a *App) applyShellOptions(family shellsnip.Family, shell string, snippets []shellsnip.Snippet) ([]shellsnip.Snippet, error) {
+	out := make([]shellsnip.Snippet, 0, len(snippets)+2)
 	for _, sn := range snippets {
 		if !a.Cfg.Shell.AutoPath && shellsnip.IsPathSnippet(sn.Name) {
 			continue
@@ -79,6 +83,18 @@ func (a *App) applyShellOptions(family shellsnip.Family, snippets []shellsnip.Sn
 		}
 		out = append(out, shellsnip.Snippet{
 			Name:    "99-auto-proxy",
+			Family:  family,
+			Builtin: true,
+			Content: content,
+		})
+	}
+	if a.Cfg.Shell.Completion {
+		content, err := shellsnip.CompletionContent(family, shell)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, shellsnip.Snippet{
+			Name:    "99-completion",
 			Family:  family,
 			Builtin: true,
 			Content: content,
@@ -161,6 +177,94 @@ func (a *App) ShellInstall(shell, rcFile string) (ShellInstallResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+// CompletionInstallResult 是 `bs completion install` 的结果。
+//
+// 它同时覆盖"改配置"与"改 rc"两件事：补全内容靠 `shell.completion=true` 打开，
+// 而让它在每个新 shell 生效靠 rc 里的受管块（块内容仍是那一行 eval，不需要重写）。
+type CompletionInstallResult struct {
+	Shell string `json:"shell"`
+	// ConfigFile / ConfigSet 描述 shell.completion 开关这次有没有被打开。
+	ConfigFile   string `json:"config_file"`
+	ConfigSet    bool   `json:"config_set"`
+	ConfigBackup string `json:"config_backup,omitempty"`
+	// RCFile / RCChanged 描述受管块这次有没有被写入或原地更新。
+	RCFile    string `json:"rc_file"`
+	RCChanged bool   `json:"rc_changed"`
+	RCBackup  string `json:"rc_backup,omitempty"`
+	// Hints 是需要用户知道的额外前提（不阻断安装，只是"装完可能仍不生效"的原因）。
+	Hints  []string `json:"hints,omitempty"`
+	DryRun bool     `json:"dry_run"`
+}
+
+// CompletionInstall 让补全在目标 shell 的每个新会话里生效。
+//
+// 两步都幂等，且**只在需要时才写文件**：
+//  1. 打开用户级配置里的 `shell.completion`（已经是 true 就完全不碰配置文件）；
+//  2. 确保 rc 里的受管块存在/最新（`bs shell init` 会据此渲染出补全片段）。
+//
+// 刻意不额外写"补全专用"的受管块：仓库的既有决策是 rc 里只有一个受管块
+// （docs/design.md §16 第 5 条），补全内容属于 `bs shell init` 的渲染结果。
+func (a *App) CompletionInstall(shell, rcFile string) (CompletionInstallResult, error) {
+	if _, err := shellsnip.FamilyForShell(shell); err != nil {
+		return CompletionInstallResult{}, err
+	}
+	res := CompletionInstallResult{Shell: shell, ConfigFile: a.Paths.ConfigFile(), DryRun: a.DryRun}
+
+	if !a.Cfg.Shell.Completion {
+		cs, err := a.ConfigSet("shell.completion", "true", false)
+		if err != nil {
+			return res, err
+		}
+		res.ConfigSet = true
+		res.ConfigBackup = cs.Backup
+		// 顺手刷新内存里的生效配置：命令层是一次性进程，但应用层可能被连续调用
+		// （测试、将来的交互向导），不刷新就会对同一个开关重复写盘。
+		// dry-run 下不刷新——那会把"没发生的事"当成已发生。
+		if !a.DryRun {
+			a.Cfg.Shell.Completion = true
+		}
+	}
+
+	inst, err := a.ShellInstall(shell, rcFile)
+	if err != nil {
+		return res, err
+	}
+	res.RCFile = inst.RCFile
+	res.RCChanged = inst.Changed
+	res.RCBackup = inst.Backup
+	// bash 的补全脚本运行时要用 bash-completion 包的 _get_comp_words_by_ref：
+	// 没有这个包时脚本能加载、按 Tab 却不会有任何反应——这种"静默不生效"必须说出来。
+	if strings.EqualFold(strings.TrimSpace(shell), "bash") &&
+		a.Platform.OS != "windows" && !bashCompletionInstalled(fsx.IsFile) {
+		res.Hints = append(res.Hints,
+			"bash 补全还依赖系统的 bash-completion 包（Debian/Ubuntu: apt install bash-completion；"+
+				"macOS: brew install bash-completion）；没装的话按 Tab 不会有补全。")
+	}
+	return res, nil
+}
+
+// bashCompletionCandidates 是 bash-completion 包在各发行版/包管理器下的常见落点。
+//
+// 只用来给一句提示，因此宁可漏报（少一句提示）也不误报；找不到就说不确定。
+var bashCompletionCandidates = []string{
+	"/usr/share/bash-completion/bash_completion",
+	"/etc/bash_completion",
+	"/usr/local/share/bash-completion/bash_completion",
+	"/opt/homebrew/share/bash-completion/bash_completion",
+	"/opt/local/share/bash-completion/bash_completion",
+	"/usr/share/bash-completion/completions",
+}
+
+// bashCompletionInstalled 报告这些落点里有没有一个存在（exists 便于测试注入）。
+func bashCompletionInstalled(exists func(string) bool) bool {
+	for _, p := range bashCompletionCandidates {
+		if exists(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ShellUninstallResult 是 `bs shell uninstall` 的结果。

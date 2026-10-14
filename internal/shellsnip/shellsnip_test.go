@@ -261,3 +261,58 @@ func TestDetectRCFile(t *testing.T) {
 		t.Error("cmd should not be resolvable to an rc file")
 	}
 }
+
+// TestCompletionContent 锁定各 shell 的补全片段：语法必须是该 shell 的，
+// 且每种都要"先探测 bs 在不在 PATH"，绝不能让开 shell 时报错。
+func TestCompletionContent(t *testing.T) {
+	cases := []struct {
+		name   string
+		family Family
+		shell  string
+		want   []string
+	}{
+		{
+			name: "posix bash", family: FamilyPosix, shell: "bash",
+			want: []string{"BASH_VERSION", `eval "$(command bs completion bash)"`, "command -v bs"},
+		},
+		{
+			// sh/dash/ksh 也属于 posix：必须带上 BASH_VERSION 判断，
+			// 否则 dash 里执行 cobra 的 bash 脚本会直接报错。
+			name: "posix sh stays guarded", family: FamilyPosix, shell: "sh",
+			want: []string{"BASH_VERSION", "bs completion bash"},
+		},
+		{
+			name: "posix zsh", family: FamilyPosix, shell: "zsh",
+			want: []string{"compinit", `eval "$(command bs completion zsh)"`},
+		},
+		{
+			name: "fish", family: FamilyFish, shell: "fish",
+			want: []string{"command -q bs", "command bs completion fish | source", "end"},
+		},
+		{
+			name: "pwsh", family: FamilyPwsh, shell: "pwsh",
+			want: []string{"Get-Command bs", "completion powershell", "Invoke-Expression"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CompletionContent(tc.family, tc.shell)
+			if err != nil {
+				t.Fatalf("CompletionContent: %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("片段里缺少 %q：\n%s", want, got)
+				}
+			}
+			// 生成的是片段内容而不是完整脚本：不该带上 cobra 的脚本头。
+			if strings.Contains(got, "bash completion V2") || strings.Contains(got, "#compdef bs") {
+				t.Errorf("这里只该生成加载语句，不该内联 cobra 的脚本：\n%s", got)
+			}
+		})
+	}
+
+	if _, err := CompletionContent(Family("nonsense"), "bash"); err == nil {
+		t.Error("unsupported family should error")
+	}
+}

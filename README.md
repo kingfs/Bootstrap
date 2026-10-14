@@ -68,6 +68,7 @@ bs init --no-tools --yes        # 只做准备（配置/仓库根/受管块）�
 ```sh
 bs config init                  # 生成默认配置（含本地/公司代理 profile 示例）
 bs shell install                # 在 rc 里装受管块：代理立即生效 + PATH 装配
+bs completion install           # 让 bs 自己的补全在新 shell 生效（复用同一个受管块）
 bs doctor                       # 看看环境还缺什么
 bs doctor --fix                 # 缺什么顺手补上（配置 / 仓库根 / 受管块；--dry-run 可先看）
 
@@ -181,6 +182,17 @@ eval "$(bs shell init bash)"
 # <<< bootstrap <<<
 ```
 
+> 补全也在这一块里，**不会**多出第二个受管块：`bs completion install` 打开配置里的
+> `shell.completion` 开关后，`bs shell init` 现算的内容末尾就会多一段"加载 bs 补全"。
+> 所以升级 `bs`、改了补全脚本都无需重跑安装命令；`bs shell uninstall` 也能一次清干净。
+
+### 补全（`bs completion`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `bs completion install [shell]` | 打开 `shell.completion` + 幂等写入 rc 受管块（写前都备份，`--dry-run` 只预览）；rc 位置自动探测，可用 `--shell`/`--rc` 覆盖 |
+| `bs completion bash\|zsh\|fish\|powershell` | 只打印 cobra 生成的补全脚本，自己接管：`bs completion zsh > "${fpath[1]}/_bs"` |
+
 ### 环境（`bs env`）
 
 | 命令 | 说明 |
@@ -253,7 +265,8 @@ bs tool manifest validate --os darwin
 | `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |
 | `bs doctor --fix` | 顺手修掉能安全自动修的问题：生成配置、建仓库根、装 shell 受管块（写前备份；先给计划再问一句） |
 | `bs version` | 版本信息（`--json` 可脚本消费） |
-| `bs completion bash\|zsh\|fish\|powershell` | 输出补全脚本（`bs completion zsh > ~/.zsh/completions/_bs`） |
+| `bs completion install [shell]` | 自动装补全（打开 `shell.completion` + 写 rc 受管块，详见上文"补全"一节） |
+| `bs completion bash\|zsh\|fish\|powershell` | 只输出补全脚本（`bs completion zsh > "${fpath[1]}/_bs"`） |
 
 全局参数里有两个和"等多久"有关：`--timeout 30s` 给整条命令设总时限（到点连子进程一起停掉），
 配置文件 `timeouts.command`/`download` 则用来放宽单个命令与下载的默认时限（10m / 15m）。

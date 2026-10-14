@@ -330,6 +330,7 @@ shell:
     pwsh: ""                      # 例：~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1
   auto_path: true                 # 受管块中包含 PATH 装配（等价 eval "$(bs env --path)"）
   auto_proxy: false               # 受管块是否在启动时自动应用活跃 proxy profile（默认关：不污染新 shell）
+  completion: false               # 受管块是否加载 bs 自己的补全（默认关；正规入口 `bs completion install`）
 
 ui:
   confirm: true
@@ -1123,7 +1124,14 @@ bs shell uninstall [--rc <file>] [--shell S]  # 精确移除受管块（块外�
 bs shell status [--rc <file>] [--shell S]  # 受管块是否存在、内容是否与当前 bs 一致
 bs shell snippet list|new <name>|path
 bs shell [--profile P]                   # 不改 rc：开一个已装配环境 + PATH 的交互式子 shell
+bs completion install [--rc <file>] [--shell S]  # 打开 shell.completion + 幂等写入上面**同一个**受管块
+bs completion bash|zsh|fish|powershell   # 只打印 cobra 生成的补全脚本（自己接管时用）
 ```
+
+**补全为什么也走受管块**（ADR-0016）：rc 里始终只有一个受管块，`bs completion install` 只做两件事——
+把 `shell.completion` 置真、确保受管块最新。补全片段由 `bs shell init` 每次开 shell 现算，
+所以升级 bs 后新补全自动生效，`bs shell uninstall` 也能一次清干净；代价是"只想要补全"的人
+会被连带装上 10-proxy/20-path 等片段（这是刻意接受的取舍）。
 
 **受管块格式**（幂等替换的锚点，块外字节级不动）：
 
@@ -1313,7 +1321,7 @@ shell  status                           显示受管块安装状态
 shell  snippet list|new|path            查看/创建 shell 片段
 shell  [--profile P]                    开一个已装配环境的交互式子 shell（不改 rc；不接受命令参数）
 
-completion <shell>   由 cobra 提供（bash/zsh/fish/powershell）
+completion <shell>   由 cobra 提供（bash/zsh/fish/powershell）；另加 `completion install [shell]` 自动装进 rc 受管块
 help [命令]          由 cobra 提供
 ```
 
@@ -1562,7 +1570,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 3. 代理凭据不落明文日志；日志中 `*_PROXY` 值做掩码（保留 host:port，隐去 userinfo）。
 4. `bs self-update` **只校验 sha256**（ADR-0009），签名校验明确不做；校验和拿不到就中止，
    没有"跳过校验"的开关。替换前先跑一遍新二进制的 `version` 自检，跑不起来就保留旧的。
-5. rc 文件只允许通过 `bs shell install` 的**受管块**修改：块由固定标记包围、可幂等替换、可精确移除，块外字节级不动；写前自动备份。其余场景一律只**输出**片段，不写文件。
+5. rc 文件只允许通过**受管块**修改：块由固定标记包围、可幂等替换、可精确移除，块外字节级不动；写前自动备份。受管块只有 `bs shell install` 标记的那一个（ADR-0016：`bs completion install` 也复用它，不新增第二组标记），补全/PATH/代理内容都由 `bs shell init` 现算。其余场景一律只**输出**片段，不写文件。
 6. **破坏性操作必须先拿到明确同意**（`confirmDestructive`）：交互终端默认拒绝，
    非交互环境绝不阻塞，没有 `--yes` 就以退出码 5 结束（`--dry-run` 不需要同意，因为它什么都不做）。
 7. **镜像前缀是"把信任转交出去"**：`BS_GITHUB_ASSET_BASE` 同时决定产物与 `checksums.txt`
@@ -1609,7 +1617,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 取消语义 | `make pty`：Ctrl-C → 退出码 0 + "未做任何修改"；确认框回车＝拒绝 | ✅ |
 | `bs self-update` | 20+ 条离线单测（假 GitHub）：缺校验和/坏校验和/自检失败都中止并保留旧文件；Windows 让位失败回滚 | ✅ |
 | 未发布 Release 时的提示 | `bs self-update --check --repo kingfs/Bootstrap` → 退出码 1 + "还没有发布任何 Release" | ✅ |
-| 配置项接线 | `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` 都有单测与冒烟断言 | ✅ |
+| 配置项接线 | `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` / `shell.completion` 都有单测与冒烟断言 | ✅ |
 | 无副作用 | `make check`（fmt+vet+test+race）、`make smoke`（90 条断言，沙箱 + 不联网）、`make cross` 全绿 | ✅ |
 
 **M4 完成判据的自查**（同样全部无副作用；"真终端"那一格靠 `make pty`）：
@@ -1647,6 +1655,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0013 | **fallback 默认值** | 交互式终端默认**开**；非交互（管道/CI/`--json`/`--non-interactive`）默认**关**；降级必须在 Report 与 `--json` 中显式标注 | 自动化场景绝不静默换安装方式 |
 | ADR-0014 | **首批平台范围** | 首批清单（`base/golang/nodejs/python`）只覆盖 **linux + darwin**；Windows 首批仅保证 `bs` 本体 + `repo`/`proxy`/`shell(pwsh)` 可用，工具清单在 M5+ 单独补 | Go 用 `g` 管理的前提是其在各平台可用；Windows 不冒险 |
 | ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举 |
+| ADR-0016 | **补全的安装形态** | `bs completion install [shell]` 负责"打开 `shell.completion` + 幂等写入受管块"；补全片段由 `bs shell init` 现算，**不新增第二组受管块标记**；默认关（与 `auto_proxy` 同理，不擅自改变每个新 shell 的行为）；`bs completion bash\|zsh\|fish\|powershell` 保持"只打印脚本"的 cobra 契约 | 用户反馈"生成完不知道下一步该干什么"；沿用 ADR-0007 的单受管块可以一次卸载干净，代价是只想补全的人会连带装上代理包装/PATH 片段 |
 
 ### 18.2 已闭环
 
@@ -1700,7 +1709,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 12 | `make e2e` 不依赖 `build`，脚本用的是**过期的 `bin/bs`**——"测试通过/失败"都可能是上一版代码的结论 | `e2e: build`；脚本头部写明"自己不做构建"；PATH 收敛为沙箱 bin + `/usr/bin:/bin`（宿主已装的同名工具会让安装被跳过，e2e 就什么都验证不到），并在计划阶段就断言不是 skip |
 
 M3 已把上面这批接线补齐：`ui.confirm`（交互会话里可关掉确认）、`ui.progress`（逐步骤进度）、
-`shell.auto_path` / `shell.auto_proxy`（`bs shell init` 渲染时生效，不写 rc）、
+`shell.auto_path` / `shell.auto_proxy` / `shell.completion`（`bs shell init` 渲染时生效，不写 rc）、
 `--interactive` / `--plain-ui`、`huh` 交互式勾选、`bs init`、`bs self-update`。
 M4 又补上了全局 `--timeout`（含 `timeouts.*` 配置与"取消时杀整棵进程组"）。
 `make lint`（golangci-lint，配置在 `.golangci.yml`：只保留真问题，关掉只影响风格的 `shadow`/`ST*`/`QF*`）

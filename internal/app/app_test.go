@@ -648,3 +648,150 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// TestShellInitHonorsCompletion：shell.completion 与 auto_path/auto_proxy 一样，
+// 只在渲染阶段起作用（默认关），并且按**具体 shell** 生成加载语句。
+func TestShellInitHonorsCompletion(t *testing.T) {
+	a, _ := newTestApp(t)
+
+	init, err := a.ShellInit("bash")
+	if err != nil {
+		t.Fatalf("ShellInit: %v", err)
+	}
+	if hasSnippet(init.Content, "99-completion") || strings.Contains(init.Content, "bs completion") {
+		t.Errorf("默认不该加载补全（会改变每个新 shell 的行为）：\n%s", init.Content)
+	}
+
+	a.Cfg.Shell.Completion = true
+	for _, tc := range []struct{ shell, want string }{
+		{"bash", `eval "$(command bs completion bash)"`},
+		{"zsh", `eval "$(command bs completion zsh)"`},
+		{"fish", "command bs completion fish | source"},
+		{"pwsh", "completion powershell"},
+	} {
+		init, err := a.ShellInit(tc.shell)
+		if err != nil {
+			t.Fatalf("ShellInit(%s): %v", tc.shell, err)
+		}
+		if !hasSnippet(init.Content, "99-completion") || !strings.Contains(init.Content, tc.want) {
+			t.Errorf("%s 的补全片段不对，应当包含 %q：\n%s", tc.shell, tc.want, init.Content)
+		}
+		// 片段必须出现在最后（放在别名/代理包装之后），且 Fish 语法不能被塞进 posix。
+		if !strings.HasSuffix(strings.TrimRight(init.Content, "\n"), "fi") &&
+			!strings.HasSuffix(strings.TrimRight(init.Content, "\n"), "end") &&
+			!strings.HasSuffix(strings.TrimRight(init.Content, "\n"), "}") {
+			t.Errorf("%s 的补全片段应当在末尾：\n%s", tc.shell, init.Content)
+		}
+	}
+}
+
+// TestCompletionInstallTurnsOnSwitchAndWritesRC 覆盖 install 的两件事：
+// 打开 shell.completion + 幂等写入 rc 受管块，且第二次执行不碰任何文件。
+func TestCompletionInstallTurnsOnSwitchAndWritesRC(t *testing.T) {
+	a, _ := newTestApp(t)
+	rc := filepath.Join(a.Paths.HomeDir, ".bashrc")
+	original := "# 我自己的配置\nexport EDITOR=vim\n"
+	if err := os.MkdirAll(filepath.Dir(rc), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	res, err := a.CompletionInstall("bash", rc)
+	if err != nil {
+		t.Fatalf("CompletionInstall: %v", err)
+	}
+	if !res.ConfigSet || !res.RCChanged {
+		t.Fatalf("第一次应当同时改配置与 rc：%+v", res)
+	}
+	cfg := readFile(t, a.Paths.ConfigFile())
+	if !strings.Contains(cfg, "completion: true") {
+		t.Errorf("配置里没有打开开关：\n%s", cfg)
+	}
+	installed := readFile(t, rc)
+	if !strings.Contains(installed, ">>> bootstrap") || !strings.Contains(installed, original) {
+		t.Errorf("rc 受管块没装好或破坏了原有内容：\n%s", installed)
+	}
+	// 打开开关后，渲染结果里就该出现补全片段（"装完即生效"的实质）。
+	init, err := a.ShellInit("bash")
+	if err != nil {
+		t.Fatalf("ShellInit: %v", err)
+	}
+	if !strings.Contains(init.Content, "bs completion bash") {
+		t.Errorf("install 之后 shell init 仍未渲染补全：\n%s", init.Content)
+	}
+
+	// 第二次：两处都不该再动（mtime 不变是"没有无谓写盘"的证据）。
+	cfgBefore, err := os.Stat(a.Paths.ConfigFile())
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	rcBefore, err := os.Stat(rc)
+	if err != nil {
+		t.Fatalf("stat rc: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	res, err = a.CompletionInstall("bash", rc)
+	if err != nil {
+		t.Fatalf("CompletionInstall again: %v", err)
+	}
+	if res.ConfigSet || res.RCChanged {
+		t.Errorf("重复执行应当什么都不改：%+v", res)
+	}
+	cfgAfter, _ := os.Stat(a.Paths.ConfigFile())
+	rcAfter, _ := os.Stat(rc)
+	if !cfgBefore.ModTime().Equal(cfgAfter.ModTime()) || !rcBefore.ModTime().Equal(rcAfter.ModTime()) {
+		t.Error("重复执行改动了文件（mtime 变了）")
+	}
+}
+
+// TestCompletionInstallDryRunWritesNothing 是应用层的 dry-run 断言。
+func TestCompletionInstallDryRunWritesNothing(t *testing.T) {
+	a, root := newTestApp(t)
+	a.DryRun = true
+	rc := filepath.Join(a.Paths.HomeDir, ".bashrc")
+	before := snapshot(t, root)
+
+	res, err := a.CompletionInstall("bash", rc)
+	if err != nil {
+		t.Fatalf("CompletionInstall: %v", err)
+	}
+	if !res.ConfigSet || !res.RCChanged {
+		t.Errorf("dry-run 仍要如实汇报会改什么：%+v", res)
+	}
+	if _, err := os.Stat(rc); !os.IsNotExist(err) {
+		t.Fatalf("dry-run 创建了 rc 文件（%v）", err)
+	}
+	if _, err := os.Stat(a.Paths.ConfigFile()); !os.IsNotExist(err) {
+		t.Fatalf("dry-run 创建了配置文件（%v）", err)
+	}
+	if got := snapshot(t, root); strings.Join(before, "\n") != strings.Join(got, "\n") {
+		t.Error("dry-run 修改了文件系统")
+	}
+}
+
+// TestCompletionInstallRejectsCmd：cmd.exe 没有 rc，必须在使用前就报错，
+// 而不是先改了配置才发现写不了 rc。
+func TestCompletionInstallRejectsCmd(t *testing.T) {
+	a, root := newTestApp(t)
+	before := snapshot(t, root)
+	if _, err := a.CompletionInstall("cmd", ""); err == nil {
+		t.Fatal("cmd.exe 应当被拒绝")
+	}
+	if got := snapshot(t, root); strings.Join(before, "\n") != strings.Join(got, "\n") {
+		t.Error("被拒绝的 shell 不该留下任何写入")
+	}
+}
+
+// TestBashCompletionInstalled 覆盖"bash 补全还依赖 bash-completion 包"的探测。
+func TestBashCompletionInstalled(t *testing.T) {
+	none := func(string) bool { return false }
+	if bashCompletionInstalled(none) {
+		t.Error("什么都找不到时应当报 false")
+	}
+	found := func(p string) bool { return p == "/usr/share/bash-completion/completions" }
+	if !bashCompletionInstalled(found) {
+		t.Error("命中已知落点时应当报 true")
+	}
+}

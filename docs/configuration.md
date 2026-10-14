@@ -156,10 +156,17 @@ profile 至少要有一个非空代理地址，否则配置校验失败。
 | `rc_files.<shell>` | 路径 | 自动探测 | 指定某个 shell 的 rc 文件（如 `zsh: ~/.zshrc`），优先于自动探测 |
 | `auto_path` | 布尔 | `true` | 关掉则 `bs shell init` 不渲染 `20-path.*` 片段（自己管 PATH 的场景） |
 | `auto_proxy` | 布尔 | `false` | 打开则每个新 shell 自动应用 bs 当前活跃的 proxy profile |
+| `completion` | 布尔 | `false` | 打开则 `bs shell init` 在末尾追加"加载 bs 补全"片段；正规入口是 `bs completion install [shell]` |
 
-`auto_path` / `auto_proxy` 只影响 `bs shell init` 渲染的内容，**不写进 rc 文件**——受管块永远只有
-`eval "$(bs shell init <shell>)"` 一行，所以改完配置立刻生效（重开 shell 或重新 `eval` 一次）。
+`auto_path` / `auto_proxy` / `completion` 只影响 `bs shell init` 渲染的内容，**不写进 rc 文件**——受管块
+永远只有 `eval "$(bs shell init <shell>)"` 一行，所以改完配置立刻生效（重开 shell 或重新 `eval` 一次）。
 `auto_proxy` 默认关是刻意的：它会让 `bs proxy off` 之后把新 shell 里**已有的**代理变量也清掉。
+`completion` 默认关同理：不在用户没要求时给每个新 shell 加一次 bs 调用。
+
+`completion` 打开的片段按**具体 shell** 生成（bash 与 zsh 同属 posix 家族，补全脚本却不同）：
+bash 会先判 `$BASH_VERSION`（dash/ksh 下不会误跑 bash 脚本）；zsh 在缺 `compdef` 时补一次
+`compinit -C`；fish 走 `bs completion fish | source`；pwsh 走 `Invoke-Expression`。
+`bs completion install` 会替你把这个开关写好并顺手装受管块，一般不必手改这一项。
 
 rc 文件自动探测规则：`bash` → `~/.bashrc`（macOS 优先 `~/.bash_profile`）；
 `zsh` → `$ZDOTDIR/.zshrc` 或 `~/.zshrc`；`fish` → `~/.config/fish/conf.d/bootstrap.fish`；
@@ -254,6 +261,7 @@ tool:
 shell:
   auto_path: true
   auto_proxy: false
+  completion: false
 
 ui:
   confirm: true
