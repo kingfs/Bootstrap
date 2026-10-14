@@ -322,6 +322,7 @@ func TestInitFlagConflicts(t *testing.T) {
 		{"init", "--with-shell", "--no-shell"},
 		{"init", "--missing-only", "--profile", "base"},
 		{"init", "--missing-only", "--tools", "g"},
+		{"init", "--profile", "base", "--tools", "g"}, // 以前是 tools 赢、profile 被静默忽略
 		{"init", "--interactive", "--non-interactive"},
 	}
 	for _, args := range cases {

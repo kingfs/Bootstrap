@@ -56,6 +56,10 @@ func (rt *Runtime) initCmd() *cobra.Command {
 			if missingOnly && (profile != "" || len(toolList) > 0) {
 				return usageErrf("--missing-only 不能与 --profile/--tools 同时使用（它们已经明确了要装什么）")
 			}
+			if profile != "" && len(toolList) > 0 {
+				// 以前是"tools 赢、profile 被静默忽略"，写错的人只会觉得"套装没生效"。
+				return usageErrf("--profile 与 --tools 不能同时使用（一个说按套装装，一个说只装这几个）")
+			}
 			if noTools && (profile != "" || len(toolList) > 0 || missingOnly) {
 				return usageErrf("--no-tools 表示不装任何工具，不能与 --profile/--tools/--missing-only 同时使用")
 			}

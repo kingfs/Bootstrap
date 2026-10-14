@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -319,9 +318,9 @@ func (rt *Runtime) emit(v any) error {
 	return enc.Encode(v)
 }
 
-// newTable 返回一个按列对齐的 writer。
-func (rt *Runtime) newTable() *tabwriter.Writer {
-	return tabwriter.NewWriter(rt.Opts.Out, 0, 0, 2, ' ', 0)
+// newTable 返回一个按列对齐的 writer（宽度按终端的"显示列数"算，中文才不会错位）。
+func (rt *Runtime) newTable() *tableWriter {
+	return newTableWriter(rt.Opts.Out)
 }
 
 // out 返回用户可见输出的 writer（stdout）。

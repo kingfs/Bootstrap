@@ -198,6 +198,6 @@ esac
 
 say ""
 say "运行 \`bs version\` 验证；接着可以："
-say "  bs config init          # 生成默认配置（含代理 profile 示例）"
+say "  bs config init          # 生成默认配置（要加代理：bs proxy add）"
 say "  bs shell install        # 安装 shell 受管块（代理立即生效 + PATH 装配）"
 say "  bs doctor               # 体检"

@@ -2,7 +2,9 @@
 
 个人开发环境重建工具：换一台新机器后，用几条命令把仓库、代理、shell 环境恢复成熟悉的样子。
 
-- **一个二进制，零运行时依赖**（Go 静态编译，`linux`/`macOS`/`Windows` × `amd64`/`arm64`）
+- **一个二进制，不需要运行时**（Go 静态编译，`linux`/`macOS`/`Windows` × `amd64`/`arm64`）：
+  不依赖 Python/Node，也不需要预先配 PATH；`bs repo` 系列要用 `git`，装工具时按清单调用
+  各自的包管理器（apt/brew/cargo/npm…）——这些是**它替你调用的工具**，不是它的运行前提
 - **不改你的 rc 文件内容**：只在 rc 里放一个可精确移除的"受管块"
 - **先看后做**：所有会改动文件系统或外部状态的命令都支持 `--dry-run`
 - **可脚本化**：`--json` 输出 + 明确区分的退出码
@@ -99,10 +101,13 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 
 | 命令 | 说明 |
 | --- | --- |
-| `bs repo get <repo>...` | 克隆或更新；已存在则 `git pull` |
+| `bs repo get <repo>...` | 克隆或更新；已存在则 `git pull`。目标目录非空且**不是** git 仓库时只 `skip` 并提示，绝不覆盖你已有的内容 |
+| `bs repo get --root DIR` / `--protocol https\|ssh` / `--depth N` / `--ref R` / `--autostash` | 换仓库根目录 / 换克隆协议 / 浅克隆 / 显式指定分支或 tag / pull 前自动 stash |
 | `bs repo list` | 列出根目录下的仓库（分支、来源、是否有未提交改动） |
-| `bs repo sync [-j N]` | 并发更新所有仓库；脏工作区默认跳过 |
+| `bs repo sync [-j N] [--root DIR] [--autostash]` | 并发更新所有仓库；脏工作区默认跳过 |
 | `bs repo root` | 打印仓库根目录及其来源 |
+
+"不覆盖"是刻意的：**没有** `--force` 这类"绕过护栏"的开关——要往那个目录克隆，先自己把它腾空。
 
 `<repo>` 支持任意常见写法，都会被归一化：
 

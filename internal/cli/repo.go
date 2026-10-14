@@ -55,7 +55,6 @@ func (rt *Runtime) repoGetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&protocol, "protocol", "", "克隆协议：https|ssh（默认取配置）")
 	cmd.Flags().IntVar(&opts.Depth, "depth", 0, "浅克隆深度（0 表示完整克隆）")
 	cmd.Flags().StringVar(&opts.Ref, "ref", "", "显式指定分支/标签（覆盖从 URL 推断的结果）")
-	cmd.Flags().BoolVar(&opts.Force, "force", false, "目标目录非空且非 git 仓库时也继续（仅在目录为空时才会克隆）")
 	cmd.Flags().BoolVar(&opts.Autostash, "autostash", false, "pull 前自动 stash 未提交改动")
 	return cmd
 }

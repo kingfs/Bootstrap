@@ -1182,8 +1182,10 @@ eval "$(bs shell init bash)"
 ```
 
 - `repo.root` 缺省探测顺序：配置值 → `<repo.root>` 存在则用 → Linux/macOS `~/src`；Windows `D:/src`（存在则用，否则 `%USERPROFILE%\src`）。
-- `bs repo root` 打印实际根目录与来源；`bs repo get --print-path` 只打印目标路径（便于 `cd "$(bs repo get x/y --print-path)"`）。
-- 已存在同名目录但**不是** git 仓库 → 默认报错并提示 `--force` / `--dir`；`--force` 时**不删除**已有内容，只在空目录或显式 `--adopt` 下继续。
+- `bs repo root` 打印实际根目录与来源；（推迟）`bs repo get --print-path` 只打印目标路径，便于 `cd "$(bs repo get x/y --print-path)"`。
+- 已存在同名目录但**不是** git 仓库 → 只 `skip` 并提示，**绝不覆盖**（AGENTS §8.1）。
+  刻意不提供 `--force` 这类逃生舱：M1 曾留过一个同名旗标，但它从未接到任何分支上，
+  等于给"能绕过护栏"的错觉——v0.1.0 之后已删除，要克隆请先自己腾空那个目录。
 
 ### 9.3 clone / pull 语义
 
@@ -1209,6 +1211,7 @@ eval "$(bs shell init bash)"
 - 已强化的安全语义：目标目录**非空且不是 git 仓库**时一律 `skip`（不删除、不覆盖任何已有文件），
   只有目录为空时才 clone 进去——这一条由单测锁定（`TestPlanSkipProtectsPreciousDirectory`）。
 - 推迟：`--print-path`、`--adopt`、`origin` 不一致的校验与 `--repair-origin`、非默认分支的落后/领先计数。
+  （`--force` 不属于"推迟"：它已经作为"从不生效的旗标"被删除。）
 - `--depth` 支持浅克隆，`--sparse` 后续增强。
 
 ### 9.4 批量能力
@@ -1284,7 +1287,7 @@ proxy  exec [--profile P] -- <命令...>   在带代理的子进程里执行（`
 proxy  test                分别测直连与走代理（**唯一会发真实网络请求的命令**）
 proxy  add                 新增 profile（默认只打印 YAML 片段，不写文件）
 
-repo   get <url...> [--root DIR] [--ref R] [--depth N] [--protocol https|ssh] [--autostash] [--force]
+repo   get <url...> [--root DIR] [--ref R] [--depth N] [--protocol https|ssh] [--autostash]
 repo   list | root
 repo   sync [--root DIR] [-j/--jobs N] [--autostash]
 

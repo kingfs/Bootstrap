@@ -14,7 +14,6 @@ type RepoOptions struct {
 	Protocol  string
 	Depth     int
 	Ref       string
-	Force     bool
 	Autostash bool
 }
 
@@ -24,7 +23,6 @@ func (o RepoOptions) toManager() gitrepo.Options {
 		Protocol:  o.Protocol,
 		Depth:     o.Depth,
 		Ref:       o.Ref,
-		Force:     o.Force,
 		Autostash: o.Autostash,
 	}
 }

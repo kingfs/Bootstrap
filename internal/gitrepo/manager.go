@@ -47,7 +47,6 @@ type Options struct {
 	Protocol  string
 	Depth     int
 	Ref       string // 覆盖 URL 中解析出的 ref
-	Force     bool   // 允许在"非空但非 git 仓库"的目录里继续（仅当目录为空时才会 clone）
 	Autostash bool
 }
 
