@@ -143,6 +143,55 @@ func TestDetectWindowsShell(t *testing.T) {
 	}
 }
 
+// TestDetectShellFallsBackToPasswd：容器里常常没有 $SHELL（`docker run -it ubuntu bash`
+// 就是如此）。这时改看 /etc/passwd 里当前用户的登录 shell，别把 shell 探测成空串——
+// 空串会让 `bs init` 的 shell 集成整段失败。
+func TestDetectShellFallsBackToPasswd(t *testing.T) {
+	env := fakeEnv("linux", map[string]string{
+		"/etc/os-release": ubuntuOSRelease,
+		"/etc/passwd":     "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1::/:/usr/sbin/nologin\n",
+	})
+	env.Getenv = func(string) string { return "" }
+	env.Euid = 0
+	if p := DetectWith(env); p.Shell != "bash" {
+		t.Errorf("Shell = %q, want bash（$SHELL 缺失时应看 /etc/passwd）", p.Shell)
+	}
+
+	// 用户名优先于 uid：同一个 uid 匹配不上时按 $USER 找。
+	env.Euid = 1000
+	env.Getenv = func(k string) string {
+		if k == "USER" {
+			return "daemon"
+		}
+		return ""
+	}
+	// daemon 的登录 shell 是 nologin（不是 shell）→ 不能被当成 shell 返回。
+	if p := DetectWith(env); p.Shell != "" {
+		t.Errorf("Shell = %q, want empty（nologin 不是 shell）", p.Shell)
+	}
+}
+
+// TestDetectShellFallsBackToParentProcess：/etc/passwd 也给不出答案时，
+// 看父进程是谁（bs 是被哪个 shell 拉起来的）。
+func TestDetectShellFallsBackToParentProcess(t *testing.T) {
+	env := fakeEnv("linux", map[string]string{
+		"/etc/os-release":   ubuntuOSRelease,
+		"/proc/self/status": "Name:\tbs\nPPid:\t4242\n",
+		"/proc/4242/comm":   "zsh\n",
+	})
+	env.Getenv = func(string) string { return "" }
+	if p := DetectWith(env); p.Shell != "zsh" {
+		t.Errorf("Shell = %q, want zsh（父进程是 zsh）", p.Shell)
+	}
+
+	// 什么都拿不到时必须是空串（调用方据此跳过 shell 集成），不能瞎猜 bash。
+	bare := fakeEnv("linux", map[string]string{})
+	bare.Getenv = func(string) string { return "" }
+	if p := DetectWith(bare); p.Shell != "" {
+		t.Errorf("Shell = %q, want empty（探测不到就如实报告）", p.Shell)
+	}
+}
+
 func TestNormalizeArch(t *testing.T) {
 	tests := map[string]string{"x86_64": "amd64", "aarch64": "arm64", "i686": "386", "arm64": "arm64", "riscv64": "riscv64"}
 	for in, want := range tests {

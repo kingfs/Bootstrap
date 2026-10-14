@@ -144,16 +144,25 @@ smoke: build
 
 # pty-check 需要 /dev/ptmx：用真 PTY 驱动交互式界面（详见 scripts/pty-check.py 头部说明）。
 # 命令本身都是 --dry-run，读写只发生在 .cache/pty 里。
+#
+# init 的向导现在是全屏表单，依次问三件事：仓库根目录 → 代理地址 → 装哪些工具。
+# 每次 ENTER 就是"用默认值往下走"。
 .PHONY: pty
 pty: build
-	@# 干跑下只打计划表（结果表是同一份内容的翻版，已不再重复），所以断言"计划算出来了"。
+	@# 默认路径走到底：仓库根回车、代理回车、工具选"按套装"、套装选第一个，
+	@# 干跑下最后只打计划表（结果表是同一份内容的翻版，已不再重复）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "（dry-run：以下操作都不会被执行）" \
 		--expect-text "个需要处理" \
-		--keys n DOWN ENTER -- init --dry-run
+		--keys ENTER ENTER ENTER ENTER -- init --dry-run
+	@# Ctrl-C 取消必须退出码 0 且提示"未做任何修改"（在第一问就取消）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已取消，未做任何修改" \
-		--keys DOWN DOWN ENTER WAIT2 CTRLC -- init --dry-run
+		--keys WAIT2 CTRLC -- init --dry-run
+	@# 工具那步可以选"先不装工具"（向下 3 次到第 4 项）：接口要可选。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
+		--expect-code 0 --expect-text "已跳过工具安装" \
+		--keys ENTER ENTER DOWN DOWN DOWN ENTER -- init --dry-run
 	@# 破坏性操作的确认框：只按回车必须走"默认拒绝"，绝不能悄悄开装
 	@# （duf 只是"多半没装"的普通 CLI，用来触发确认框；按 n/回车都不会真的安装）
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \

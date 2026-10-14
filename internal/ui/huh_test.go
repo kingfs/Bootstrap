@@ -137,3 +137,15 @@ func TestHuhPrompterSelectWithoutOptions(t *testing.T) {
 		t.Error("没有可选项时应当报错")
 	}
 }
+
+// TestHuhPrompterListHeightFallsBack：拿不到终端尺寸（输出不是 *os.File）时用保守值，
+// 绝不能算出 0 让勾选框什么都不显示。
+func TestHuhPrompterListHeightFallsBack(t *testing.T) {
+	p := &huhPrompter{in: strings.NewReader(""), out: &bytes.Buffer{}}
+	if got := p.listHeight(14); got != 14 {
+		t.Errorf("listHeight 应当回落到调用方给的值，得到 %d", got)
+	}
+	if got := p.listHeight(0); got != 0 {
+		t.Errorf("fallback 应原样返回，得到 %d", got)
+	}
+}

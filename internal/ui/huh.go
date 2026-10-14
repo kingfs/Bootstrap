@@ -7,7 +7,9 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	xterm "github.com/charmbracelet/x/term"
 
 	"github.com/kingfs/Bootstrap/pkg/hostinfo"
 )
@@ -61,6 +63,12 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 		options = append(options, huh.NewOption(label, o.Value).Selected(o.Selected))
 		values = append(values, o.Value)
 	}
+	// 工具清单动辄几十条，固定 14 行会让勾选框缩在屏幕一角；
+	// 这里按终端高度给足列表空间（全屏表单，见 form()）。
+	height := h.listHeight(14)
+	if height > len(options)+2 {
+		height = len(options) + 2
+	}
 	// 用户主动取消（Ctrl-C / Esc）时返回 ErrCancelled，与 Text 版语义一致。
 	selected := make([]string, 0, len(values))
 	if err := h.form(
@@ -69,7 +77,7 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 			Description(q.Description).
 			Options(options...).
 			Filterable(len(options) > 8).
-			Height(14).
+			Height(height).
 			Value(&selected).
 			Validate(func(picked []string) error {
 				if q.MinSelected > 0 && len(picked) < q.MinSelected {
@@ -101,8 +109,8 @@ func (h *huhPrompter) Select(q Question, options []Option) (string, error) {
 	}
 	value := ""
 	height := len(choices)
-	if height > 12 {
-		height = 12
+	if max := h.listHeight(12); height > max {
+		height = max
 	}
 	if err := h.form(
 		huh.NewSelect[string]().
@@ -151,12 +159,38 @@ func (h *huhPrompter) Input(q Question) (string, error) {
 
 // form 组装单字段表单；输入输出显式绑定，避免 huh 自己去开 /dev/tty
 // （那样在包装器/IDE 终端里会失败，而我们已经有可用的 in/out）。
+//
+// 交互式界面统一走**备用屏幕**（AltScreen）：表单铺满整屏，退出时终端恢复原样，
+// 而不是在已打印的概览表格下面挤出一小块（这正是用户抱怨的"局限在下面一点点"）。
+// 注意 WithProgramOptions 是**替换**而不是追加，所以必须排在最前面，
+// 否则后面 WithInput/WithOutput 追加上去的选项会被它清空。
 func (h *huhPrompter) form(fields ...huh.Field) *huh.Form {
 	return huh.NewForm(huh.NewGroup(fields...)).
+		WithProgramOptions(tea.WithAltScreen()).
 		WithInput(h.in).
 		WithOutput(h.out).
 		WithAccessible(h.accessible).
 		WithShowHelp(true)
+}
+
+// listHeight 计算列表在整屏里能占多少行。
+//
+// 拿不到终端尺寸时（例如换了输出 writer）退回调用方给的保守值——
+// 宁可列表短一点，也不能算出 0 让界面什么都不显示。
+func (h *huhPrompter) listHeight(fallback int) int {
+	f, ok := h.out.(*os.File)
+	if !ok {
+		return fallback
+	}
+	_, height, err := xterm.GetSize(f.Fd())
+	if err != nil || height <= 0 {
+		return fallback
+	}
+	// 留出标题/说明/帮助与上下留白：这些是 huh 自己画的，不归列表。
+	if n := height - 8; n > 10 {
+		return n
+	}
+	return 10
 }
 
 // mapHuhErr 把 huh 的"用户主动退出"映射成统一的 ErrCancelled，

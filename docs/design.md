@@ -1377,15 +1377,25 @@ Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
 - `--json` 同时隐式进入非交互模式：不提问、不阻塞，`fallback` 默认关闭（ADR-0013）。
 
 **交互（ADR-0003）**：所有提问都经由 `internal/ui.Prompter`。今天有三处会提问：
-`bs init` 的"要不要生成配置 / 勾哪些工具 / 是否装 shell 块"、`bs tool install|upgrade|uninstall -i`
-的勾选、以及破坏性操作前的一句确认。，`charmbracelet/huh` 是它唯一的
+`bs init` 的向导、`bs tool install|upgrade|uninstall -i`
+的勾选、以及破坏性操作前的一句确认。`charmbracelet/huh` 是它唯一的
 落点（`go.mod` 里 huh 只被这个包 import）。选择顺序：
 
 | 环境 | 实现 | 行为 |
 |---|---|---|
 | 非交互（管道/`CI`/`--json`/`--non-interactive`） | `ui.NonInteractive` | 提问即返回 `ErrNotInteractive` → 退出码 5，绝不阻塞 |
 | 真终端 + `--plain-ui`，或不是真终端 | `ui.Text` | 纯文本问答（编号/名字、`a` 全选、`q` 取消），零依赖 |
-| 真终端 | `ui.huhPrompter` | 交互式界面：空格勾选、`/` 过滤、←/→ 切换、回车提交 |
+| 真终端 | `ui.huhPrompter` | 全屏交互式界面（AltScreen）：空格勾选、`/` 过滤、←/→ 切换、回车提交 |
+
+**`bs init` 向导要问什么**（2026-10 修订，ADR-0015）：只问三件事，且都带默认值——
+①仓库根目录（默认＝当前生效值，回车沿用，可改，写回 `repo.root`）；
+②代理地址（默认空；留空＝不设置/不修改；填了就建 `default` profile 并启用）；
+③装哪些工具（套装 / 只补缺失 / 手工勾选 / **先不装**，所以这一步是可选的）。
+配置文件不存在时**直接生成**，不再问"要不要生成"——它本来就是这个命令的职责。
+
+向导的提问只在"真能问到人"且没有 `--yes` 时发生：
+`--yes` 是"全自动"，连选什么都不问（仓库根/代理/工具全按配置来）；
+非交互环境仍然必须 `--yes`，否则退出码 5。
 
 约定与红线：
 
@@ -1576,6 +1586,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 判据 | 验证方式 | 结果 |
 |---|---|---|
 | `bs init` 能一把梭 | `bs init --dry-run --yes --tools ripgrep` 零写入；`make pty` 里真勾选后落地 | ✅ |
+| init 向导形态（ADR-0015） | 单测：配置缺失时直接生成且不再问；仓库根/代理写回配置并立即生效；`--yes` 下一问都不问；未识别 shell 时跳过而不是报错。`make pty`：全屏表单走完三问；在 `ubuntu:26.04` 容器里（`$SHELL` 未设置）真实走完"仓库根 → 代理 → 不装工具 → 装 shell 受管块" | ✅ |
 | 非交互不阻塞 | `init` / `self-update` 无 `--yes` → 退出码 5；`--json` 也走这条路 | ✅ |
 | 参数互斥/未知目标 | `--missing-only --profile`、`--with-shell --no-shell`、未知 profile/tool → 退出码 2 | ✅ |
 | 交互式勾选（huh） | `make pty`：多选勾选后干跑落地；勾选数回填正确（缺失项默认勾选） | ✅ |
@@ -1619,6 +1630,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0012 | **个人 shell 片段归宿** | **主要放仓库内置 `tools/snippets/`**（随二进制发布，换机器零同步，升级即带上）；`<config>/shell/` 仅作机器特定/临时覆盖 | 片段变更需提交；不再依赖 dotfiles 同步 |
 | ADR-0013 | **fallback 默认值** | 交互式终端默认**开**；非交互（管道/CI/`--json`/`--non-interactive`）默认**关**；降级必须在 Report 与 `--json` 中显式标注 | 自动化场景绝不静默换安装方式 |
 | ADR-0014 | **首批平台范围** | 首批清单（`base/golang/nodejs/python`）只覆盖 **linux + darwin**；Windows 首批仅保证 `bs` 本体 + `repo`/`proxy`/`shell(pwsh)` 可用，工具清单在 M5+ 单独补 | Go 用 `g` 管理的前提是其在各平台可用；Windows 不冒险 |
+| ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举 |
 
 ### 18.2 已闭环
 

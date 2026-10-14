@@ -116,6 +116,52 @@ exit 0
 	return rt, out, errBuf, root
 }
 
+// TestInitHelpDocumentsNonInteractive：非交互式的关键信息必须在 --help 里看得见。
+// 用户反馈：help 内容很多，却找不到"怎么非交互地跑"——这里把它钉住。
+func TestInitHelpDocumentsNonInteractive(t *testing.T) {
+	rt, _, _, _ := sandboxForInit(t)
+	code, stdout, stderr := run(t, rt, "init", "--help")
+	if code != ExitOK {
+		t.Fatalf("exit = %d（stderr=%s）", code, stderr)
+	}
+	text := stdout + stderr
+	for _, want := range []string{"--yes", "非交互", "--dry-run", "--plain-ui", "--profile"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--help 里应当出现 %q：\n%s", want, text)
+		}
+	}
+}
+
+// TestInitInteractiveCreatesConfigWithoutAsking：交互式下配置缺失时直接生成，
+// 不再问一句"要不要生成"（用户反馈这是多此一举）。
+func TestInitInteractiveCreatesConfigWithoutAsking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本（见 AGENTS §10）")
+	}
+	rt, _, _, root := sandboxForInit(t)
+	if err := os.Remove(filepath.Join(root, "config", "config.yaml")); err != nil {
+		t.Fatalf("remove config: %v", err)
+	}
+	yes := true
+	rt.interactiveOverride = &yes
+	// 仓库根回车、代理回车、工具选择 none。
+	rt.Opts.In = strings.NewReader("\n\nnone\n")
+
+	code, stdout, stderr := run(t, rt, "init", "--no-shell", "--plain-ui")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "已生成配置文件") {
+		t.Errorf("应当说明生成了配置：\n%s", stdout)
+	}
+	if strings.Contains(stderr, "生成一份默认配置") || strings.Contains(stderr, "现在生成") {
+		t.Errorf("不该再问「要不要生成配置」：\n%s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err != nil {
+		t.Errorf("配置文件应当已生成：%v", err)
+	}
+}
+
 // TestInitNonInteractiveNeedsYes：非交互 + 没有 --yes，必须停在"要确认"这一步
 // （退出码 5），既不能问、也不能自己动手。
 func TestInitNonInteractiveNeedsYes(t *testing.T) {
@@ -219,8 +265,10 @@ func TestInitInteractiveConfirmThenInstall(t *testing.T) {
 	rt, _, _, root := sandboxForInit(t)
 	yes := true
 	rt.interactiveOverride = &yes
-	// tiny 只有一个工具 → 没有选择提问，只有"要执行吗"。
-	rt.Opts.In = strings.NewReader("y\n")
+	// 交互式向导按照"仓库根目录 → 代理地址 → 工具选择"的顺序提问；
+	// 这里两个空行＝沿用默认仓库根、不设代理，然后 --profile tiny 让选工具那步不问，
+	// 最后只有一个"要执行吗"的确认，回答 y。
+	rt.Opts.In = strings.NewReader("\n\ny\n")
 
 	code, stdout, stderr := run(t, rt, "init", "--profile", "tiny")
 	if code != ExitOK {
@@ -245,7 +293,8 @@ func TestInitInteractiveCancelIsSuccess(t *testing.T) {
 	rt, _, _, root := sandboxForInit(t)
 	yes := true
 	rt.interactiveOverride = &yes
-	rt.Opts.In = strings.NewReader("n\n")
+	// 仓库根/代理用默认值，最后在"要执行吗"回答 n。
+	rt.Opts.In = strings.NewReader("\n\nn\n")
 
 	code, stdout, stderr := run(t, rt, "init", "--profile", "tiny")
 	if code != ExitOK {
@@ -436,8 +485,9 @@ func TestInitInteractiveSkipTools(t *testing.T) {
 	rt, _, _, root := sandboxForInit(t)
 	yes := true
 	rt.interactiveOverride = &yes
-	// 纯文本向导按"编号或名字"选：这里直接指名道姓（--json 属于非交互，会走另一条分支）。
-	rt.Opts.In = strings.NewReader("none\n")
+	// 三问答完：仓库根回车、代理回车、工具选择输入 none（纯文本向导按"编号或名字"选）。
+	// --json 属于非交互，会走另一条分支，所以这里不要加。
+	rt.Opts.In = strings.NewReader("\n\nnone\n")
 
 	code, stdout, stderr := run(t, rt, "init", "--no-shell")
 	if code != ExitOK {

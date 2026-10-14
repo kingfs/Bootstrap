@@ -3,13 +3,16 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/detect"
 	"github.com/kingfs/Bootstrap/internal/install"
+	"github.com/kingfs/Bootstrap/internal/shellsnip"
 	"github.com/kingfs/Bootstrap/internal/ui"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
 	"github.com/kingfs/Bootstrap/pkg/hostinfo"
+	"github.com/kingfs/Bootstrap/pkg/proxyenv"
 )
 
 // 本文件是 M3 的"新机器一把梭"用例：环境概览 → 选工具 → 计划 → 执行 → 可选 shell 集成。
@@ -80,6 +83,12 @@ type InitOptions struct {
 	Prompter ui.Prompter
 	// AssumeYes 表示已获得授权（--yes 或 ui.confirm=false）：不再询问确认。
 	AssumeYes bool
+	// Auto 表示"一个交互问题都不问"（--yes）：仓库根目录/代理沿用配置，
+	// 工具用配置里的默认套装。与 AssumeYes 的区别是它连"选什么"都不问——
+	// `--yes` 在真终端里也该是脚本语义，否则 help 里那句"不再问"就是假的。
+	Auto bool
+	// RepoRootGiven 表示仓库根目录已经由 `--repo-root` 明确给出：向导不再问它。
+	RepoRootGiven bool
 	// ShellInstall 为 nil 表示"由向导决定"（交互时问一句，非交互时不装）；
 	// 非 nil 表示明确要求装/不装 rc 受管块。
 	ShellInstall *bool
@@ -89,9 +98,25 @@ type InitOptions struct {
 	OnPlan func(install.Plan) error
 }
 
+// InitSetup 记录向导里"环境准备"部分的结果（仓库根目录、代理）。
+//
+// 单独成结构是为了让调用方能清楚地区分"用户这次改了什么"与"环境本来是什么"。
+type InitSetup struct {
+	// RepoRoot 是这次生效的仓库根目录。
+	RepoRoot string `json:"repo_root,omitempty"`
+	// RepoRootChanged 为真表示用户改了它，并已写进配置文件。
+	RepoRootChanged bool `json:"repo_root_changed,omitempty"`
+	// ProxyConfigured 为真表示这次新建/更新了代理 profile 并启用。
+	ProxyConfigured bool   `json:"proxy_configured,omitempty"`
+	ProxyName       string `json:"proxy_name,omitempty"`
+	// ProxyMasked 是脱敏后的代理地址（凭据只以 *** 出现，见 AGENTS.md §7）。
+	ProxyMasked string `json:"proxy_masked,omitempty"`
+}
+
 // InitResult 是 `bs init` 的结构化结果。
 type InitResult struct {
 	Overview InitOverview        `json:"overview"`
+	Setup    InitSetup           `json:"setup"`
 	Mode     InitSelectionMode   `json:"selection_mode"`
 	Profile  string              `json:"profile,omitempty"`
 	Tools    []string            `json:"tools"`
@@ -104,6 +129,9 @@ type InitResult struct {
 	DryRunPlannedConfig bool `json:"dry_run_planned_config,omitempty"`
 	// SkippedShell 表示按用户/配置的决定没有动 shell 启动文件。
 	SkippedShell bool `json:"skipped_shell,omitempty"`
+	// ShellSkippedReason 说明"为什么没问/没动 shell"（探测不到，或探测到的 shell 不受支持）。
+	// 非空时 cli 会提示用户怎么手动补上。
+	ShellSkippedReason string `json:"shell_skipped_reason,omitempty"`
 	// SkipTools 表示这次没有处理任何工具（--no-tools，或交互式里选了"先不装工具"）。
 	// 概览里的探测结果照旧有效：调用方据此告诉用户"缺什么、想装时敲哪条命令"。
 	SkipTools bool `json:"skip_tools,omitempty"`
@@ -193,24 +221,28 @@ func (a *App) Init(ctx context.Context, opt InitOptions) (InitResult, error) {
 		}
 	}
 
-	// 配置文件不存在时先补上：后面的清单/配置读取都依赖它。
+	// 配置文件不在时直接生成默认配置：这本来就是 init 该做的事，
+	// 再问一句"要不要生成"纯属多此一举（用户原话）。dry-run 依旧零写入。
 	if !overview.ConfigExists {
-		ok, err := a.askYes(opt, fmt.Sprintf("未找到配置文件 %s，现在生成一份默认配置？", overview.ConfigFile))
+		path, created, err := a.EnsureConfig(false)
 		if err != nil {
 			return res, err
 		}
-		if ok {
-			path, created, err := a.EnsureConfig(false)
-			if err != nil {
-				return res, err
-			}
-			res.ConfigCreated = created
-			res.DryRunPlannedConfig = a.DryRun
-			// 用户可见的提示由 cli 打（"已生成配置文件 …"）；这里只留调试信息，
-			// 否则 `level=INFO msg=config …` 会混进正常输出里。
-			a.Log.Debug("config", "file", path, "created", created, "dry_run", a.DryRun)
-		}
+		res.ConfigCreated = created
+		res.DryRunPlannedConfig = a.DryRun
+		// 用户可见的提示由 cli 打（"已生成配置文件 …"）；这里只留调试信息，
+		// 否则 `level=INFO msg=config …` 会混进正常输出里。
+		a.Log.Debug("config", "file", path, "created", created, "dry_run", a.DryRun)
 	}
+
+	// 环境准备：问（或沿用）仓库根目录与代理地址。放在选工具之前——
+	// 这两项决定"装到哪、怎么下载"，比装什么更要紧。
+	setup, err := a.initSetup(ctx, opt, &overview)
+	if err != nil {
+		return res, err
+	}
+	res.Setup = setup
+	res.Overview = overview
 
 	if opt.NoTools {
 		// 只做准备：概览（含"缺什么"的只读探测）已经给过，计划与执行整段跳过。
@@ -270,8 +302,124 @@ func (a *App) Init(ctx context.Context, opt InitOptions) (InitResult, error) {
 	return res, a.finishInit(opt, &res)
 }
 
+// initProxyProfile 是向导创建代理时固定使用的 profile 名。
+const initProxyProfile = "default"
+
+// initSetup 收集"环境准备"的两项输入：仓库根目录与代理地址。
+//
+// 三档行为，优先级从高到低：
+//  1. 非交互 / --yes：一个问题都不问，沿用配置里的值（脚本语义）；
+//  2. 显式给了 --repo-root：跳过"仓库根目录"那一问，代理照问；
+//  3. 交互式：两个都问，默认值即当前生效值（代理默认空——地址里可能有凭据，
+//     回显默认值等于把密码打在屏幕上，见 AGENTS.md §7）。
+func (a *App) initSetup(ctx context.Context, opt InitOptions, overview *InitOverview) (InitSetup, error) {
+	setup := InitSetup{RepoRoot: overview.RepoRoot}
+	if opt.Auto || !opt.Prompter.Interactive() {
+		return setup, nil
+	}
+
+	if !opt.RepoRootGiven {
+		value, err := opt.Prompter.Input(ui.Question{
+			Title:       "仓库根目录",
+			Description: "所有仓库都会克隆到这里；回车沿用默认值，输入新路径可修改",
+			Default:     overview.RepoRoot,
+		})
+		if err != nil {
+			return setup, err
+		}
+		value = strings.TrimSpace(a.ExpandPath(value))
+		if value == "" {
+			value = overview.RepoRoot
+		}
+		setup.RepoRoot = value
+		if value != overview.RepoRoot {
+			if _, err := a.ConfigSet("repo.root", value, false); err != nil {
+				return setup, err
+			}
+			// 本次运行立刻用新值：配置文件要下次启动才重新装载，
+			// 而接下来的仓库操作就发生在这条命令里。
+			a.Cfg.Repo.Root = value
+			setup.RepoRootChanged = true
+			overview.RepoRoot, overview.RepoRootFrom = value, "config repo.root"
+		}
+	}
+
+	detail := "留空表示不设置代理（之后可用 bs proxy add 配置）"
+	if overview.Proxy != "" {
+		detail = "当前已启用 " + overview.Proxy + "；留空表示保持不变"
+	}
+	value, err := opt.Prompter.Input(ui.Question{
+		Title:       "代理地址（可留空）",
+		Description: detail,
+	})
+	if err != nil {
+		return setup, err
+	}
+	if value = strings.TrimSpace(value); value != "" {
+		if err := a.applyInitProxy(ctx, value); err != nil {
+			return setup, err
+		}
+		setup.ProxyConfigured = true
+		setup.ProxyName = initProxyProfile
+		setup.ProxyMasked = proxyenv.MaskProxyURL(value)
+	}
+	return setup, nil
+}
+
+// applyInitProxy 把向导里输入的代理地址落成配置里的 profile 并启用。
+//
+// 走 `config set` 那条路（yaml.Node 原地改）而不是 `proxy add`：
+// 后者会重写整份配置、把默认配置里的说明头与注释全丢掉。
+func (a *App) applyInitProxy(ctx context.Context, proxyURL string) error {
+	keys := []string{
+		"proxy.profiles." + initProxyProfile + ".http_proxy",
+		"proxy.profiles." + initProxyProfile + ".https_proxy",
+		"proxy.default_profile",
+	}
+	for _, key := range keys {
+		value := proxyURL
+		if key == "proxy.default_profile" {
+			value = initProxyProfile
+		}
+		if _, err := a.ConfigSet(key, value, false); err != nil {
+			return err
+		}
+	}
+	// 同步内存里的配置：本次 init 后面的下载要立刻走这个代理。
+	if a.Cfg.Proxy.Profiles == nil {
+		a.Cfg.Proxy.Profiles = map[string]proxyenv.Profile{}
+	}
+	a.Cfg.Proxy.Profiles[initProxyProfile] = proxyenv.Profile{
+		Name:       initProxyProfile,
+		HTTPProxy:  proxyURL,
+		HTTPSProxy: proxyURL,
+	}
+	a.Cfg.Proxy.DefaultProfile = initProxyProfile
+	_, err := a.ProxyUse(ctx, initProxyProfile)
+	return err
+}
+
 // finishInit 处理收尾：可选的 shell 受管块。
 func (a *App) finishInit(opt InitOptions, res *InitResult) error {
+	// 探测不到 shell（容器里没有 $SHELL，/etc/passwd 与父进程也给不出答案）时，
+	// 跳过这一步并说明原因。以前这里会一路走到 ShellInstall("") 才报
+	// `unsupported shell ""`，用户看到的是"init 失败了"，其实前面全都成功了。
+	shell := strings.TrimSpace(a.Platform.Shell)
+	if shell == "" {
+		res.SkippedShell = true
+		res.ShellSkippedReason = "未能识别当前 shell"
+		return nil
+	}
+	// 自动识别出的 shell 不在支持范围（nu/tcsh/cmd…）时同样跳过：
+	// 用户并没有点名要装什么，没理由让整条 init 以失败告终。
+	// 显式给了 --with-shell 时不跳过——那是用户自己的要求，做不了就得报错。
+	if opt.ShellInstall == nil {
+		if _, err := shellsnip.FamilyForShell(shell); err != nil {
+			res.SkippedShell = true
+			res.ShellSkippedReason = "当前 shell（" + shell + "）不在支持范围"
+			return nil
+		}
+	}
 	var installShell bool
 	switch {
 	case opt.ShellInstall != nil:
@@ -292,7 +440,7 @@ func (a *App) finishInit(opt InitOptions, res *InitResult) error {
 		res.SkippedShell = true
 		return nil
 	}
-	result, err := a.ShellInstall(a.Platform.Shell, "")
+	result, err := a.ShellInstall(shell, "")
 	if err != nil {
 		return err
 	}
@@ -318,8 +466,8 @@ func (a *App) chooseInitTools(ctx context.Context, opt InitOptions, overview Ini
 		}
 		return missing, "", SelectionMissing, nil
 	}
-	if !opt.Prompter.Interactive() {
-		// 非交互：用配置的默认套装，行为可预测（脚本里加 --yes 即可全自动）。
+	if !opt.Prompter.Interactive() || opt.Auto {
+		// 非交互（或 --yes 这种"全自动"）：用配置的默认套装，行为可预测。
 		return nil, a.Cfg.Tool.DefaultProfile, SelectionProfile, nil
 	}
 

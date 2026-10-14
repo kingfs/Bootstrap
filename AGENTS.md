@@ -229,6 +229,17 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   改动下载错误处理时别把这层提示弄丢。
 - 交互式取消只认 **Ctrl-C**：huh 的 ESC 在可过滤列表里用于"退出过滤/清空输入"，
   不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
+- 交互式界面**统一走备用屏幕**（huh 的 `tea.WithAltScreen()`，见 `internal/ui/huh.go` 的 `form()`）：
+  表单铺满整屏、退出后终端恢复原样。注意 `WithProgramOptions` 是**替换**而非追加，
+  必须排在 `WithInput`/`WithOutput` 之前。列表高度按终端尺寸算（`listHeight`）。
+- 容器里常常没有 `$SHELL`（`docker run -it ubuntu bash` 就是）：`hostinfo.detectShell`
+  依次退回 shell 自身环境变量、`/etc/passwd` 的登录 shell、父进程名（`/proc`）；
+  **都拿不到就返回空串**，调用方必须当成"没有 shell 可集成"处理（`bs init` 会跳过并提示），
+  绝不猜一个再去写人家的 rc。改动这段除了单测还要跑 `make docker-matrix`。
+- `bs init` 的向导只问三件事（仓库根目录/代理地址/装哪些工具，见 ADR-0015），
+  配置文件缺失时**直接生成、不再询问**；`--yes` 是"全自动"（连选什么都不问）。
+  改这条链路时注意：`Auto` 与 `AssumeYes` 是两件事——前者管"问不问选择"，
+  后者管"要不要确认"，非交互环境仍然必须 `--yes`（AGENTS §8.6）。
 - 交互式界面的按键行为**无法在单测里验证**（需要真 PTY，见 §4 第 0 条），
   改动 `internal/ui` 后除了 `make check` 还要跑 `make pty`。
 - 探测（`tool list`/`plan`/`init`）会执行清单里的 `verify.command`，而**工具自己的命令可能有副作用**：

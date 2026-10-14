@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/ui"
 )
@@ -18,9 +19,15 @@ type fakePrompter struct {
 	selects     []string   // Select 依次返回的值
 	multis      [][]string // MultiSelect 依次返回的值
 	confirms    []bool     // Confirm 依次返回的值
-	calls       []string   // 调用轨迹，例如 "select:..." 、"multiselect"、"confirm"
+	// inputs 是 Input 依次返回的值；用完后回落到 q.Default
+	// （这样只关心"问过没有"的用例不必给每一问都准备答案）。
+	inputs []string
+	calls  []string // 调用轨迹，例如 "select:..." 、"multiselect"、"confirm"
 	// multiSeen 记录 MultiSelect 收到的选项，用来断言默认勾选是否符合预期。
 	multiSeen []ui.MultiSelect
+	// inputSeen / confirmSeen 记录收到的提问内容，用来断言"问的是什么、顺序对不对"。
+	inputSeen   []ui.Question
+	confirmSeen []ui.Question
 }
 
 func (f *fakePrompter) nextSelect(q ui.Question) (string, error) {
@@ -44,8 +51,9 @@ func (f *fakePrompter) nextMulti(q ui.MultiSelect) ([]string, error) {
 	return v, nil
 }
 
-func (f *fakePrompter) nextConfirm() (bool, error) {
+func (f *fakePrompter) nextConfirm(q ui.Question) (bool, error) {
 	f.calls = append(f.calls, "confirm")
+	f.confirmSeen = append(f.confirmSeen, q)
 	if len(f.confirms) == 0 {
 		return false, errors.New("fakePrompter: 没有为 Confirm 准备答案")
 	}
@@ -61,12 +69,18 @@ func (f *fakePrompter) MultiSelect(q ui.MultiSelect) ([]string, error) { return 
 func (f *fakePrompter) Select(q ui.Question, _ []ui.Option) (string, error) { return f.nextSelect(q) }
 
 // Confirm 实现 ui.Prompter。
-func (f *fakePrompter) Confirm(ui.Question) (bool, error) { return f.nextConfirm() }
+func (f *fakePrompter) Confirm(q ui.Question) (bool, error) { return f.nextConfirm(q) }
 
 // Input 实现 ui.Prompter。
 func (f *fakePrompter) Input(q ui.Question) (string, error) {
 	f.calls = append(f.calls, "input:"+q.Title)
-	return q.Default, nil
+	f.inputSeen = append(f.inputSeen, q)
+	if len(f.inputs) == 0 {
+		return q.Default, nil
+	}
+	v := f.inputs[0]
+	f.inputs = f.inputs[1:]
+	return v, nil
 }
 
 // Interactive 实现 ui.Prompter。
@@ -384,9 +398,11 @@ func TestInitCreatesConfigWhenMissing(t *testing.T) {
 	if err := os.Remove(a.Paths.ConfigFile()); err != nil {
 		t.Fatalf("remove config: %v", err)
 	}
+	// 注意只有两次 confirm：配置文件缺失已经不再问"要不要生成"，
+	// 剩下的两次是"执行计划"与"要不要碰 shell"。
 	p := &fakePrompter{
 		interactive: true,
-		confirms:    []bool{true, true, false}, // 生成配置、执行计划、不装 shell
+		confirms:    []bool{true, false},
 	}
 	res, err := a.Init(context.Background(), InitOptions{Prompter: p, Profile: "tiny"})
 	if err != nil {
@@ -400,6 +416,165 @@ func TestInitCreatesConfigWhenMissing(t *testing.T) {
 	}
 	if res.DryRunPlannedConfig {
 		t.Error("非 dry-run 不该标记为「计划生成」")
+	}
+	for _, q := range p.confirmSeen {
+		if strings.Contains(q.Title, "生成") {
+			t.Errorf("配置缺失不该再问一句：%q", q.Title)
+		}
+	}
+}
+
+// TestInitWizardRepoRootAndProxy：向导的前两问会落到配置文件，并在本次运行立即生效。
+func TestInitWizardRepoRootAndProxy(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+
+	newRoot := filepath.Join(a.Paths.HomeDir, "code")
+	const proxyURL = "http://127.0.0.1:7890"
+	p := &fakePrompter{
+		interactive: true,
+		inputs:      []string{newRoot, proxyURL},
+		selects:     []string{"none"}, // 工具这步选"先不装"
+	}
+	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if !res.Setup.RepoRootChanged || res.Setup.RepoRoot != newRoot {
+		t.Errorf("仓库根目录应当被改成 %s：%+v", newRoot, res.Setup)
+	}
+	if res.Overview.RepoRoot != newRoot {
+		t.Errorf("概览里的仓库根目录也该同步：%s", res.Overview.RepoRoot)
+	}
+	if root, _ := a.RepoRoot(); root != newRoot {
+		t.Errorf("本次运行应立刻用新目录：%s", root)
+	}
+
+	if !res.Setup.ProxyConfigured || res.Setup.ProxyName != "default" {
+		t.Errorf("代理应当被写入并启用：%+v", res.Setup)
+	}
+	if res.Setup.ProxyMasked != proxyURL {
+		t.Errorf("没有凭据时脱敏结果应原样：%q", res.Setup.ProxyMasked)
+	}
+
+	// 落盘检查：重新装一遍配置，确认两个值都真的写进了文件。
+	loaded, err := config.Load(config.LoadOptions{Paths: a.Paths, ExplicitFile: a.Paths.ConfigFile()})
+	if err != nil {
+		t.Fatalf("重新装载配置：%v", err)
+	}
+	if loaded.Config.Repo.Root != newRoot {
+		t.Errorf("repo.root 没写进配置：%q", loaded.Config.Repo.Root)
+	}
+	if got := loaded.Config.Proxy.Profiles["default"].HTTPSProxy; got != proxyURL {
+		t.Errorf("代理 profile 没写进配置：%q", got)
+	}
+	if loaded.Config.Proxy.DefaultProfile != "default" {
+		t.Errorf("proxy.default_profile 没写进配置：%q", loaded.Config.Proxy.DefaultProfile)
+	}
+	if name, _, _ := a.ProxyService().ActiveName(); name != "default" {
+		t.Errorf("代理应当已启用：%q", name)
+	}
+}
+
+// TestInitWizardProxyMasksCredentials：带凭据的代理地址在其他输出里只能以 *** 出现。
+func TestInitWizardProxyMasksCredentials(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+
+	const proxyURL = "http://user:secret@127.0.0.1:7890"
+	p := &fakePrompter{
+		interactive: true,
+		inputs:      []string{a.Paths.HomeDir, proxyURL},
+		selects:     []string{"none"},
+	}
+	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if strings.Contains(res.Setup.ProxyMasked, "secret") {
+		t.Errorf("凭据不该出现在结果里：%q", res.Setup.ProxyMasked)
+	}
+	if !strings.Contains(res.Setup.ProxyMasked, "***") {
+		t.Errorf("凭据应当被掩码：%q", res.Setup.ProxyMasked)
+	}
+}
+
+// TestInitAutoAsksNothing：--yes（Auto）在真终端里也是脚本语义，
+// 仓库根/代理/工具选择一个都不问，全部走配置默认值。
+func TestInitAutoAsksNothing(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+
+	// 没有为任何提问准备答案：一旦问出口，fakePrompter 就会报错。
+	p := &fakePrompter{interactive: true}
+	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true, Auto: true})
+	if err != nil {
+		t.Fatalf("全自动不该提问：%v", err)
+	}
+	if res.Mode != SelectionProfile || res.Profile != "base" {
+		t.Errorf("应当回退到配置里的默认套装：mode=%s profile=%s", res.Mode, res.Profile)
+	}
+	if len(p.calls) != 0 {
+		t.Errorf("--yes 下一个问题都不该问，实际：%v", p.calls)
+	}
+}
+
+// TestInitUnknownShellSkipsShellIntegration：探测不到 shell 时不是失败，
+// 只是跳过最后一步并说明原因（以前会一路走到 ShellInstall("") 报 unsupported shell）。
+func TestInitUnknownShellSkipsShellIntegration(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+	a.Platform.Shell = ""
+	yes := true
+
+	res, err := a.Init(context.Background(), InitOptions{
+		Prompter:     ui.NonInteractive{},
+		AssumeYes:    true,
+		Profile:      "tiny",
+		ShellInstall: &yes,
+	})
+	if err != nil {
+		t.Fatalf("探测不到 shell 不该让 init 失败：%v", err)
+	}
+	if !res.SkippedShell || res.ShellSkippedReason == "" {
+		t.Errorf("应当报告「跳过 shell 集成」及原因：%+v", res)
+	}
+	if res.Shell != nil {
+		t.Errorf("不该写受管块：%+v", res.Shell)
+	}
+	if _, err := os.Stat(filepath.Join(a.Paths.HomeDir, ".bashrc")); err == nil {
+		t.Error("不该创建 rc 文件")
+	}
+}
+
+// TestInitUnsupportedShellSkipsShellIntegration：认得出 shell 但不在支持范围（nu/tcsh…）时，
+// 自动流程也只跳过、不报错；但用户显式 --with-shell 时做不了就得如实报错。
+func TestInitUnsupportedShellSkipsShellIntegration(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+	a.Platform.Shell = "nu"
+
+	res, err := a.Init(context.Background(), InitOptions{
+		Prompter:  ui.NonInteractive{},
+		AssumeYes: true,
+		Profile:   "tiny",
+	})
+	if err != nil {
+		t.Fatalf("自动识别出不支持的 shell 不该让 init 失败：%v", err)
+	}
+	if !res.SkippedShell || !strings.Contains(res.ShellSkippedReason, "nu") {
+		t.Errorf("应当报告「跳过 shell 集成」并点明是哪个 shell：%+v", res)
+	}
+
+	yes := true
+	if _, err := a.Init(context.Background(), InitOptions{
+		Prompter:     ui.NonInteractive{},
+		AssumeYes:    true,
+		Profile:      "tiny",
+		ShellInstall: &yes,
+	}); err == nil {
+		t.Error("显式要求装受管块却遇到不支持的 shell 时，应当报错而不是悄悄跳过")
 	}
 }
 

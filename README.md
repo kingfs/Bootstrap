@@ -49,15 +49,19 @@ make cross          # 交叉编译 6 个平台组合到 dist/
 
 ## 快速开始
 
-新机器上先一把梭（认环境 → 选工具 → 装好）：
+新机器上先一把梭（认环境 → 配仓库根/代理 → 选工具 → 装好）：
 
 ```sh
-bs init                         # 交互式：看概览 → 勾选工具 → 确认 → 装（可选顺手装受管块）
+bs init                         # 交互式全屏向导：问仓库根目录、代理地址、装哪些工具，确认后安装
 bs init --dry-run               # 只看看会发生什么，一行都不写
-bs init --profile base --yes    # 全自动：用默认套装，不问任何问题
+bs init --yes                   # 全自动：默认套装 + 现有仓库根/代理，一个问题都不问
+bs init --profile base --yes    # 指定套装
 bs init --missing-only --yes    # 只补当前缺的
 bs init --no-tools --yes        # 只做准备（配置/仓库根/受管块），一个工具都不装
 ```
+
+配置文件不存在时 `bs init` 会**直接生成默认配置**（不再多问一句）。
+想知道"非交互式怎么跑"，`bs init --help` 的第一段就是它，关键只有一条：**加 `--yes`**。
 
 日常则是这套循环：
 
@@ -83,7 +87,8 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 
 | 命令 | 说明 |
 | --- | --- |
-| `bs init` | 新机器一把梭：打印环境概览 → 选工具（交互勾选 / 套装 / 只补缺失 / 先不装）→ 确认 → 安装，可选顺手 `shell install` |
+| `bs init` | 新机器一把梭：打印环境概览 → **全屏向导**依次问仓库根目录、代理地址、装哪些工具（套装 / 只补缺失 / 手工勾选 / 先不装）→ 确认 → 安装，可选顺手 `shell install` |
+| `bs init --yes` | 全自动：不提问、不再确认（仓库根/代理/工具都按配置来）。非交互环境下这是"必须"的那一条 |
 | `bs init --profile P` / `--tools a,b` / `--missing-only` | 明确"装什么"，不再问选择（三者互斥） |
 | `bs init --no-tools` | 只做准备：生成配置、建仓库根、可选的 shell 受管块，**一个工具都不装**（不想让 init 顺手装一堆软件时用；之后随时 `bs tool install`） |
 | `bs init --with-shell` / `--no-shell` | 是否在收尾时安装 shell 受管块（交互时问一次） |
@@ -91,8 +96,10 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 | `bs self-update --check` | 只查有没有新版本（不下载、不改动） |
 | `bs self-update --version vX.Y.Z` / `--force` / `--repo owner/repo` | 指定版本 / 同版本重装 / 换 release 来源 |
 
-`bs init` 的安全约定：`--dry-run` 一个字节都不写；非交互环境（管道/CI/`--json`）没有 `--yes`
-就以退出码 5 拒绝；确认框里按回车＝拒绝；Ctrl-C 取消＝什么都没做（退出码 0）。
+`bs init` 的安全约定：配置文件不存在时直接生成默认配置（这一步不需要 `--yes`）；
+`--dry-run` 一个字节都不写；非交互环境（管道/CI/`--json`）没有 `--yes` 就以退出码 5 拒绝；
+确认框里按回车＝拒绝；Ctrl-C 取消＝什么都没做（退出码 0）；
+容器里没有 `$SHELL` 时会从 `/etc/passwd`、父进程名推断，实在认不出来就跳过 shell 集成并给出提示。
 `bs self-update` 在替换前会**先跑一遍新二进制的 `version`**，跑不起来就保留旧的。
 
 ### 仓库（`bs repo`）

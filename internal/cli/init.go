@@ -27,27 +27,39 @@ func (rt *Runtime) initCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "新机器一把梭：认环境 → 选工具 → 装好（可交互，也可全自动）",
-		Long: `把"这台新机器变成熟悉的样子"串成一条命令：
+		Short: "新机器一把梭：认环境 → 配仓库根/代理 → 选工具 → 装好",
+		Long: `把"这台新机器变成熟悉的样子"串成一条命令。
 
-  1. 只读探测并展示环境（系统/架构、配置与目录、仓库根、代理、工具装机情况）；
-  2. 配置文件不存在时，问一句后生成默认配置（等价 ` + "`bs config init`" + `）；
-  3. 选工具：交互式可选套装 / 只补缺失 / 逐个勾选 / 先不装；非交互式用配置里的默认套装
-     （--no-tools 直接跳过这一步：只做准备，一个工具都不装）；
-  4. 先算好计划并展示，确认后执行（幂等：已装好的会跳过）；
-  5. 可选把受管块写进 shell 启动文件（代理命令即时生效 + 自动装配 PATH）。
+【交互式】有终端时逐项问你，全程全屏界面（Ctrl-C 取消；取消不算失败，退出码 0）：
+  1. 仓库根目录 —— 显示当前默认值，回车沿用，也可以直接改成别的路径；
+  2. 代理地址   —— 可留空（留空＝不设置/不修改）；
+  3. 装哪些工具 —— 按套装 / 只补缺失 / 手工勾选 / 先不装，随时可以选"先不装"。
 
-全自动（脚本/CI 里的用法）：
-  bs init --yes                      # 用配置里的默认套装，不再问
-  bs init --profile full --yes       # 指定套装
-  bs init --tools golang,ripgrep -y  # 只装指定的几个
-  bs init --missing-only --yes       # 只补当前缺的
-  bs init --no-tools --yes           # 只做准备（配置/仓库根/受管块），一个工具都不装
+【非交互式】关键就一条：加 --yes。
+管道、CI=1、--json、--non-interactive 这些"问不了"的环境里，没有 --yes 会以
+退出码 5 结束，绝不会卡在那里等输入：
+
+  bs init --yes                          # 全自动：默认套装 + 现有仓库根/代理
+  bs init --yes --profile full           # 指定套装
+  bs init --yes --tools golang,ripgrep   # 只装这几个
+  bs init --yes --missing-only           # 只补当前缺的
+  bs init --no-tools --yes               # 只做准备（配置/仓库根/受管块），不装工具
+  bs init --yes --repo-root ~/code       # 这次用别的仓库根（只对本次运行生效）
+  bs init --dry-run                      # 只展示计划，一个字节都不写
+
+配置不存在时会直接生成默认配置（不再多问一句）。--yes 下仓库根目录与代理沿用
+配置里的现有值；想改就先执行 bs config set repo.root … / bs proxy add …。
+
+只用参数、仍保留"要执行吗"这一问（有终端时）：bs init --profile full
 
 安全约定：
-  * --dry-run 只展示，不写配置、不装东西、不碰 rc 文件；
-  * 非交互环境（管道/CI/--json）绝不阻塞：没有 --yes 就以退出码 5 结束；
-  * 用户在确认时输入 n 视为主动取消，退出码 0（什么都没做）。`,
+  * --dry-run 只展示：不写配置、不装东西、不碰 rc 文件；
+  * 非交互环境绝不阻塞：没有 --yes 就以退出码 5 结束；
+  * 确认时输入 n 视为主动取消，退出码 0（什么都没做）。
+
+交互式界面相关（全局开关）：
+  --plain-ui         用纯文本问答；终端不支持全屏界面时会自动降级到它
+  --interactive      强制允许提问（stdin 被包装器挡住、但确实有人时用）`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if withShell && noShell {
@@ -71,9 +83,13 @@ func (rt *Runtime) initCmd() *cobra.Command {
 				Prompter:    rt.prompter(),
 				// ui.confirm=false 只影响"交互会话里还要不要问一句"：
 				// 非交互环境依然必须 --yes，否则退出码 5（AGENTS.md §8.6 红线）。
-				AssumeYes:  rt.Opts.Yes || (rt.interactive() && !rt.app().Cfg.UI.Confirm),
-				OnOverview: rt.renderInitOverview,
-				OnPlan:     rt.renderInitPlan,
+				AssumeYes: rt.Opts.Yes || (rt.interactive() && !rt.app().Cfg.UI.Confirm),
+				// --yes 是"全自动"：连选什么、路径是什么都不问，直接按配置来。
+				// 少了这一条，help 里那句"bs init --yes # 不再问"就只在非终端里成立。
+				Auto:          rt.Opts.Yes,
+				RepoRootGiven: rt.Opts.RepoRoot != "",
+				OnOverview:    rt.renderInitOverview,
+				OnPlan:        rt.renderInitPlan,
 			}
 			switch {
 			case withShell:
@@ -178,12 +194,26 @@ func (rt *Runtime) renderInitResult(res app.InitResult) error {
 	if rt.Opts.JSON {
 		return rt.emit(res)
 	}
-	// 顺序按"实际动手的顺序"来：配置 → 工具 → shell 受管块。
+	// 顺序按"实际动手的顺序"来：配置 → 仓库根/代理 → 工具 → shell 受管块。
 	switch {
 	case res.DryRunPlannedConfig:
 		fmt.Fprintf(rt.out(), "[dry-run] 会生成配置文件 %s\n", res.Overview.ConfigFile)
 	case res.ConfigCreated:
 		fmt.Fprintf(rt.out(), "已生成配置文件 %s\n", res.Overview.ConfigFile)
+	}
+	switch {
+	case res.Setup.RepoRootChanged && rt.Opts.DryRun:
+		fmt.Fprintf(rt.out(), "[dry-run] 会把仓库根目录写入配置：%s\n", res.Setup.RepoRoot)
+	case res.Setup.RepoRootChanged:
+		fmt.Fprintf(rt.out(), "仓库根目录已写入配置：%s\n", res.Setup.RepoRoot)
+	}
+	switch {
+	case res.Setup.ProxyConfigured && rt.Opts.DryRun:
+		fmt.Fprintf(rt.out(), "[dry-run] 会配置并启用代理 %s（profile %s）\n",
+			res.Setup.ProxyMasked, res.Setup.ProxyName)
+	case res.Setup.ProxyConfigured:
+		fmt.Fprintf(rt.out(), "代理已配置并启用：%s（profile %s）\n",
+			res.Setup.ProxyMasked, res.Setup.ProxyName)
 	}
 	if res.SkipTools {
 		fmt.Fprintf(rt.out(), "已跳过工具安装（本机适用 %d：已装 %d，缺失 %d）。\n",
@@ -211,6 +241,17 @@ func (rt *Runtime) renderInitResult(res app.InitResult) error {
 			if res.Shell.Backup != "" {
 				fmt.Fprintf(rt.out(), "备份：%s\n", res.Shell.Backup)
 			}
+		}
+	}
+	if res.Shell == nil && res.ShellSkippedReason != "" {
+		// 别把"跳过"说得像"失败"：前四步都已经成功了，只是最后一步没法自动做。
+		// 识别不出 shell 时给一条能照着敲的命令；识别出来了但不支持，就别乱指路。
+		if res.Overview.Shell == "" {
+			fmt.Fprintf(rt.errOut(), "提示：%s，已跳过 shell 集成；想接管请手动执行 `bs shell install <bash|zsh|fish|pwsh>`\n",
+				res.ShellSkippedReason)
+		} else {
+			fmt.Fprintf(rt.errOut(), "提示：%s，已跳过 shell 集成（受管块目前只认 bash/zsh/fish/pwsh）\n",
+				res.ShellSkippedReason)
 		}
 	}
 	if res.Mode == app.SelectionNone && res.Report == nil {

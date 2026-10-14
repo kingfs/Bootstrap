@@ -144,7 +144,7 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 	pf.StringVar(&rt.Opts.ConfigFile, "config", "", "指定配置文件（跳过分层搜索）")
 	pf.StringVar(&rt.Opts.RepoRoot, "repo-root", "", "覆盖配置中的 repo.root")
 	pf.BoolVar(&rt.Opts.DryRun, "dry-run", false, "只展示将要执行的操作，不产生任何修改")
-	pf.BoolVarP(&rt.Opts.Yes, "yes", "y", false, "对所有确认提示自动回答 yes")
+	pf.BoolVarP(&rt.Opts.Yes, "yes", "y", false, "自动回答所有确认；bs init 下表示全自动（连选什么都不问）")
 	pf.BoolVar(&rt.Opts.JSON, "json", false, "以 JSON 输出（便于脚本消费）")
 	pf.BoolVar(&rt.Opts.NoColor, "no-color", false, "禁用彩色输出")
 	pf.BoolVar(&rt.Opts.NonInteractive, "non-interactive", false, "绝不等待输入：破坏性操作需要 --yes，否则以退出码 5 结束")

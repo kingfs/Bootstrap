@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -160,7 +161,7 @@ func detectShell(env Env) string {
 		}
 		return "cmd"
 	}
-	if s := env.Getenv("SHELL"); s != "" {
+	if s := strings.TrimSpace(env.Getenv("SHELL")); s != "" {
 		return filepath.Base(s)
 	}
 	if env.Getenv("FISH_VERSION") != "" {
@@ -172,7 +173,85 @@ func detectShell(env Env) string {
 	if env.Getenv("BASH_VERSION") != "" {
 		return "bash"
 	}
+	// 以上都拿不到时（典型：`docker run -it ubuntu bash`，容器里没有 SHELL），
+	// 退回到"这台机器上这个人登录用的 shell"。拿不到就老老实实返回空串，
+	// 由调用方跳过 shell 集成——绝不猜一个可能错的，然后去写人家的 rc。
+	if env.GOOS == "linux" {
+		if s := loginShellFromPasswd(env); s != "" {
+			return s
+		}
+		if s := parentProcessName(env); s != "" {
+			return s
+		}
+	}
 	return ""
+}
+
+// loginShellFromPasswd 从 /etc/passwd 里找当前用户的登录 shell。
+//
+// 只认"确实像 shell"的取值：nologin/false 这类占位符返回空，
+// 否则我们会去给一个不允许登录的账号写 rc 文件。
+func loginShellFromPasswd(env Env) string {
+	data, err := env.ReadFile("/etc/passwd")
+	if err != nil {
+		return ""
+	}
+	user := strings.TrimSpace(env.Getenv("USER"))
+	if user == "" {
+		user = strings.TrimSpace(env.Getenv("LOGNAME"))
+	}
+	uid := strconv.Itoa(env.Euid)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) < 7 {
+			continue
+		}
+		// 用户名与 uid 任一匹配即可：容器里 USER 常常也没设置，此时只能靠 uid。
+		if (user == "" || fields[0] != user) && fields[2] != uid {
+			continue
+		}
+		if s := shellBase(fields[6]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// parentProcessName 从 /proc 读出父进程名（bs 由哪个 shell 启动的）。
+//
+// /etc/passwd 里记的是"登录 shell"，而用户当前可能在另一个 shell 里敲命令
+// （例如登录 shell 是 bash、实际在 zsh 里跑 bs），父进程名更贴近当下事实。
+func parentProcessName(env Env) string {
+	status, err := env.ReadFile("/proc/self/status")
+	if err != nil {
+		return ""
+	}
+	ppid := ""
+	for _, line := range strings.Split(string(status), "\n") {
+		if rest, ok := strings.CutPrefix(line, "PPid:"); ok {
+			ppid = strings.TrimSpace(rest)
+			break
+		}
+	}
+	if ppid == "" || ppid == "0" {
+		return ""
+	}
+	comm, err := env.ReadFile("/proc/" + ppid + "/comm")
+	if err != nil {
+		return ""
+	}
+	return shellBase(string(comm))
+}
+
+// shellBase 把 shell 路径/名字归一化；不是我们认识的 shell 就返回空串。
+func shellBase(raw string) string {
+	name := strings.ToLower(filepath.Base(strings.TrimSpace(raw)))
+	switch name {
+	case "bash", "zsh", "fish", "sh", "dash", "ksh":
+		return name
+	default:
+		return ""
+	}
 }
 
 // candidateManagers 是各平台需要探测的包/版本管理器，顺序决定输出顺序。
