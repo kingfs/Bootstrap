@@ -1516,6 +1516,8 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ~~`bs doctor --fix`~~ | ✅ 已实现：只修"结论明确、修法唯一"的问题（生成配置、建仓库根、装受管块）；补 PATH、清缓存这类仍然只提示——它们要么有副作用、要么该由安装动作顺带完成 | 已完成 |
 | 跨工具并行安装 | `bs tool install` 目前严格串行（依赖顺序优先）；同层无依赖的工具并行需要先解决日志与确认交互的交错问题 | 安装变慢时 |
 | ~~全局 `--timeout`~~ | ✅ 已实现：`--timeout` 给整条命令设总时限，`timeouts.*` 覆盖各环节（命令/探测/元数据/下载）；取消时杀整棵进程组 | 已完成 |
+| ~~`config get\|set\|edit`~~ | ✅ 已实现（§5.3）：只改用户级配置的那一行，写前备份、写后校验、失败还原；`upgrade --all` 一并补上（§7.6） | 已完成 |
+| `upgrade --all` 与"管理器还没装" | `upgrade --all` 的候选是**已安装**的工具：`golang` 装了但管理器 `g` 没装时，它的 `manager` 方式不可用（回退到 apt 又被 §7.6 挡住）→ 列为跳过。要不要在批量升级里先"补装它声明的管理器"，等真机上再遇到时定 | 有人在真机上遇到时 |
 | `bs tool list` 的探测成本 | 目前每个条目都真起一次 `--version`（并发 8、TTL 10 分钟）；清单长到几百条时需要"只探测相关的"或懒惰探测 | 清单规模上来后 |
 
 ### 18.4 缺陷修复记录
@@ -1555,20 +1557,19 @@ M4 又补上了全局 `--timeout`（含 `timeouts.*` 配置与"取消时杀整�
 与 `make vuln`（govulncheck，当前 0 个可达漏洞）已接入，但**刻意不进 `make check`**：
 一个慢一个要联网。
 
-## 18.4 待修缺陷（代码与设计不一致，已知且未修）
+### 18.5 缺陷清单的维护方式
 
-这些是**当前代码的真实行为**，写在这里免得文档比代码乐观：
+**这一节不再列"待修缺陷"**：截至 M4 收尾，§18.4 记录表里的 7 条（模板参数未渲染、
+`Versions()` 恒为 nil、`verify.file` 无法覆盖、`manifest show` 静默返回 0、日志文件没接线、
+摘要重复动词、计划期 `failed` 返回 0）与第二轮/第三轮的 5 条**都已修复**，
+每一条在 §18.4 表里都能找到对应的修复说明；真正"已知且未修"的东西（Windows 清单、
+`fd`/`bat` 的名字差异、交互取消只认 Ctrl-C 等）记在 §18.3 与 AGENTS.md §10，
+不属于"代码与设计不一致"。
 
-| # | 位置 | 现象 | 影响 |
-|---|---|---|---|
-| 1 | `internal/install/managers.go`（`Plan`）、`pkgmanagers.go`（`Plan`） | `params.version` 里的模板（`"{{versions.golang}}"`）**从来没有被渲染**：它被当作字面值塞进命令模板的 `{{version}}` 变量，于是产物是 `g install {{versions.golang}}`（已用假 `g` 实测复现） | `tools/common.yaml` 里全部 4 个 runtime 条目（golang/nodejs/python/rust）的 `via: manager` 首选路径都会失败；`bs tool manifest validate` 反而能通过（校验期确实预渲染了 `params.version`，见 `manifest.TemplateFields`） |
-| 2 | `internal/install/osenv.go`（`NewOSEnv`） | `OSEnvOptions.Versions` 没有赋给结构体的 `versions` 字段，`ExecEnv.Versions()` 永远返回 nil | 与 #1 同根因的另一半：任何依赖 `{{versions.*}}` 的 renderOr 都会静默保留字面模板（`renderOr` 吞掉渲染错误） |
-| 3 | `internal/manifest/load.go`（`mergeVerify`） | 合并 `verify` 时忽略 `over.File` | 用户覆盖文件无法新增/修改 `verify.file`（nvm 这类 shell 函数型工具）；`disabled` 同样只能置 true、不能撤回 |
-| 4 | `internal/cli/manifest.go`（`manifestShowCmd`） | `bs tool manifest show` 只调用 `rt.emit`，没有非 JSON 分支 | 不带 `--json` 时**什么都不打印**却返回 0 |
-| 5 | `internal/install/engine.go` | `LogPath` 已定义且有单测，但没有任何调用点 | §7.5 承诺的"每条命令输出落到 `<state>/logs/<时间>-<工具>.log`"没有兑现；命令输出目前只在 slog（`-v`）里 |
-| 6 | `internal/install/pkgmanagers.go` | 摘要文案是 `label + " " + args...`，而 `label` 已含动词 | `bs tool plan` 里会出现 `cargo install install fnm` 这种重复（纯观感问题） |
-| 7 | `internal/cli/tool.go`（`planHasWork`） | 只把 `install/upgrade/uninstall` 当作"有活干"，`failed` 不算 | 方法链全部不可用时（如 `fnm` 在只有 apt 的机器上），`bs tool install fnm --yes` 打印 `failed` 那一行后以**退出码 0** 结束——脚本会误判为成功。`bs tool plan` 的 0 是对的（它只是预览），`install` 应当是 4 |
+以后再往里加条目时请遵守两条：
 
-修 #1/#2 的最小方案：在引擎 `PlanTools` 调 `Installer.Plan` 之前，用 `RenderData{Versions: e.Versions()}`
-把方法参数里的模板统一渲染一遍（或至少在 `managerInstaller.Plan`/`pkgManager.Plan` 里先渲染
-`m.Params.Version`），并给 `NewOSEnv` 补上 `versions: opt.Versions`。
+1. **必须能用真实二进制复现**（写清命令与观察到的输出），而不是"读代码觉得不对"——
+   §18.4 的第一轮 7 条就是这么筛出来的；
+2. **修完就地更新同一条**：写清根因与修复，别留着一条过期描述。
+   文档比代码乐观比文档滞后更糟：`config get repo.root` 的派生值、`upgrade --all` 的
+   跳过语义都是这一轮才发现"文档得跟着行为改"的地方。
