@@ -71,6 +71,15 @@ func (rt *Runtime) configShowCmd() *cobra.Command {
 	}
 }
 
+// configKeyErr 把"键名写错"归到用法错误（退出码 2）：用户敲错参数，
+// 脚本据此区分"我说错了"和"执行失败"（README 的退出码表）。
+func configKeyErr(err error) error {
+	if errors.Is(err, config.ErrKeyNotFound) {
+		return usageErrf("%v", err)
+	}
+	return failf("%v", err)
+}
+
 func (rt *Runtime) configValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate",
@@ -143,7 +152,7 @@ func (rt *Runtime) configGetCmd() *cobra.Command {
 		RunE: func(_ *cobra.Command, args []string) error {
 			val, err := rt.app().ConfigGet(args[0])
 			if err != nil {
-				return failf("%v", err)
+				return configKeyErr(err)
 			}
 			if rt.Opts.JSON {
 				return rt.emit(val)
@@ -195,7 +204,7 @@ func (rt *Runtime) configSetCmd() *cobra.Command {
 			}
 			res, err := rt.app().ConfigSet(key, value, unset)
 			if err != nil {
-				return failf("%v", err)
+				return configKeyErr(err)
 			}
 			if rt.Opts.JSON {
 				return rt.emit(res)

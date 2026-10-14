@@ -240,7 +240,7 @@ bs tool manifest validate --os darwin
 | `bs config validate` | 校验配置（一次性列出全部问题） |
 | `bs config init [--force]` | 生成默认配置（已存在不覆盖） |
 | `bs config get <键>` | 打印某个键的**生效值**（`-v` 还会说明它来自哪个文件；列表/映射输出 YAML） |
-| `bs config set <键> <值>` | 改用户级配置里的一个键：只改那一行（注释与顺序保留）、写前备份、写后校验，不合法自动还原；`--unset` 删除 |
+| `bs config set <键> <值>` | 改用户级配置里的一个键：只改那一行（注释与顺序保留）、写前备份、写后校验，不合法自动还原；键名写错会直接拒绝（退出码 2，`bs config keys` 看全部可用键），`--unset` 删除 |
 | `bs config keys` | 列出可用的键路径（`get`/`set` 的拼写参考） |
 | `bs config edit` | 用 `$EDITOR` 打开用户级配置，退出后立刻校验（需要终端） |
 | `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |

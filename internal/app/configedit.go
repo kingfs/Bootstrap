@@ -107,6 +107,9 @@ func (a *App) ConfigSet(key, value string, unset bool) (ConfigSetResult, error) 
 		return res, fmt.Errorf("read %s: %w", path, err)
 	}
 
+	if err := a.checkConfigKey(key); err != nil {
+		return res, a.keyError(key, err)
+	}
 	tpl, err := config.Marshal(a.defaultConfig())
 	if err != nil {
 		return res, err
@@ -159,6 +162,39 @@ func (a *App) ConfigSet(key, value string, unset bool) (ConfigSetResult, error) 
 		return res, fmt.Errorf("新配置不合法，已还原原文件：%w", err)
 	}
 	return res, nil
+}
+
+// openKeyPrefixes 是"用户可以自己加子键"的映射：里面的子键名由用户/清单决定，
+// 无法在默认配置模板里枚举（例如每个代理 profile、每个 stack 的版本）。
+//
+// 其余键写错的代价不只是"没生效"：bs 加载配置时按结构体取值，未知键会被静默忽略，
+// 于是用户会以为设置成功了（`config set tool.nosuchkey 42` 以前就是这样写进去的）。
+var openKeyPrefixes = []string{
+	"proxy.profiles", // 每个 profile 一个子映射
+	"tool.managers",  // 每个 stack 用哪个管理器
+	"tool.versions",  // 每个 stack 的版本（清单里的 {{versions.*}} 会引用）
+	"shell.rc_files", // 每个 shell 一个 rc 路径
+}
+
+// checkConfigKey 在写之前确认这个键"bs 认识"：要么在默认模板/用户文件里出现过，
+// 要么落在一个开放映射下面。返回 config.ErrKeyNotFound 时由 keyError 给出候选提示。
+func (a *App) checkConfigKey(key string) error {
+	known, err := a.ConfigKeys()
+	if err != nil {
+		return err
+	}
+	key = strings.TrimSpace(key)
+	for _, k := range known {
+		if k == key {
+			return nil
+		}
+	}
+	for _, prefix := range openKeyPrefixes {
+		if strings.HasPrefix(key, prefix+".") {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s", config.ErrKeyNotFound, key)
 }
 
 // ConfigEditPrepare 为 `bs config edit` 准备可编辑的文件：不存在时先生成默认配置。
@@ -257,11 +293,12 @@ func (a *App) SuggestConfigKeys(key string) []string {
 func (a *App) keyError(key string, err error) error {
 	switch {
 	case errors.Is(err, config.ErrKeyNotFound):
+		// 用 %w 保留哨兵：CLI 靠 errors.Is 把"键名写错"映射成用法错误（退出码 2）。
 		msg := fmt.Sprintf("unknown config key %q", key)
 		if hints := a.SuggestConfigKeys(key); len(hints) > 0 {
-			return fmt.Errorf("%s（是不是想写 %s？）", msg, strings.Join(hints, " / "))
+			return fmt.Errorf("%w: %s（是不是想写 %s？）", config.ErrKeyNotFound, msg, strings.Join(hints, " / "))
 		}
-		return fmt.Errorf("%s（用 `bs config keys` 看全部可用键）", msg)
+		return fmt.Errorf("%w: %s（用 `bs config keys` 看全部可用键）", config.ErrKeyNotFound, msg)
 	case errors.Is(err, config.ErrKeyNotScalar):
 		return fmt.Errorf("%w（该键是映射/列表，请用 `bs config edit` 手工改）", err)
 	default:

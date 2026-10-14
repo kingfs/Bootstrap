@@ -2,10 +2,13 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kingfs/Bootstrap/internal/config"
 )
 
 // writeUserConfig 在沙箱里写一份用户级配置文件。
@@ -176,5 +179,52 @@ func TestConfigEditPrepareDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err == nil {
 		t.Error("干跑生成了配置文件")
+	}
+}
+
+// TestConfigSetRejectsUnknownKey：写错键名以前会"成功"——键被写进文件，而 bs 加载配置时
+// 按结构体取值，未知键被静默忽略，用户于是以为设置生效了。现在必须直接拒绝。
+func TestConfigSetRejectsUnknownKey(t *testing.T) {
+	a, _ := newTestApp(t)
+	path := writeUserConfig(t, a, "version: 1\nlog:\n    level: info\n")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	_, err = a.ConfigSet("tool.nosuchkey", "42", false)
+	if err == nil {
+		t.Fatal("未知键应当失败")
+	}
+	if !errors.Is(err, config.ErrKeyNotFound) {
+		t.Errorf("应当保留 ErrKeyNotFound 以便 CLI 映射退出码：%v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("拒绝写入时不该动文件：\n%s", after)
+	}
+}
+
+// TestConfigSetAcceptsOpenMapKeys：开放映射下面的子键名由用户决定（代理 profile、
+// 每个 stack 的版本/管理器），别把这条合法用法一起挡掉。
+func TestConfigSetAcceptsOpenMapKeys(t *testing.T) {
+	cases := []struct{ key, value string }{
+		{"proxy.profiles.office.http_proxy", "http://127.0.0.1:7890"},
+		{"tool.versions.golang", "1.24.0"},
+		{"tool.managers.nodejs", "fnm"},
+		{"shell.rc_files.zsh", "~/.zshrc"},
+		{"log.level", "debug"}, // 模板里的普通键
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			a, _ := newTestApp(t)
+			writeUserConfig(t, a, "version: 1\n")
+			if _, err := a.ConfigSet(tc.key, tc.value, false); err != nil {
+				t.Errorf("%s=%s 应当可以写：%v", tc.key, tc.value, err)
+			}
+		})
 	}
 }
