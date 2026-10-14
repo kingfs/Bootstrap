@@ -151,9 +151,11 @@ smoke: build
 pty: build
 	@# 默认路径走到底：仓库根回车、代理回车、工具选"按套装"、套装选第一个，
 	@# 干跑下最后只打计划表（结果表是同一份内容的翻版，已不再重复）。
+	@# "先不装工具"这一行是回归断言：huh 的 Height 含标题行，写死选项个数会把它挤出可视区
+	@# （用户实测"4 个选项只看得见 3 个"），这条断言保证四个选项一次全看见。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "（dry-run：以下操作都不会被执行）" \
-		--expect-text "个需要处理" \
+		--expect-text "个需要处理" --expect-text "先不装工具" \
 		--keys ENTER ENTER ENTER ENTER -- init --dry-run
 	@# Ctrl-C 取消必须退出码 0 且提示"未做任何修改"（在第一问就取消）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \

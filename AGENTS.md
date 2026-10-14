@@ -231,7 +231,16 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
 - 交互式界面**统一走备用屏幕**（huh 的 `tea.WithAltScreen()`，见 `internal/ui/huh.go` 的 `form()`）：
   表单铺满整屏、退出后终端恢复原样。注意 `WithProgramOptions` 是**替换**而非追加，
-  必须排在 `WithInput`/`WithOutput` 之前。列表高度按终端尺寸算（`listHeight`）。
+  必须排在 `WithInput`/`WithOutput` 之前。
+- **huh 的 `Height(n)` 是整段字段的高度**，不是"列表能看到几行"：
+  `viewport = n − 标题行数 − 说明行数`（见 huh 的 `updateViewportHeight`）。
+  给 4 个选项写 `Height(4)`，第 4 个就被挤出可视区、要滚动才够得着（用户实测反馈）。
+  `internal/ui` 的 `fieldHeight` 因此分两种：列表放得下就**不设 Height**（huh 按内容精确撑开，
+  一行不多一行不少），放不下才把标题/说明的折行数补回去（`chromeRows`：按显示宽度算，
+  CJK 用 `pkg/textwidth`，宁可多算一行也别吃掉一行选项）。改这块必须跑 `make pty`。
+- `scripts/pty-check.py` 会先把伪终端设成 `--cols × --rows`（默认 100×30）再 exec：
+  0×0 的终端里 huh 会把整段表单渲染成空、只剩帮助行，于是"选项看不看得见"这类回归
+  根本测不出来（改窗口尺寸的坑就是这么发现的）。断言渲染内容时别忘了这一点。
 - 容器里常常没有 `$SHELL`（`docker run -it ubuntu bash` 就是）：`hostinfo.detectShell`
   依次退回 shell 自身环境变量、`/etc/passwd` 的登录 shell、父进程名（`/proc`）；
   **都拿不到就返回空串**，调用方必须当成"没有 shell 可集成"处理（`bs init` 会跳过并提示），

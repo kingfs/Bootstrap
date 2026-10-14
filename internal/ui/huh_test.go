@@ -138,14 +138,46 @@ func TestHuhPrompterSelectWithoutOptions(t *testing.T) {
 	}
 }
 
-// TestHuhPrompterListHeightFallsBack：拿不到终端尺寸（输出不是 *os.File）时用保守值，
+// TestHuhPrompterListRowsFallsBack：拿不到终端尺寸（输出不是 *os.File）时用保守值，
 // 绝不能算出 0 让勾选框什么都不显示。
-func TestHuhPrompterListHeightFallsBack(t *testing.T) {
+func TestHuhPrompterListRowsFallsBack(t *testing.T) {
 	p := &huhPrompter{in: strings.NewReader(""), out: &bytes.Buffer{}}
-	if got := p.listHeight(14); got != 14 {
-		t.Errorf("listHeight 应当回落到调用方给的值，得到 %d", got)
+	if got := p.listRows(14); got != 14 {
+		t.Errorf("listRows 应当回落到调用方给的值，得到 %d", got)
 	}
-	if got := p.listHeight(0); got != 0 {
-		t.Errorf("fallback 应原样返回，得到 %d", got)
+	if got := p.termWidth(); got != 80 {
+		t.Errorf("拿不到终端宽度时按 80 算，得到 %d", got)
+	}
+}
+
+// TestHuhPrompterFieldHeight：huh 的 Height 是**整段字段**的高度（含标题与说明），
+// 直接传选项个数会少显示一行——用户实测"4 个选项只看得见 3 个"。
+// 所以列表放得下时干脆不设 Height，放不下才把标题/说明的行数补回去。
+func TestHuhPrompterFieldHeight(t *testing.T) {
+	p := &huhPrompter{in: strings.NewReader(""), out: &bytes.Buffer{}}
+
+	if got := p.fieldHeight("标题", "", 14, 4); got != 0 {
+		t.Errorf("选项全能放下时应当不设 Height（交给 huh 精确撑开），得到 %d", got)
+	}
+	if got := p.fieldHeight("标题", "说明", 14, 0); got != 0 {
+		t.Errorf("没有选项时也应当不设 Height，得到 %d", got)
+	}
+
+	title := "本机 linux/arm64，适用工具 77 个（已装 0，缺失 77）。想怎么装？"
+	got := p.fieldHeight(title, "", 14, 77)
+	if got <= 14 {
+		t.Errorf("长列表要把标题占的行补回去，得到 %d（至少 15）", got)
+	}
+
+	if n := p.chromeRows("一行标题", "一行说明"); n != 2 {
+		t.Errorf("一行标题 + 一行说明 = 2 行，得到 %d", n)
+	}
+	if n := p.chromeRows("", ""); n != 0 {
+		t.Errorf("没有标题/说明时应当是 0 行，得到 %d", n)
+	}
+	// 超长标题要按宽度折行计数，不能永远算 1 行。
+	long := strings.Repeat("很长的标题", 40)
+	if n := p.chromeRows(long, ""); n < 2 {
+		t.Errorf("超长标题应当折成多行，得到 %d", n)
 	}
 }

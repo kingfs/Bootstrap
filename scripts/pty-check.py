@@ -8,7 +8,9 @@
     然后从 stdin 读回应。真终端立刻回答；`script` 这类假终端没人回答，于是把用户按键
     当成查询回应吞掉，看起来就像"按键没反应"。
 
-所以这里扮演一个会回答查询的终端，再把按键按时间表送进去，最后打印去转义后的输出。
+所以这里扮演一个会回答查询的终端（并且先把窗口尺寸设成 --cols × --rows，
+否则 huh 在 0x0 的终端里会把整段表单渲染成空），再把按键按时间表送进去，
+最后打印去转义后的输出。
 
 用法（全部在 .cache/pty 沙箱里读写，不发网络请求）：
 
@@ -23,11 +25,14 @@
 """
 
 import argparse
+import fcntl
 import os
 import pty
 import re
 import select
+import struct
 import sys
+import termios
 import time
 
 KEYMAP = {
@@ -71,6 +76,8 @@ def main() -> int:
     ap.add_argument("--first-key-delay", type=float, default=1.5, help="首个按键前的等待")
     ap.add_argument("--key-gap", type=float, default=0.7, help="按键间隔秒数")
     ap.add_argument("--keys", nargs="*", default=[], help="按键序列，见文件头说明")
+    ap.add_argument("--cols", type=int, default=100, help="伪终端宽度（默认 100）")
+    ap.add_argument("--rows", type=int, default=30, help="伪终端高度（默认 30）")
     ap.add_argument(
         "--path",
         default=None,
@@ -112,9 +119,22 @@ def main() -> int:
     start = time.time()
     schedule = build_schedule(args.keys, start + args.first_key_delay, args.key_gap)
 
-    pid, fd = pty.fork()
+    # 自己开 PTY 而不是 pty.fork()：fork 之前先把窗口尺寸写好，子进程一启动就查得到。
+    # 尺寸是 0x0 时 huh 会把整段表单渲染成空（只留下帮助行），断言"看得见哪些选项"就无从谈起。
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", args.rows, args.cols, 0, 0))
+    pid = os.fork()
     if pid == 0:
+        os.close(master)
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        for target in (0, 1, 2):
+            os.dup2(slave, target)
+        if slave > 2:
+            os.close(slave)
         os.execve(binary, [binary] + cmd, env)
+    os.close(slave)
+    fd = master
 
     chunks: list[bytes] = []
     code = None

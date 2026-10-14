@@ -12,6 +12,7 @@ import (
 	xterm "github.com/charmbracelet/x/term"
 
 	"github.com/kingfs/Bootstrap/pkg/hostinfo"
+	"github.com/kingfs/Bootstrap/pkg/textwidth"
 )
 
 // huhPrompter 是"真的有终端"时的交互式实现：空格勾选、方向键选择、密码不回显。
@@ -63,29 +64,25 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 		options = append(options, huh.NewOption(label, o.Value).Selected(o.Selected))
 		values = append(values, o.Value)
 	}
-	// 工具清单动辄几十条，固定 14 行会让勾选框缩在屏幕一角；
-	// 这里按终端高度给足列表空间（全屏表单，见 form()）。
-	height := h.listHeight(14)
-	if height > len(options)+2 {
-		height = len(options) + 2
-	}
 	// 用户主动取消（Ctrl-C / Esc）时返回 ErrCancelled，与 Text 版语义一致。
 	selected := make([]string, 0, len(values))
-	if err := h.form(
-		huh.NewMultiSelect[string]().
-			Title(q.Title).
-			Description(q.Description).
-			Options(options...).
-			Filterable(len(options) > 8).
-			Height(height).
-			Value(&selected).
-			Validate(func(picked []string) error {
-				if q.MinSelected > 0 && len(picked) < q.MinSelected {
-					return fmt.Errorf("至少需要选择 %d 个", q.MinSelected)
-				}
-				return nil
-			}),
-	).Run(); err != nil {
+	// 工具清单动辄几十条，按终端高度给足列表空间（全屏表单，见 form()）。
+	field := huh.NewMultiSelect[string]().
+		Title(q.Title).
+		Description(q.Description).
+		Options(options...).
+		Filterable(len(options) > 8).
+		Value(&selected).
+		Validate(func(picked []string) error {
+			if q.MinSelected > 0 && len(picked) < q.MinSelected {
+				return fmt.Errorf("至少需要选择 %d 个", q.MinSelected)
+			}
+			return nil
+		})
+	if height := h.fieldHeight(q.Title, q.Description, h.listRows(14), len(options)); height > 0 {
+		field.Height(height)
+	}
+	if err := h.form(field).Run(); err != nil {
 		return nil, mapHuhErr(err)
 	}
 	return selected, nil
@@ -108,18 +105,16 @@ func (h *huhPrompter) Select(q Question, options []Option) (string, error) {
 		return "", errors.New("ui: no selectable options")
 	}
 	value := ""
-	height := len(choices)
-	if max := h.listHeight(12); height > max {
-		height = max
+	field := huh.NewSelect[string]().
+		Title(q.Title).
+		Description(q.Description).
+		Options(choices...).
+		Value(&value)
+	// 选项不多时交给 huh 自己撑开（Height 是含标题的整段高度，写死个数会少一行）。
+	if height := h.fieldHeight(q.Title, q.Description, h.listRows(12), len(choices)); height > 0 {
+		field.Height(height)
 	}
-	if err := h.form(
-		huh.NewSelect[string]().
-			Title(q.Title).
-			Description(q.Description).
-			Options(choices...).
-			Height(height).
-			Value(&value),
-	).Run(); err != nil {
+	if err := h.form(field).Run(); err != nil {
 		return "", mapHuhErr(err)
 	}
 	return value, nil
@@ -173,11 +168,11 @@ func (h *huhPrompter) form(fields ...huh.Field) *huh.Form {
 		WithShowHelp(true)
 }
 
-// listHeight 计算列表在整屏里能占多少行。
+// listRows 计算列表最多能占几行：终端高度里扣掉标题/说明/帮助与上下留白。
 //
 // 拿不到终端尺寸时（例如换了输出 writer）退回调用方给的保守值——
 // 宁可列表短一点，也不能算出 0 让界面什么都不显示。
-func (h *huhPrompter) listHeight(fallback int) int {
+func (h *huhPrompter) listRows(fallback int) int {
 	f, ok := h.out.(*os.File)
 	if !ok {
 		return fallback
@@ -186,11 +181,58 @@ func (h *huhPrompter) listHeight(fallback int) int {
 	if err != nil || height <= 0 {
 		return fallback
 	}
-	// 留出标题/说明/帮助与上下留白：这些是 huh 自己画的，不归列表。
-	if n := height - 8; n > 10 {
+	if n := height - 10; n > 3 {
 		return n
 	}
-	return 10
+	// 终端特别矮时也别把整屏撑爆：给列表留 3 行，其余靠滚动。
+	return 3
+}
+
+// fieldHeight 把"列表想占几行"换算成 huh 的 Height 参数。
+//
+// huh 的坑：Height 是**整个字段**的高度，viewport 高度 = Height − 标题行数 − 说明行数
+// （见 huh 的 Select.updateViewportHeight）。以前直接传选项个数，于是
+// "4 个选项 + Height(4)"只显示 3 行、第 4 个要滚动才看得到——用户实测反馈的正是这个。
+// 所以分两种：
+//   - 选项本来就能全放下 → 返回 0（不设 Height）：huh 会按内容精确撑开，一行不多一行不少；
+//   - 放不下 → 补回标题/说明占的行，让列表稳定占满 rows 行，多出来的靠滚动。
+func (h *huhPrompter) fieldHeight(title, description string, rows, total int) int {
+	if total <= rows {
+		return 0
+	}
+	return rows + h.chromeRows(title, description)
+}
+
+// chromeRows 估算标题与说明会折成几行（huh 把它们算进 Height 里）。
+//
+// 按"可写宽度再窄一点"来算：算宽了最多让列表多显示一行，算窄了会吃掉一行选项。
+func (h *huhPrompter) chromeRows(title, description string) int {
+	// 扣掉字段的左边框+内边距、组缩进与右侧留白。
+	width := h.termWidth() - 6
+	if width < 16 {
+		width = 16
+	}
+	rows := 0
+	for _, s := range []string{title, description} {
+		if strings.TrimSpace(s) == "" {
+			continue
+		}
+		rows += max(1, (textwidth.Width(s)+width-1)/width)
+	}
+	return rows
+}
+
+// termWidth 取终端宽度；拿不到时按 80 算（huh 自己也这么兜底）。
+func (h *huhPrompter) termWidth() int {
+	f, ok := h.out.(*os.File)
+	if !ok {
+		return 80
+	}
+	width, _, err := xterm.GetSize(f.Fd())
+	if err != nil || width <= 0 {
+		return 80
+	}
+	return width
 }
 
 // mapHuhErr 把 huh 的"用户主动退出"映射成统一的 ErrCancelled，
