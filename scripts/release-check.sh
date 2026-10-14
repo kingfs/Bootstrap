@@ -151,7 +151,7 @@ archive_for() { # os arch → dist 里该平台的归档路径（找不到时输
   printf ''
 }
 
-# ---------- 版本号：从产物名里认出来（快照形如 0.0.1-next）----------
+# ---------- 版本号：从产物名里认出来（快照形如 0.1.1-next；别写死，tag 会改变它）----------
 VERSION=""
 for f in "$DIST"/bootstrap_*_"$OS"_"$ARCH".tar.gz; do
   [ -f "$f" ] || continue
@@ -284,7 +284,15 @@ assert_contains "重复安装后版本仍然正确" "$VERSION" "$out"
 # 站点摆成 GitHub 的路径形状：<assets>/<repo>/releases/download/<tag>/<asset>，
 # API 是 <api>/repos/<repo>/releases/latest（返回 {"tag_name": ...}）。
 selfupdate_section() {
-  newver="0.0.2-next"
+  # 这里要造出**确定比当前二进制高**的版本用于"更新成功"路径。不能写死 0.0.2-next：
+  # 仓库里一旦打过 v0.1.0 这类 tag，快照版本就变成 0.1.1-next，反而比 0.0.2-next 高，
+  # 于是 self-update 会正确地回答"已是最新"，随后一连串断言全部假失败（只剩"没动二进制"）。
+  # 取当前版本的主版本号 +1：既保证更高，又保持三个 tag 彼此不同。
+  major="$(printf '%s' "$VERSION" | cut -d. -f1)"
+  case "$major" in ''|*[!0-9]*) major=0 ;; esac
+  newver="$((major + 1)).0.0-next"
+  tampered_ver="$((major + 1)).0.1-next"
+  nochecksum_ver="$((major + 1)).0.2-next"
   newtag="v$newver"
   pkg="github.com/kingfs/Bootstrap/internal/buildinfo"
   gh="$WORK/gh"
@@ -312,12 +320,12 @@ selfupdate_section() {
   (cd "$release_dir/$newtag" && sha256sum "$new_asset" >checksums.txt)
 
   # 额外的两个 tag：一个"产物被篡改但校验和是旧的"，一个"根本没有 checksums.txt"
-  for extra in 0.0.3-next 0.0.4-next; do
+  for extra in "$tampered_ver" "$nochecksum_ver"; do
     mkdir -p "$release_dir/v$extra"
     cp "$release_dir/$newtag/$new_asset" "$release_dir/v$extra/bootstrap_${extra}_${OS}_${ARCH}.tar.gz"
   done
-  (cd "$release_dir/v0.0.3-next" && sha256sum bootstrap_0.0.3-next_"$OS"_"$ARCH".tar.gz >checksums.txt \
-    && printf 'tampered' >>bootstrap_0.0.3-next_"$OS"_"$ARCH".tar.gz)
+  (cd "$release_dir/v$tampered_ver" && sha256sum bootstrap_${tampered_ver}_"$OS"_"$ARCH".tar.gz >checksums.txt \
+    && printf 'tampered' >>bootstrap_${tampered_ver}_"$OS"_"$ARCH".tar.gz)
 
   if ! start_site "$gh" gh; then
     bad "自更新站点没起来"
@@ -344,7 +352,7 @@ selfupdate_section() {
     ok "--check 不下载归档"
   fi
 
-  # 真更新：0.0.1-next → 0.0.2-next
+  # 真更新：$VERSION（快照）→ $newver
   code=0
   out="$("$BINDIR/bs" self-update --yes 2>&1)" || code=$?
   assert_eq "自更新退出码 0" "0" "$code"
@@ -360,7 +368,7 @@ selfupdate_section() {
   # 失败路径 1：产物被篡改（校验和还是旧的）→ 必须中止，且当前二进制保持不动
   before_sum="$(sha256_of_file "$BINDIR/bs")"
   code=0
-  out="$("$BINDIR/bs" self-update --version v0.0.3-next --yes 2>&1)" || code=$?
+  out="$("$BINDIR/bs" self-update --version "v$tampered_ver" --yes 2>&1)" || code=$?
   if [ "$code" -ne 0 ]; then ok "被篡改的产物必须失败（退出码 ${code}）"; else bad "被篡改的产物居然装上了"; fi
   # 错误消息是英文短句（AGENTS §5），面向用户的提示才是中文
   assert_contains "失败原因指向校验" "checksum mismatch" "$out"
@@ -369,7 +377,7 @@ selfupdate_section() {
 
   # 失败路径 2：站点没有 checksums.txt → 按红线中止，绝不"跳过校验"
   code=0
-  out="$("$BINDIR/bs" self-update --version v0.0.4-next --yes 2>&1)" || code=$?
+  out="$("$BINDIR/bs" self-update --version "v$nochecksum_ver" --yes 2>&1)" || code=$?
   if [ "$code" -ne 0 ]; then ok "缺 checksums.txt 时必须失败（退出码 ${code}）"; else bad "缺校验和居然装上了"; fi
   assert_contains "失败原因指向缺校验和（绝不降级为不校验）" "no checksum available" "$out"
   assert_eq "缺校验和时当前二进制不变" "$before_sum" "$(sha256_of_file "$BINDIR/bs")"
