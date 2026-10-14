@@ -16,6 +16,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# 被调用程序写 stderr / 返回非 0 都在本脚本的预期内（退出码本身就是要断言的），
+# 别让 pwsh 7.4+ 的这条偏好把它们变成终止性错误（变量在旧版本上不存在，赋值无害）。
+$PSNativeCommandUseErrorActionPreference = $false
 $script:Pass = 0
 $script:Fail = 0
 
@@ -35,14 +38,16 @@ function Assert-Equal($desc, $expected, $actual) {
 if (-not (Test-Path $Bin)) { throw "找不到二进制：$Bin（先运行 go build -o bin/bs.exe ./cmd/bs）" }
 
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
-$home = Join-Path $Work 'home'
+# 不能叫 $home：PowerShell 的 $HOME 是只读自动变量（大小写不敏感），
+# 赋值会直接抛 "Cannot overwrite variable HOME because it is read-only or constant."
+$homeDir = Join-Path $Work 'home'
 $config = Join-Path $Work 'config'
 $state = Join-Path $Work 'state'
 $cache = Join-Path $Work 'cache'
-New-Item -ItemType Directory -Force -Path $home, $config, $state, $cache | Out-Null
+New-Item -ItemType Directory -Force -Path $homeDir, $config, $state, $cache | Out-Null
 
-$env:HOME = $home
-$env:USERPROFILE = $home
+$env:HOME = $homeDir
+$env:USERPROFILE = $homeDir
 $env:BS_CONFIG_HOME = $config
 $env:BS_STATE_HOME = $state
 $env:BS_CACHE_HOME = $cache
@@ -99,7 +104,7 @@ Assert-Contains 'pwsh 片段含包装函数' 'function bs' $out
 Write-Host "`n== 仓库计划（dry-run）" -ForegroundColor Cyan
 $out = & $Bin repo get kingfs/Bootstrap --dry-run 2>&1 | Out-String
 Assert-Contains 'dry-run 显示 clone' 'git clone' $out
-Assert-Missing 'dry-run 不创建目录' (Join-Path $home 'src')
+Assert-Missing 'dry-run 不创建目录' (Join-Path $homeDir 'src')
 
 Write-Host "`n== 退出码" -ForegroundColor Cyan
 & $Bin definitely-not-a-command *> $null

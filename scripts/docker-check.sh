@@ -94,7 +94,7 @@ out="$(bsrun doctor 2>&1)" || code=$?
 code=${code:-0}
 # doctor 在裸机上把缺 git/curl 报成问题（退出码 4）是**正确**行为；崩掉（>4 或 2）才是 bug。
 case "$code" in
-0 | 4) ok "doctor 在裸机上给出结论（退出码 $code）" ;;
+0 | 4) ok "doctor 在裸机上给出结论（退出码 ${code}）" ;;
 *) bad "doctor 退出码异常：$code" ;;
 esac
 unset code

@@ -2,7 +2,7 @@
 #
 # 无副作用冒烟测试。
 #
-# 原则：所有读写都发生在临时沙箱目录里，绝不触碰开发者真实的 $HOME、rc 文件或系统目录；
+# 原则：所有读写都发生在临时沙箱目录里，绝不触碰开发者真实的 ${HOME}、rc 文件或系统目录；
 # 不发起任何网络请求（网络相关路径一律用 --dry-run 覆盖）。
 #
 # 用法：
@@ -296,14 +296,14 @@ assert_contains "config keys 列出可写键" "timeouts.download" "$out"
 
 # 拼错的键要给出候选，而不是只说"不认识"
 code=0; out="$(cfgenv "$BIN" config get ui.confrim 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "未知键退出码非 0（$code）"; else bad "未知键返回了 0"; fi
+if [ "$code" -ne 0 ]; then ok "未知键退出码非 0（${code}）"; else bad "未知键返回了 0"; fi
 assert_contains "未知键给出候选" "ui.confirm" "$out"
 
 # 类型由默认配置推断：写错类型必须**在写入前**被拦住
 CFGFILE="$CFGHOME/.config/bootstrap/config.yaml"
 before="$(cat "$CFGFILE")"
 code=0; out="$(cfgenv "$BIN" config set repo.clone.depth deep 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "非法值退出码非 0（$code）"; else bad "非法值返回了 0"; fi
+if [ "$code" -ne 0 ]; then ok "非法值退出码非 0（${code}）"; else bad "非法值返回了 0"; fi
 assert_contains "非法值说明期望类型" "期望整数" "$out"
 assert_eq "非法值不改动配置文件" "$before" "$(cat "$CFGFILE")"
 
@@ -438,7 +438,7 @@ step "GitHub 镜像前缀（不联网，只验接线）"
 code=0
 out="$(env BS_GITHUB_API="http://127.0.0.1:1/api" BS_GITHUB_ASSET_BASE="http://127.0.0.1:1/gh" \
   "$BIN" self-update --check 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "镜像不可用时明确失败（退出码 $code）"; else bad "镜像不可用却成功了"; fi
+if [ "$code" -ne 0 ]; then ok "镜像不可用时明确失败（退出码 ${code}）"; else bad "镜像不可用却成功了"; fi
 assert_contains "自更新走的是 BS_GITHUB_API 指的前缀" "127.0.0.1:1" "$out"
 assert_not_contains "没有偷偷去连 api.github.com" "api.github.com" "$out"
 # 只给 ASSET_BASE：API 保持默认，不许"给了下载前缀就把 API 也指过去"
@@ -494,7 +494,7 @@ code=$?
 set -e
 assert_contains "doctor 输出平台信息" "platform" "$out"
 assert_contains "doctor 检查 git" "git" "$out"
-if [ "$code" -eq 0 ] || [ "$code" -eq 4 ]; then ok "doctor 退出码合理（$code）"; else bad "doctor 退出码异常：$code"; fi
+if [ "$code" -eq 0 ] || [ "$code" -eq 4 ]; then ok "doctor 退出码合理（${code}）"; else bad "doctor 退出码异常：$code"; fi
 
 step "体检修复（bs doctor --fix）"
 # 用一个全新的沙箱 HOME：doctor --fix 会建配置/仓库根/rc 受管块，必须与前面的断言互不干扰。
@@ -617,4 +617,4 @@ printf '\n\033[1m结果：%d 通过，%d 失败\033[0m\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then
   exit 1
 fi
-echo "沙箱目录：$WORK（可安全删除）"
+echo "沙箱目录：${WORK}（可安全删除）"

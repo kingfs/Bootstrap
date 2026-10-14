@@ -136,7 +136,7 @@ if fetch "$BASE_URL/checksums.txt" "$TMP/checksums.txt" 2>/dev/null; then
   EXPECTED="$(awk -v a="$ASSET" '$2 == a || $2 == "*"a {print $1}' "$TMP/checksums.txt" | head -1)"
   [ -n "$EXPECTED" ] || err "checksums.txt 中没有 $ASSET 的记录"
   ACTUAL="$(sha256_of "$TMP/$ASSET")"
-  [ "$EXPECTED" = "$ACTUAL" ] || err "校验失败：期望 $EXPECTED，实际 $ACTUAL"
+  [ "$EXPECTED" = "$ACTUAL" ] || err "校验失败：期望 ${EXPECTED}，实际 $ACTUAL"
   say "    sha256 匹配"
 else
   err "无法下载 checksums.txt，出于安全考虑中止安装"

@@ -54,7 +54,7 @@ mkdir -p "$WORK"
 # 静态二进制才谈得上"丢进任何镜像都能跑"。动态链接的本地构建在这里会被立刻发现。
 if command -v file >/dev/null 2>&1; then
   if file "$BIN" | grep -q "statically linked"; then
-    echo "==> 二进制：$BIN（静态）"
+    echo "==> 二进制：${BIN}（静态）"
   else
     echo "!! 警告：$BIN 不是静态链接的；容器里可能因缺 libc 版本而失败" >&2
     echo "   （用 make cross 产物，或 CGO_ENABLED=0 go build）" >&2
@@ -67,7 +67,7 @@ for image in $images; do
   dir="$WORK/$name"
   mkdir -p "$dir"
   echo
-  echo "==> 镜像 $image（--network none）"
+  echo "==> 镜像 ${image}（--network none）"
   if ! docker pull -q "$image" >/dev/null 2>&1; then
     echo "   拉取失败（离线或镜像名写错），跳过" >&2
     total_fail=$((total_fail + 1))
@@ -79,16 +79,16 @@ for image in $images; do
     -v "$dir:/work" \
     -e WORK_DIR=/work \
     "$image" sh /check.sh; then
-    echo "   $image：通过"
+    echo "   ${image}：通过"
   else
-    echo "   $image：失败" >&2
+    echo "   ${image}：失败" >&2
     total_fail=$((total_fail + 1))
   fi
 done
 
 echo
 if [ "$total_fail" -eq 0 ]; then
-  echo "Docker 集成矩阵全部通过（沙箱目录 $WORK，可安全删除）"
+  echo "Docker 集成矩阵全部通过（沙箱目录 ${WORK}，可安全删除）"
   exit 0
 fi
 echo "Docker 集成矩阵：$total_fail 个镜像失败" >&2

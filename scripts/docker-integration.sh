@@ -63,7 +63,7 @@ mkdir -p "$WORK"
 # 静态二进制才谈得上"丢进任何镜像都能跑"。
 if command -v file >/dev/null 2>&1; then
   if file "$BIN" | grep -q "statically linked"; then
-    echo "==> 二进制：$BIN（静态）"
+    echo "==> 二进制：${BIN}（静态）"
   else
     echo "!! 警告：$BIN 不是静态链接的；容器里可能因缺 libc 版本而失败" >&2
     echo "   （用 make cross 产物，或 CGO_ENABLED=0 go build）" >&2
@@ -98,17 +98,17 @@ for image in $images; do
     -e BS_IMAGE="$image" \
     -e BS_PROXY_URL="$PROXY_URL" \
     "$image" sh /work/integration.sh; then
-    echo "---- $image：通过"
+    echo "---- ${image}：通过"
   else
-    echo "---- $image：失败" >&2
+    echo "---- ${image}：失败" >&2
     failed=1
   fi
 done
 
 echo
 if [ "$failed" -eq 0 ]; then
-  echo "Docker 集成测试全部通过（沙箱目录 $WORK，可安全删除）"
+  echo "Docker 集成测试全部通过（沙箱目录 ${WORK}，可安全删除）"
   exit 0
 fi
-echo "Docker 集成测试有失败项（沙箱目录 $WORK）" >&2
+echo "Docker 集成测试有失败项（沙箱目录 ${WORK}）" >&2
 exit 1

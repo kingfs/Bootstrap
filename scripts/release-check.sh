@@ -300,10 +300,10 @@ selfupdate_section() {
       [ -f scripts/devenv.sh ] && . scripts/devenv.sh >/dev/null 2>&1
       exec go build -trimpath -ldflags "$1" -o "$2" ./cmd/bs
     ' bash "$ldflags" "$WORK/newrel/bs"); then
-    bad "编译出用于自更新的新版本（$newver）"
+    bad "编译出用于自更新的新版本（${newver}）"
     return
   fi
-  ok "编译出用于自更新的新版本（$newver）"
+  ok "编译出用于自更新的新版本（${newver}）"
 
   printf '{"tag_name":"%s"}' "$newtag" >"$api_dir/latest"
   printf '{"tag_name":"%s"}' "$newtag" >"$gh/github/kingfs/Bootstrap/releases/latest"
@@ -361,7 +361,7 @@ selfupdate_section() {
   before_sum="$(sha256_of_file "$BINDIR/bs")"
   code=0
   out="$("$BINDIR/bs" self-update --version v0.0.3-next --yes 2>&1)" || code=$?
-  if [ "$code" -ne 0 ]; then ok "被篡改的产物必须失败（退出码 $code）"; else bad "被篡改的产物居然装上了"; fi
+  if [ "$code" -ne 0 ]; then ok "被篡改的产物必须失败（退出码 ${code}）"; else bad "被篡改的产物居然装上了"; fi
   # 错误消息是英文短句（AGENTS §5），面向用户的提示才是中文
   assert_contains "失败原因指向校验" "checksum mismatch" "$out"
   assert_eq "失败后当前二进制没被动过" "$before_sum" "$(sha256_of_file "$BINDIR/bs")"
@@ -370,7 +370,7 @@ selfupdate_section() {
   # 失败路径 2：站点没有 checksums.txt → 按红线中止，绝不"跳过校验"
   code=0
   out="$("$BINDIR/bs" self-update --version v0.0.4-next --yes 2>&1)" || code=$?
-  if [ "$code" -ne 0 ]; then ok "缺 checksums.txt 时必须失败（退出码 $code）"; else bad "缺校验和居然装上了"; fi
+  if [ "$code" -ne 0 ]; then ok "缺 checksums.txt 时必须失败（退出码 ${code}）"; else bad "缺校验和居然装上了"; fi
   assert_contains "失败原因指向缺校验和（绝不降级为不校验）" "no checksum available" "$out"
   assert_eq "缺校验和时当前二进制不变" "$before_sum" "$(sha256_of_file "$BINDIR/bs")"
 
@@ -397,7 +397,7 @@ fi
 code=0
 out="$(sh "$INSTALLER" --base-url "http://127.0.0.1:$SITE_PORT" --version "$VERSION" \
   --dir "$WORK/tamper-bin" --yes 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "被篡改的归档必须失败（退出码 $code）"; else bad "被篡改的归档居然装成功了"; fi
+if [ "$code" -ne 0 ]; then ok "被篡改的归档必须失败（退出码 ${code}）"; else bad "被篡改的归档居然装成功了"; fi
 assert_contains "失败原因指向校验" "校验失败" "$out"
 assert_missing "校验失败后不留可执行文件" "$WORK/tamper-bin/bs"
 stop_site
@@ -413,7 +413,7 @@ fi
 code=0
 out="$(sh "$INSTALLER" --base-url "http://127.0.0.1:$SITE_PORT" --version "$VERSION" \
   --dir "$WORK/nosum-bin" --yes 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "缺 checksums.txt 时必须失败（退出码 $code）"; else bad "缺 checksums.txt 居然装成功了"; fi
+if [ "$code" -ne 0 ]; then ok "缺 checksums.txt 时必须失败（退出码 ${code}）"; else bad "缺 checksums.txt 居然装成功了"; fi
 assert_contains "失败原因指向校验和文件" "checksums.txt" "$out"
 assert_missing "缺校验和时不留下 bs" "$WORK/nosum-bin/bs"
 stop_site
@@ -421,13 +421,13 @@ stop_site
 # 3c. 自定义前缀 + 不给版本：必须明确报错（没有 releases/latest 可跟）
 code=0
 out="$(sh "$INSTALLER" --base-url "$BASE" --dir "$WORK/nolatest-bin" --yes 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "自定义前缀下 latest 必须报错（退出码 $code）"; else bad "自定义前缀下居然按 latest 装成功了"; fi
+if [ "$code" -ne 0 ]; then ok "自定义前缀下 latest 必须报错（退出码 ${code}）"; else bad "自定义前缀下居然按 latest 装成功了"; fi
 assert_contains "报错说清要显式指定版本" "--version" "$out"
 
 # 3d. 站点上没有这个版本：下载失败也要明确
 code=0
 out="$(sh "$INSTALLER" --base-url "$BASE" --version "v9.9.9" --dir "$WORK/nover-bin" --yes 2>&1)" || code=$?
-if [ "$code" -ne 0 ]; then ok "版本不存在时必须失败（退出码 $code）"; else bad "不存在的版本居然装成功了"; fi
+if [ "$code" -ne 0 ]; then ok "版本不存在时必须失败（退出码 ${code}）"; else bad "不存在的版本居然装成功了"; fi
 assert_contains "提示下载失败" "下载失败" "$out"
 assert_missing "版本不存在时不留下 bs" "$WORK/nover-bin/bs"
 

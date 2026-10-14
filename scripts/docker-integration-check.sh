@@ -141,11 +141,11 @@ for p in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
 done
 if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "${SSL_CERT_FILE}" ]; then have_ca=1; fi
 
-echo "== 环境（$IMAGE）"
+echo "== 环境（${IMAGE}）"
 echo "  $(uname -srm)，$(. /etc/os-release && echo "$PRETTY_NAME")"
 echo "  沙箱：HOME=$HOME_DIR"
 for probe in git curl unzip gcc; do
-  if command -v "$probe" >/dev/null 2>&1; then echo "  已存在：$probe（干净系统前提被打破）"; fi
+  if command -v "$probe" >/dev/null 2>&1; then echo "  已存在：${probe}（干净系统前提被打破）"; fi
 done
 if [ "$have_ca" -eq 1 ]; then
   echo "  镜像自带系统 CA 证书（这一轮跳过"缺证书"那段的断言）"
@@ -164,7 +164,7 @@ bsr version
 assert_contains "version 能跑" "bs " "$OUT"
 bsr doctor
 case "$RC" in
-0 | 4) ok "doctor 给出结论（退出码 $RC）" ;;
+0 | 4) ok "doctor 给出结论（退出码 ${RC}）" ;;
 *) bad "doctor 退出码异常：$RC" ;;
 esac
 assert_contains "doctor 报出平台" "platform" "$OUT"
@@ -179,7 +179,7 @@ echo
 echo "== 第一公里：没有 CA 证书时，HTTPS 失败必须说清原因"
 if [ "$have_ca" -eq 0 ]; then
   bsr tool install lazygit --yes
-  if [ "$RC" -ne 0 ]; then ok "缺 CA 证书时下载失败（退出码 $RC）"; else bad "缺 CA 证书却装成功了"; fi
+  if [ "$RC" -ne 0 ]; then ok "缺 CA 证书时下载失败（退出码 ${RC}）"; else bad "缺 CA 证书却装成功了"; fi
   assert_contains "错误里给出 x509 提示" "no usable system CA certificates" "$OUT"
   assert_contains "错误里保留原始原因" "certificate" "$OUT"
   assert_missing "失败后没有留下二进制" "$HOME_DIR/.local/bin/lazygit"
@@ -212,7 +212,7 @@ echo
 echo "== 清单与计划（离线）"
 for os in linux darwin windows; do
   bsr tool manifest validate --os "$os"
-  assert_contains "清单校验通过（$os）" "清单校验通过" "$OUT"
+  assert_contains "清单校验通过（${os}）" "清单校验通过" "$OUT"
 done
 bsr tool list --no-probe
 assert_contains "列表含 git" "git" "$OUT"
@@ -274,14 +274,14 @@ if have_proxy "代理全链路"; then
   assert_contains "proxy exec 注入了 HTTPS_PROXY" "HTTPS_PROXY=$PROXY_URL" "$OUT"
   # 用一个确定公开的仓库：本仓库还没推到 GitHub，连它会得到 401 要求输入用户名。
   bsr proxy exec -- git ls-remote https://github.com/octocat/Hello-World HEAD
-  if [ "$RC" -eq 0 ]; then ok "带代理的 git 能连上 GitHub"; else bad "带代理的 git 连不上（退出码 $RC）：$(printf '%s' "$OUT" | head -c 300)"; fi
+  if [ "$RC" -eq 0 ]; then ok "带代理的 git 能连上 GitHub"; else bad "带代理的 git 连不上（退出码 ${RC}）：$(printf '%s' "$OUT" | head -c 300)"; fi
   bsr proxy env --apply
   assert_contains "proxy env 输出可 eval 的语句" "$PROXY_URL" "$OUT"
 
   echo
   echo "== 走代理的真实下载：GitHub Release + sha256（lazygit）"
   bsr tool install lazygit --yes
-  if [ "$RC" -eq 0 ]; then ok "走代理装 lazygit 成功"; else bad "走代理装 lazygit 失败（退出码 $RC）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
+  if [ "$RC" -eq 0 ]; then ok "走代理装 lazygit 成功"; else bad "走代理装 lazygit 失败（退出码 ${RC}）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
   assert_exists "二进制落在 ~/.local/bin" "$HOME_DIR/.local/bin/lazygit"
   if [ -x "$HOME_DIR/.local/bin/lazygit" ]; then
     # lazygit --version 输出形如 "commit=…, version=0.66.1, os=linux, …"（不含名字）
@@ -304,7 +304,7 @@ if have_proxy "代理全链路"; then
   echo
   echo "== 走代理的直链下载（params.url）：kubectl"
   bsr tool install kubectl --yes
-  if [ "$RC" -eq 0 ]; then ok "走代理装 kubectl 成功"; else bad "走代理装 kubectl 失败（退出码 $RC）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
+  if [ "$RC" -eq 0 ]; then ok "走代理装 kubectl 成功"; else bad "走代理装 kubectl 失败（退出码 ${RC}）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
   assert_exists "kubectl 落在 ~/.local/bin" "$HOME_DIR/.local/bin/kubectl"
   if [ -x "$HOME_DIR/.local/bin/kubectl" ]; then
     assert_contains "kubectl 能跑" "Client Version" "$("$HOME_DIR/.local/bin/kubectl" version --client 2>&1 | head -2)"
@@ -320,7 +320,7 @@ if have_proxy "代理全链路"; then
   assert_contains "切到黑洞代理" "blackhole" "$OUT"
   rm -rf "$CACHE_HOME/downloads" # 逼它重新下载，否则会用缓存假成功
   bsr tool install lazygit --yes
-  if [ "$RC" -ne 0 ]; then ok "黑洞代理下下载必须失败（退出码 $RC）"; else bad "黑洞代理下居然装成功了"; fi
+  if [ "$RC" -ne 0 ]; then ok "黑洞代理下下载必须失败（退出码 ${RC}）"; else bad "黑洞代理下居然装成功了"; fi
   assert_contains "失败原因指向被注入的代理" "127.0.0.1:9" "$OUT"
   assert_missing "失败后没有留下二进制" "$HOME_DIR/.local/bin/lazygit"
 
@@ -329,7 +329,7 @@ if have_proxy "代理全链路"; then
   bsr proxy use chaitin
   assert_contains "切回真代理" "chaitin" "$OUT"
   bsr tool install lazygit --yes
-  if [ "$RC" -eq 0 ]; then ok "再次走真代理装 lazygit 成功"; else bad "走真代理仍然失败（退出码 $RC）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
+  if [ "$RC" -eq 0 ]; then ok "再次走真代理装 lazygit 成功"; else bad "走真代理仍然失败（退出码 ${RC}）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
   assert_exists "走代理装出来的二进制存在" "$HOME_DIR/.local/bin/lazygit"
 
   echo
