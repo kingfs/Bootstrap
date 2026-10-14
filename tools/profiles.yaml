@@ -56,8 +56,8 @@ profiles:
     tools: [rust-analyzer, cargo-nextest, sccache, cargo-audit, cargo-deny]
 
   java:
-    description: Java 工具链（JDK + Maven；gradle/kubectl 等直链类工具见 design §18.3）
-    tools: [openjdk, maven]
+    description: Java 工具链（JDK + Maven + Gradle）
+    tools: [openjdk, maven, gradle]
 
   editor:
     description: 编辑器
@@ -65,7 +65,7 @@ profiles:
 
   infra:
     description: 集群/基础设施工具（Kubernetes 日常）
-    tools: [k9s, kind, stern]
+    tools: [k9s, kubectl, helm, kind, stern]
 
   agent:
     description: AI 编码 CLI

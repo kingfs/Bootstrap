@@ -593,3 +593,219 @@ tools:
 		t.Errorf("成功后不该留下半成品：%v", parts)
 	}
 }
+
+// TestReleaseInstallFromDirectURL：`params.url` 直链模式整条跑通。
+//
+// 这条测试对应用户机器上装 kubectl/helm 的场景（产物不在 GitHub Release 上，或 Release 里
+// 只有 `.asc` 签名）：版本从一个 URL 读（kubectl 的 stable.txt），产物与校验和都在直链旁边，
+// 校验和文件名是 `<产物>.sha256sum`（helm 的形态），内容里带文件名。
+func TestReleaseInstallFromDirectURL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	const (
+		tag   = "v9.9.9"
+		ver   = "9.9.9"
+		asset = "clitool.tar.gz"
+	)
+	payload := buildTarGz(t, map[string]tarEntry{
+		"clitool-9.9.9/clitool": {Body: "#!/bin/sh\necho \"clitool " + ver + "\"\n", Mode: 0o755},
+	})
+	sum := sha256.Sum256(payload)
+
+	var (
+		mu       sync.Mutex
+		requests []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/kv/stable.txt":
+			fmt.Fprintln(w, tag)
+		case "/kv/v" + ver + "/bin/linux/amd64/" + asset:
+			_, _ = w.Write(payload)
+		case "/kv/v" + ver + "/bin/linux/amd64/" + asset + ".sha256sum":
+			// helm 的形态：`<hash>  <文件名>`
+			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), asset)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	dest := filepath.Join(home, "bin")
+	env := NewOSEnv(OSEnvOptions{
+		Env: map[string]string{"HOME": home}, ExtraPath: []string{dest}, HomeDir: home,
+		GOOS: "linux", Arch: "amd64", Client: httpx.New(30e9, nil), WorkRoot: t.TempDir(),
+	})
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: clitool
+    stack: infra
+    kind: cli
+    verify:
+      command: clitool
+      version_args: [--version]
+      version_regex: 'clitool (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: release
+        params:
+          url: "`+srv.URL+`/kv/v{{version}}/bin/{{os}}/{{arch}}/`+asset+`"
+          version_source: "`+srv.URL+`/kv/stable.txt"
+          checksum_file: sha256sum
+          strip_components: 1
+          binary: clitool
+          dest: `+dest+`
+`)
+	runner := cmdx.New(nil)
+	det := &detect.Detector{Executor: runner, LookPath: env, HomeDir: home,
+		Timeout: detect.ProbeTimeout, Concurrency: 2}
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	// 干跑必须**不联网**：`version_source` 是 URL 时也要走占位符，
+	// 否则 `bs tool plan` 会偷偷发请求（破坏"预览是只读、离线"的承诺）。
+	dryEnv := NewOSEnv(OSEnvOptions{
+		Env: map[string]string{"HOME": home}, ExtraPath: []string{dest}, HomeDir: home,
+		GOOS: "linux", Arch: "amd64", Client: httpx.New(30e9, nil), WorkRoot: t.TempDir(),
+		DryRun: true,
+	})
+	mu.Lock()
+	requests = nil
+	mu.Unlock()
+	dryEng, err := NewEngine(EngineOptions{Env: dryEnv, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewEngine(dry): %v", err)
+	}
+	dryPlan, err := dryEng.PlanTools(context.Background(), []string{"clitool"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools(dry): %v", err)
+	}
+	if got := dryPlan.Steps[0].Summary; !strings.Contains(got, latestPlaceholder) {
+		t.Errorf("干跑摘要 = %q，期望带占位符（说明没有联网解析版本）", got)
+	}
+	mu.Lock()
+	if len(requests) != 0 {
+		t.Errorf("干跑发了网络请求：%v", requests)
+	}
+	mu.Unlock()
+
+	plan, err := eng.PlanTools(context.Background(), []string{"clitool"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	if plan.Steps[0].Status != StepInstall {
+		t.Fatalf("plan = %+v", plan.Steps[0])
+	}
+
+	report, err := eng.Apply(context.Background(), plan, OpInstall)
+	if err != nil {
+		t.Fatalf("Apply: %v (steps=%+v)", err, report.Steps)
+	}
+	if report.Steps[0].Status != StepDone {
+		t.Fatalf("step = %+v", report.Steps[0])
+	}
+	res, err := runner.Run(context.Background(), cmdx.Command{Name: filepath.Join(dest, "clitool"), Args: []string{"--version"}})
+	if err != nil || !strings.Contains(res.Stdout, ver) {
+		t.Fatalf("直链装出来的二进制不可用：%v / %q", err, res.Stdout)
+	}
+}
+
+// TestReleaseInstallDirectURLTreeAndVersionedSymlink：目录型发布物 + 模板化软链。
+//
+// 对应用户机器上装 gradle：直链是一整个目录包，解压后要按 `…/gradle-<版本>/bin/gradle`
+// 软链到 PATH 里。这里同时覆盖 `<url>.sha256`（裸哈希）与固定版本 `version_source`
+// （不再有仓库可查"最新版本"）。
+func TestReleaseInstallDirectURLTreeAndVersionedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	const (
+		ver   = "9.9.9"
+		asset = "gradle-9.9.9-bin.tar.gz"
+	)
+	payload := buildTarGz(t, map[string]tarEntry{
+		"gradle-9.9.9/bin/gradle":     {Body: "#!/bin/sh\necho \"gradle " + ver + "\"\n", Mode: 0o755},
+		"gradle-9.9.9/lib/gradle.jar": {Body: "jar\n", Mode: 0o644},
+	})
+	sum := sha256.Sum256(payload)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dist/" + asset:
+			_, _ = w.Write(payload)
+		case "/dist/" + asset + ".sha256":
+			// 裸哈希（gradle 的形态。注意末尾那个换行：解析器要能容忍）
+			fmt.Fprintln(w, hex.EncodeToString(sum[:]))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	dest := filepath.Join(home, "bin")
+	share := filepath.Join(home, "share", "gradle")
+	env := NewOSEnv(OSEnvOptions{
+		Env: map[string]string{"HOME": home}, ExtraPath: []string{dest}, HomeDir: home,
+		GOOS: "linux", Arch: "amd64", Client: httpx.New(30e9, nil), WorkRoot: t.TempDir(),
+	})
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: gradle
+    stack: java
+    kind: cli
+    verify:
+      command: gradle
+      version_args: [--version]
+      version_regex: 'gradle (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: release
+        params:
+          url: "`+srv.URL+`/dist/gradle-{{version}}-bin.tar.gz"
+          version_source: "v`+ver+`"
+          extract: true
+          dest: `+share+`
+          symlink:
+            from: `+share+`/gradle-{{version}}/bin/gradle
+            to: `+dest+`/gradle
+`)
+	runner := cmdx.New(nil)
+	det := &detect.Detector{Executor: runner, LookPath: env, HomeDir: home,
+		Timeout: detect.ProbeTimeout, Concurrency: 2}
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	plan, err := eng.PlanTools(context.Background(), []string{"gradle"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	report, err := eng.Apply(context.Background(), plan, OpInstall)
+	if err != nil {
+		t.Fatalf("Apply: %v (steps=%+v)", err, report.Steps)
+	}
+	if report.Steps[0].Status != StepDone {
+		t.Fatalf("step = %+v", report.Steps[0])
+	}
+	// 软链里的 {{version}} 必须渲染过，否则这里会指向一个字面量目录名。
+	link := filepath.Join(dest, "gradle")
+	if target, err := os.Readlink(link); err != nil || !strings.Contains(target, "gradle-"+ver) {
+		t.Fatalf("软链 = %q / %v，期望含 gradle-%s", target, err, ver)
+	}
+	res, err := runner.Run(context.Background(), cmdx.Command{Name: link, Args: []string{"--version"}})
+	if err != nil || !strings.Contains(res.Stdout, ver) {
+		t.Fatalf("软链出来的二进制不可用：%v / %q", err, res.Stdout)
+	}
+	// 目录型发布物必须整包解开（lib/gradle.jar 也在），而不是只抽一个文件出来。
+	if _, err := os.Stat(filepath.Join(share, "gradle-"+ver, "lib", "gradle.jar")); err != nil {
+		t.Errorf("extract 没把整包解开：%v", err)
+	}
+}

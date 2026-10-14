@@ -1347,3 +1347,90 @@ tools:
       - via: pipx
         when: {has: [pipx]}
         params: {package: aider-chat}
+
+  # ────────── 直链安装（产物不在 GitHub Release 上，`params.url`） ──────────
+  #
+  # 这三家的官方产物都不在 GitHub Release：kubectl 在 dl.k8s.io、helm 在 get.helm.sh
+  # （GitHub Release 里只有 `.asc` 签名）、gradle 在 services.gradle.org。
+  # 直链模式同样**必须有校验和**：依次找 `<url>.sha256` 与 `<url>.sha256sum`
+  # （kubectl/gradle 是前者，helm 是后者），拿不到就中止。
+
+  - id: kubectl
+    name: kubectl
+    stack: infra
+    kind: cli
+    description: Kubernetes 命令行（服务器跟着上游稳定版走）
+    homepage: https://kubernetes.io/docs/reference/kubectl/
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    # 版本从 stable.txt 读（内容是 `v1.37.1`），因此 URL 里要自己写 v。
+    verify: {command: kubectl, version_args: [version, --client], version_regex: 'Client Version: v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      # 注意：Homebrew 的 formula 叫 kubernetes-cli，没有叫 kubectl 的 formula。
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: kubernetes-cli}
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          url: "https://dl.k8s.io/release/v{{version}}/bin/{{os}}/{{arch}}/kubectl"
+          version_source: "https://dl.k8s.io/release/stable.txt"
+          binary: kubectl
+          dest: "~/.local/bin"
+
+  - id: helm
+    name: Helm
+    stack: infra
+    kind: cli
+    description: Kubernetes 包管理（直链安装；GitHub Release 里只有签名）
+    homepage: https://helm.sh
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: helm, version_args: [version, --short], version_regex: 'v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: helm}
+      # 版本来源用 GitHub 的 releases/latest（tag 规范，就是 v4.3.0），
+      # 产物走 get.helm.sh；校验和是 `<url>.sha256sum`（内容带文件名）。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: helm/helm
+          url: "https://get.helm.sh/helm-v{{version}}-{{os}}-{{arch}}.tar.gz"
+          strip_components: 1
+          binary: helm
+          dest: "~/.local/bin"
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [helm]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [helm]}
+
+  - id: gradle
+    name: Gradle
+    stack: java
+    kind: devdep
+    description: JVM 构建工具（整包解压到 ~/.local/share，再软链出 gradle）
+    homepage: https://gradle.org
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: gradle, version_args: [--version], version_regex: 'Gradle (?P<v>\d+\.\d+(?:\.\d+)?)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: gradle}
+      # 版本从官方 JSON 读（第一个数字就是 version）；产物是 zip 整包，
+      # 解压后是 gradle-<版本>/，所以 dest 是数据目录 + symlink 指向 PATH。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          url: "https://services.gradle.org/distributions/gradle-{{version}}-bin.zip"
+          version_source: "https://services.gradle.org/versions/current"
+          extract: true
+          dest: "~/.local/share/gradle"
+          binary: gradle
+          symlink:
+            from: "~/.local/share/gradle/gradle-{{version}}/bin/gradle"
+            to: "~/.local/bin/gradle"

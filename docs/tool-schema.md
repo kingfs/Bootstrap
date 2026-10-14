@@ -262,7 +262,31 @@ params:
 - **校验和是硬要求**：候选链为 `checksums.txt` → `sha256sum.txt` → `checksums.sha256` →
   `SHA256SUMS` → `<asset>.sha256`，都拿不到就**中止**（`params.sha256` 可以完全免联网校验）。
   因此清单里不要给"不发布校验和的仓库"写 `via: release`。
-- `asset` 支持模板；`symlink`/`symlinks` 里的 `to` 只是软链目标，真实文件仍在 `dest`。
+- `asset` 支持模板；`symlink`/`symlinks` 里的 `from`/`to` **同样支持模板**
+  （gradle 要写 `~/.local/share/gradle/gradle-{{version}}/bin/gradle`）。
+- 没写 `binary` 时：`repo` 模式取仓库名，直链模式取产物名去掉归档后缀。
+
+#### 直链模式（`params.url`）
+
+产物不在 GitHub Release 上（或 Release 里只有签名）时改用直链，**校验和同样是硬要求**：
+
+```yaml
+params:
+  url: "https://dl.k8s.io/release/v{{version}}/bin/{{os}}/{{arch}}/kubectl"
+  version_source: "https://dl.k8s.io/release/stable.txt"   # 固定版本、或能读出最新版本的 URL
+  binary: kubectl
+  dest: "~/.local/bin"
+```
+
+- 直链模式下**不要**写 `asset`（产物名从 URL 推出来）。
+- **版本来源必须能确定**：`version_source` 写固定版本（`v9.9.9`）或一个 URL；
+  或者给 `params.repo`，引擎去问 GitHub 的 `releases/latest`
+  （helm：Release 里只有 `.asc` 签名，但 tag 仍然是最可靠的版本来源）。
+- 校验和按 URL 的**兄弟文件**找：`<url>.sha256` → `<url>.sha256sum`；
+  `checksum_file` 给绝对 URL 就用它，给名字（如 `sha256sum`）就当作 `<url>.<名字>`。
+  文件内容两种都认：带文件名的列表（`<hash>  <名字>`）与只有裸哈希。
+- 干跑（`bs tool plan`）**不联网**：`version_source` 是 URL 时也用 `<latest>` 占位，
+  真正的版本解析发生在 Apply。
 
 ### `script`：执行官方安装脚本
 
@@ -308,7 +332,8 @@ params:
 ## 9. 写清单的几条纪律
 
 1. **优先交给已有的包管理器**：能 `brew`/`apt`/`npm`/`cargo` 装就不要下官方二进制。
-2. **`via: release` 只在确实有校验和时使用**，没有就走管理器；宁可版本旧一点。
+2. **`via: release` 只在确实有校验和时使用**（直链模式也一样：`<url>.sha256`/`.sha256sum`），
+   没有就走管理器；宁可版本旧一点。
 3. **不要在用户看不到的地方用 sudo**：系统包管理器会被护栏拦住，需要时显式 `allow_system`。
 4. **一条工具一条 id**，不要用 id 表达平台差异（用 `when`）。
 5. **改完跑 `bs tool manifest validate`**（含 `--os` 交叉校验），再看 `bs tool plan`。

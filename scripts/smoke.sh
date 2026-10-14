@@ -383,6 +383,13 @@ out="$("$BIN" tool plan --profile rust-dev 2>&1)"
 assert_contains "rust-dev profile 能预览" "cargo-nextest" "$out"
 out="$("$BIN" tool plan --profile containers 2>&1)"
 assert_contains "containers profile 里的 release 条目能预览" "lazydocker" "$out"
+# 直链模式（params.url）：kubectl 版本来自 stable.txt，gradle 是整包 + 软链
+out="$("$BIN" tool plan --profile infra 2>&1)"
+assert_contains "infra profile 含 kubectl（直链）" "kubectl" "$out"
+out="$("$BIN" tool plan --profile java 2>&1)"
+assert_contains "java profile 含 gradle（直链整包）" "gradle" "$out"
+out="$("$BIN" tool plan kubectl --dry-run 2>&1)"
+assert_contains "直链干跑显示占位版本（不联网解析）" "<latest>" "$out"
 
 step "工具升级（--all）"
 # 造一台"装了旧版 go"的机器：verify.min_version 要求 1.22，假二进制报 1.20.1。

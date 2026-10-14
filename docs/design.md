@@ -638,14 +638,24 @@ npm/crates/PyPI 查各自 registry；`release` 类查 GitHub Release 的**资产
 | `sccache` | `sccache-v<v>-<triple>.tar.gz` | `<资产>.sha256`（裸哈希） | 1（有外层目录） |
 | `dive` | `dive_<v>_<os>_<arch>.tar.gz` | `dive_<v>_checksums.txt`（名字带版本 → 显式 `checksum_file`） | 无 |
 
-两个**已知缺口**（写在这里免得有人以为漏了）：
+**直链模式**：`kubectl`（dl.k8s.io）、`helm`（get.helm.sh；GitHub Release 里只有 `.asc`
+签名）、`gradle`（services.gradle.org）的产物都不在 GitHub Release 上。为此 `release`
+新增了 `params.url`：产物地址由清单写全（支持模板），产物名从 URL 推出，
+校验和按 URL 的**兄弟文件**找（`<url>.sha256` → `<url>.sha256sum`，也可用
+`checksum_file` 指定）——**校验和仍然是硬要求**，拿不到就中止（§16）。
+版本来源三种都可：固定版本、能读出最新版本的 URL（kubectl 的 `stable.txt`、
+gradle 的 `versions/current`）、或 `params.repo` 走 GitHub `releases/latest`（helm）。
+干跑一律不联网（`version_source` 是 URL 时也用 `<latest>` 占位）。
+三条都真装过：kubectl 1.37.1 / helm 4.3.0 / gradle 9.8.1（gradle 顺带验证了
+`extract` 整包解压 + `symlink.from` 里的 `{{version}}` 渲染）。
+
+剩下的**已知缺口**（写在这里免得有人以为漏了）：
 
 1. `rust-analyzer` 的官方 Release 不发布任何校验和文件（只有 `.gz`），按硬纪律不能用
    `via: release`；Ubuntu/Debian 也没有包，那边先用 `rustup component add rust-analyzer`。
-2. `kubectl`（dl.k8s.io）、`helm`（get.helm.sh，GitHub Release 里只有 `.asc` 签名）、
-   `gradle`（services.gradle.org）都不在 GitHub Release 上，或没有可解析的校验和文件；
-   `via: release` 目前只认 `repo`+`asset`。要给它们一条**可校验**的安装路径，
-   得让 `release` 支持直链（`params.url` + `<url>.sha256`/`.sha256sum`），留作下一步。
+2. `kustomize` 的 tag 带前缀（`kustomize/v5.8.3`）且校验和放在共享的 `checksums.txt` 里，
+   现有模板过滤器表达不了"从 tag 里去掉前缀"；先用 brew/发行版包，等真需要时再加
+   一个 `trimprefix` 过滤器 + "同目录校验和文件"支持。
 
 ### 6.5 校验（`bs tool manifest validate`，CI 中必跑）
 

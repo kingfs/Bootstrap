@@ -167,6 +167,8 @@ make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian �
 2. **`via: release` 只在仓库确实发布校验和时使用**（实测：voidint/g 用 `sha256sum.txt`、
    lazygit 用 `checksums.txt`、k9s 用 `checksums.sha256`、uv/ruff/ripgrep 每个产物配 `<asset>.sha256`；
    fnm/bat/fzf 的 tar 包**没有**校验和）。拿不到校验和就中止，因此这类工具走管理器。
+   产物不在 GitHub Release 上时用**直链模式**（`params.url` + `<url>.sha256`/`.sha256sum`），
+   校验和同样是硬要求；细节见 `docs/tool-schema.md` 的"直链模式"。
    内置清单里**不使用** `via: script`（官方脚本没有稳定哈希，用 `insecure` 等于放弃校验）。
 3. **不静默提权**：系统包管理器会被护栏拦住（默认只允许 `devdep`/`service`/`cli`），
    确实需要时显式写 `params.allow_system: true` 并在注释里说明理由。
@@ -183,8 +185,9 @@ make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian �
 - **Windows 工具清单尚未编写**（`tools/windows.yaml` 为空，ADR-0014）：只保证能加载、不报错。
 - `tools/common.yaml` 里两个**故意留着的缺口**（别当成漏写，见 design §6.4）：
   `rust-analyzer` 在 Ubuntu/Debian 上暂无方式（官方 Release 不发布校验和，也不能用
-  `via: release`；那边先用 `rustup component add rust-analyzer`）；`kubectl`/`helm`/`gradle`
-  的官方产物不在 GitHub Release 上（或只有 `.asc` 签名），要等 `release` 支持 `params.url` 直链。
+  `via: release`；那边先用 `rustup component add rust-analyzer`）；`kustomize` 的 tag 带前缀
+  （`kustomize/v5.8.3`）且校验和是共享的 `checksums.txt`，得先有 `trimprefix` 过滤器与
+  "同目录校验和"支持。`kubectl`/`helm`/`gradle` 已用直链模式（`params.url`）解决。
 - 新增/修改清单条目时，**包名与资产名必须实测**（apt/Arch/Fedora 的包名、brew formula、
   npm/crates/PyPI 包名、GitHub Release 资产名与校验和文件、归档有没有外层目录），
   不要照抄记忆里的名字——design §6.4 记了这一轮用到的查询手段。

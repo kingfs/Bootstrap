@@ -100,12 +100,32 @@ func newReleaseInstaller() *releaseInstaller { return &releaseInstaller{} }
 func (r *releaseInstaller) Name() string { return "release" }
 
 // Validate 实现 ValidateParams。
+//
+// 两种产物来源二选一：
+//   - `params.repo` + `params.asset`：GitHub Release 资产（绝大多数工具走这条）；
+//   - `params.url`：直链（产物不在 GitHub Release 上，或 Release 里只有签名）。
+//
+// 直链模式的**版本来源**必须能确定：`params.version_source` 写固定版本或一个能读出
+// 版本的 URL（kubectl 的 `stable.txt`、gradle 的 `versions/current`），
+// 或者给 `params.repo` 让引擎去问 GitHub 的 releases/latest（helm：Release 里只有
+// `.asc` 签名，但 tag 仍然是最可靠的版本来源）。两者都没有就报错——
+// 没有版本就没法渲染 `{{version}}`，也没法判断"当前是不是最新"。
 func (r *releaseInstaller) Validate(p manifest.Params) error {
-	if strings.TrimSpace(p.Repo) == "" {
-		return fmt.Errorf("via=release requires params.repo (owner/name)")
-	}
-	if strings.TrimSpace(p.Asset) == "" {
-		return fmt.Errorf("via=release requires params.asset (a template like g{{version}}-{{os}}.tar.gz)")
+	hasURL := strings.TrimSpace(p.URL) != ""
+	hasRepo := strings.TrimSpace(p.Repo) != ""
+	hasAsset := strings.TrimSpace(p.Asset) != ""
+	switch {
+	case hasURL && hasAsset:
+		return fmt.Errorf("via=release: params.asset cannot be combined with params.url (the file name comes from the URL)")
+	case hasURL:
+		src := strings.TrimSpace(p.VersionSource)
+		if (src == "" || src == "latest-release") && !hasRepo {
+			return fmt.Errorf("via=release: params.url needs params.version_source " +
+				"(a fixed version, or a URL to read the version from) or params.repo for releases/latest")
+		}
+	case hasRepo && hasAsset:
+	default:
+		return fmt.Errorf("via=release requires params.repo+params.asset, or params.url")
 	}
 	if strings.TrimSpace(p.Dest) == "" {
 		return fmt.Errorf("via=release requires params.dest")
@@ -121,6 +141,101 @@ func (r *releaseInstaller) Validate(p manifest.Params) error {
 // Available 实现 Installer：release 只需要网络能力。
 func (r *releaseInstaller) Available(context.Context, ExecEnv, manifest.Tool, manifest.Method) bool {
 	return true
+}
+
+// releaseSource 是一次 release 安装的产物来源。
+//
+// 两种形态共用后面的下载/解压/复核逻辑，差别只在"去哪儿拿产物、去哪儿拿校验和"：
+// repo 模式是 GitHub Release 资产，直链模式是清单里写死的 URL（kubectl/helm/gradle 这类
+// 官方产物不在 GitHub Release 上、或 Release 里只有签名）。
+type releaseSource struct {
+	repo  string
+	tag   string
+	asset string
+	url   string
+}
+
+// direct 表示这是直链模式（已渲染成完整 URL）。
+func (s releaseSource) direct() bool { return s.url != "" }
+
+// downloadURL 返回产物下载地址。
+func (s releaseSource) downloadURL() string {
+	if s.direct() {
+		return s.url
+	}
+	return ghrelease.AssetURL(s.repo, s.tag, s.asset)
+}
+
+// label 是给用户看的来源名：直链只显示 host/最后一段，免得摘要长到看不清 dest。
+func (s releaseSource) label() string {
+	if s.direct() {
+		return shortURL(s.url)
+	}
+	return s.repo
+}
+
+// assetFromURL 从直链推出产物文件名：去掉查询串与末尾斜杠，取最后一段。
+//
+// 只有 host（`https://x/`）时返回空——那不是产物名，交给调用方报错，
+// 免得下载缓存里出现一个叫 "x" 的文件。
+func assetFromURL(raw string) string {
+	s := raw
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSuffix(s, "/")
+	i := strings.LastIndex(s, "/")
+	if i < 0 {
+		return ""
+	}
+	if scheme := strings.Index(s, "//"); scheme >= 0 && i == scheme+1 {
+		return ""
+	}
+	name := s[i+1:]
+	if name == "." || name == ".." {
+		return ""
+	}
+	return name
+}
+
+// defaultBinary 在清单没写 params.binary 时猜一个可执行文件名。
+//
+// repo 模式沿用"仓库名就是二进制名"的老约定；直链模式没有仓库名可用，
+// 只能从产物名去掉归档后缀（kubectl → kubectl，gradle-9.0-bin.zip → gradle-9.0-bin，
+// 后者必须显式写 params.binary）。
+func defaultBinary(src releaseSource) string {
+	if !src.direct() {
+		return filepath.Base(strings.Trim(src.repo, "/"))
+	}
+	name := src.asset
+	for _, suffix := range []string{".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar.zst", ".zip", ".gz", ".xz", ".bz2"} {
+		if trimmed := strings.TrimSuffix(name, suffix); trimmed != name {
+			return trimmed
+		}
+	}
+	return name
+}
+
+// renderSymlinks 渲染软链的 from/to。
+//
+// 目录型发布物（gradle 解压出 `gradle-9.0/`）要在路径里插 `{{version}}`，
+// 用的是与 asset/dest 同一份 RenderData，规则一致才不会出现"dest 渲染了、symlink 没渲染"。
+func renderSymlinks(p manifest.Params, data RenderData) ([]manifest.Symlink, error) {
+	in := releaseSymlinks(p)
+	out := make([]manifest.Symlink, 0, len(in))
+	for _, l := range in {
+		from, err := Render(l.From, data)
+		if err != nil {
+			return nil, fmt.Errorf("params.symlink.from: %w", err)
+		}
+		to, err := Render(l.To, data)
+		if err != nil {
+			return nil, fmt.Errorf("params.symlink.to: %w", err)
+		}
+		l.From, l.To = from, to
+		out = append(out, l)
+	}
+	return out, nil
 }
 
 type releasePlan struct {
@@ -145,21 +260,41 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 	}
 
 	data := RenderData{Version: version, Tag: tag, OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}
-	asset, err := Render(m.Params.Asset, data)
-	if err != nil {
-		return Action{}, fmt.Errorf("tool %q: params.asset: %w", t.ID, err)
+	src := releaseSource{repo: m.Params.Repo, tag: tag}
+	if direct := strings.TrimSpace(m.Params.URL); direct != "" {
+		// 直链模式：URL 里的 `{{version}}` 由 installer 在版本确定后渲染，
+		// 产物名从 URL 推出来（下载缓存的文件名、校验和里的条目名都用它）。
+		u, rerr := Render(direct, data)
+		if rerr != nil {
+			return Action{}, fmt.Errorf("tool %q: params.url: %w", t.ID, rerr)
+		}
+		src.url, src.asset = u, assetFromURL(u)
+		if src.asset == "" {
+			return Action{}, fmt.Errorf("tool %q: params.url %q has no file name", t.ID, u)
+		}
+	} else {
+		asset, aerr := Render(m.Params.Asset, data)
+		if aerr != nil {
+			return Action{}, fmt.Errorf("tool %q: params.asset: %w", t.ID, aerr)
+		}
+		src.asset = asset
 	}
-	url := ghrelease.AssetURL(m.Params.Repo, tag, asset)
+	asset := src.asset
+	url := src.downloadURL()
 	dest := fsx.ExpandPath(renderOr(m.Params.Dest, data), e.HomeDir())
 
-	sha, err := r.checksumFor(ctx, e, t, m, tag, asset)
+	sha, err := r.checksumFor(ctx, e, t, m, src)
 	if err != nil {
 		return Action{}, err
+	}
+	symlinks, err := renderSymlinks(m.Params, data)
+	if err != nil {
+		return Action{}, fmt.Errorf("tool %q: %w", t.ID, err)
 	}
 
 	binary := m.Params.Binary
 	if binary == "" {
-		binary = filepath.Base(strings.Trim(m.Params.Repo, "/"))
+		binary = defaultBinary(src)
 	}
 	plan := releasePlan{
 		// 归档放在跨次运行稳定的下载缓存里：断了能续，装过了能直接复用（见 httpx.Download）。
@@ -167,16 +302,16 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 		Dest:     dest,
 		Strip:    m.Params.StripComponents,
 		Binary:   binary,
-		Symlinks: releaseSymlinks(m.Params),
+		Symlinks: symlinks,
 		Archive:  archive.IsArchive(asset),
 		Tree:     m.Params.Extract != nil && *m.Params.Extract,
 	}
 	if plan.Tree && !plan.Archive {
 		return Action{}, fmt.Errorf("tool %q: params.extract needs an archive asset, got %q", t.ID, asset)
 	}
-	summary := fmt.Sprintf("release %s@%s → %s", m.Params.Repo, tag, dest)
+	summary := fmt.Sprintf("release %s@%s → %s", src.label(), tag, dest)
 	if plan.Tree {
-		summary = fmt.Sprintf("release %s@%s 解压到 %s", m.Params.Repo, tag, dest)
+		summary = fmt.Sprintf("release %s@%s 解压到 %s", src.label(), tag, dest)
 	}
 	return Action{
 		ToolID: t.ID, Via: "release", Op: op,
@@ -191,19 +326,23 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 //
 // 顺序：显式固化 → 显式文件名 → 常见文件名 → `<asset>.sha256`。
 // 拿不到校验和就报错（AGENTS.md §8.3：宁可失败，也不装一个来路不明的东西）。
-func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, tag, asset string) (string, error) {
+func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, src releaseSource) (string, error) {
 	if m.Params.Checksum == "none" {
 		return "", nil
 	}
 	if p := strings.TrimSpace(m.Params.SHA256); p != "" {
 		return validateSHA256(t.ID, p)
 	}
-	if tag == latestPlaceholder {
+	if src.tag == latestPlaceholder {
 		// 干跑且无法解析最新版本时，不做校验和查询，避免预览阶段报错。
 		return "", nil
 	}
-	data := RenderData{Version: strings.TrimPrefix(tag, "v"), Tag: tag, OS: e.OS(), Arch: e.Arch(),
+	data := RenderData{Version: strings.TrimPrefix(src.tag, "v"), Tag: src.tag, OS: e.OS(), Arch: e.Arch(),
 		Versions: e.Versions()}
+	if src.direct() {
+		return r.checksumForURL(ctx, e, t, m, src, data)
+	}
+	asset, tag := src.asset, src.tag
 	var candidates []string
 	if m.Params.ChecksumFile != "" {
 		name, rerr := Render(m.Params.ChecksumFile, data)
@@ -241,6 +380,50 @@ func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifes
 	return "", fmt.Errorf("tool %q: cannot find a sha256 for %s in %s@%s (tried %s); "+
 		"set params.checksum_file, params.sha256, or params.checksum: none to opt out",
 		t.ID, asset, m.Params.Repo, tag, strings.Join(tried, ", "))
+}
+
+// checksumForURL 处理直链产物的 sha256。
+//
+// 直链没有 GitHub 的"资产名"概念，因此按 URL 的兄弟文件找：
+//   - `params.checksum_file` 给了绝对 URL 就用它；给的是名字（如 `sha256sum`）
+//     就当作 `<url>.<名字>`（helm 的 `helm-v4.3.0-linux-arm64.tar.gz.sha256sum` 正是这个形态）；
+//   - 没给就依次试 `<url>.sha256`（kubectl、gradle）与 `<url>.sha256sum`（helm）。
+//
+// 解析两种内容：带文件名的列表，以及只有一个裸哈希的文件。
+func (r *releaseInstaller) checksumForURL(ctx context.Context, e ExecEnv, t manifest.Tool,
+	m manifest.Method, src releaseSource, data RenderData) (string, error) {
+	var candidates []string
+	if name := strings.TrimSpace(m.Params.ChecksumFile); name != "" {
+		n, rerr := Render(name, data)
+		if rerr != nil {
+			return "", fmt.Errorf("tool %q: params.checksum_file: %w", t.ID, rerr)
+		}
+		if strings.Contains(n, "://") {
+			candidates = append(candidates, n)
+		} else {
+			candidates = append(candidates, src.url+"."+strings.TrimPrefix(n, "."))
+		}
+	} else {
+		candidates = append(candidates, src.url+".sha256", src.url+".sha256sum")
+	}
+	var tried []string
+	for _, u := range candidates {
+		text, ferr := e.FetchText(ctx, u)
+		if ferr != nil {
+			tried = append(tried, fmt.Sprintf("%s (fetch failed: %v)", u, firstLineOf(ferr.Error())))
+			continue
+		}
+		if sha, cerr := ghrelease.ChecksumFor(text, src.asset); cerr == nil {
+			return validateSHA256(t.ID, sha)
+		}
+		if sha, ok := ghrelease.BareChecksum(text); ok {
+			return validateSHA256(t.ID, sha)
+		}
+		tried = append(tried, u+"(无 "+src.asset+" 条目)")
+	}
+	return "", fmt.Errorf("tool %q: cannot find a sha256 for %s next to %s (tried %s); "+
+		"set params.checksum_file, params.sha256, or params.checksum: none to opt out",
+		t.ID, src.asset, shortURL(src.url), strings.Join(tried, ", "))
 }
 
 func validateSHA256(toolID, sha string) (string, error) {
@@ -338,6 +521,10 @@ func (r *releaseInstaller) resolveVersion(ctx context.Context, e ExecEnv, m mani
 	src := strings.TrimSpace(m.Params.VersionSource)
 	switch {
 	case src == "" || src == "latest-release":
+		if strings.TrimSpace(m.Params.Repo) == "" {
+			return "", "", fmt.Errorf("params.version_source is empty and params.repo is missing: " +
+				"cannot tell which version to use")
+		}
 		if e.DryRun() {
 			// 预览阶段不打网络：给出占位符，真正的解析在 Apply 时发生。
 			if v := m.Params.Version; v != "" {
@@ -351,6 +538,10 @@ func (r *releaseInstaller) resolveVersion(ctx context.Context, e ExecEnv, m mani
 		}
 		return normalizeTag(t)
 	case strings.Contains(src, "://"):
+		if e.DryRun() {
+			// 预览阶段不联网（`bs tool plan` 的承诺）：版本等 Apply 时再读。
+			return latestPlaceholder, latestPlaceholder, nil
+		}
 		text, ferr := e.FetchText(ctx, src)
 		if ferr != nil {
 			return "", "", fmt.Errorf("read version from %s: %w", src, ferr)

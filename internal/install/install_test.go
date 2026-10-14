@@ -669,6 +669,21 @@ func TestValidateParams(t *testing.T) {
 		{"release without dest", "release", manifest.Params{Repo: "a/b", Asset: "x.tgz"}, "params.dest"},
 		{"release bad checksum", "release", manifest.Params{Repo: "a/b", Asset: "x", Dest: "~/bin", Checksum: "md5"}, "checksum"},
 		{"release ok", "release", manifest.Params{Repo: "a/b", Asset: "x", Dest: "~/bin"}, ""},
+		{"release url with asset", "release",
+			manifest.Params{URL: "https://x/y", Asset: "x", Dest: "~/bin", VersionSource: "1.0"}, "cannot be combined"},
+		{"release url without version source", "release",
+			manifest.Params{URL: "https://x/y", Dest: "~/bin"}, "params.version_source"},
+		{"release url with repo as version source", "release",
+			manifest.Params{URL: "https://x/y-{{version}}.tgz", Repo: "a/b", Dest: "~/bin"}, ""},
+		{"release url with latest-release", "release",
+			manifest.Params{URL: "https://x/y", Dest: "~/bin", VersionSource: "latest-release"}, "params.version_source"},
+		{"release url without dest", "release",
+			manifest.Params{URL: "https://x/y", VersionSource: "v1.0.0"}, "params.dest"},
+		{"release url with fixed version", "release",
+			manifest.Params{URL: "https://x/y-{{version}}.zip", Dest: "~/bin", VersionSource: "v1.0.0"}, ""},
+		{"release url with version url", "release",
+			manifest.Params{URL: "https://x/y-{{version}}", Dest: "~/bin",
+				VersionSource: "https://x/stable.txt"}, ""},
 		{"source without repo", "source", manifest.Params{}, "params.repo"},
 		{"source without commands", "source", manifest.Params{Repo: "a/b"}, "params.build"},
 		{"manager without action", "manager", manifest.Params{Manager: "g"}, "params.action"},
@@ -880,5 +895,38 @@ func TestOSEnvDryRunPrunesNothing(t *testing.T) {
 	env.pruneDownloadCache()
 	if _, err := os.Stat(stale); err != nil {
 		t.Errorf("干跑不该删除任何文件：%v", err)
+	}
+}
+
+// TestReleaseURLHelpers：直链模式的两个推导函数（产物名、默认二进制名）。
+func TestReleaseURLHelpers(t *testing.T) {
+	assets := []struct{ url, asset string }{
+		{"https://dl.k8s.io/release/v1.34.1/bin/linux/arm64/kubectl", "kubectl"},
+		{"https://get.helm.sh/helm-v4.3.0-linux-arm64.tar.gz", "helm-v4.3.0-linux-arm64.tar.gz"},
+		// 签名 URL 常见：查询串不能进下载缓存的文件名
+		{"https://x/y/tool.zip?X-Amz-Signature=abc#frag", "tool.zip"},
+		{"https://x/y/", "y"},
+		{"https://x/y", "y"},
+		{"https://x/", ""},
+	}
+	for _, tc := range assets {
+		if got := assetFromURL(tc.url); got != tc.asset {
+			t.Errorf("assetFromURL(%q) = %q, want %q", tc.url, got, tc.asset)
+		}
+	}
+
+	binaries := []struct {
+		src  releaseSource
+		want string
+	}{
+		{releaseSource{repo: "astral-sh/uv"}, "uv"},
+		{releaseSource{url: "https://x/kubectl", asset: "kubectl"}, "kubectl"},
+		{releaseSource{url: "https://x/gradle-9.0-bin.zip", asset: "gradle-9.0-bin.zip"}, "gradle-9.0-bin"},
+		{releaseSource{url: "https://x/tool.tar.gz", asset: "tool.tar.gz"}, "tool"},
+	}
+	for _, tc := range binaries {
+		if got := defaultBinary(tc.src); got != tc.want {
+			t.Errorf("defaultBinary(%+v) = %q, want %q", tc.src, got, tc.want)
+		}
 	}
 }
