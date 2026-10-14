@@ -238,7 +238,7 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		case OpInstall:
 			if d, ok := detections[t.ID]; ok && d.Status == detect.StatusInstalled {
 				step.Status = StepSkip
-				step.Reason = "已安装：" + d.Label()
+				step.Reason = d.Label()
 				plan.Steps = append(plan.Steps, step)
 				plan.Order = append(plan.Order, t.ID)
 				continue

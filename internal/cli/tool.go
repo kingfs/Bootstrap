@@ -753,6 +753,15 @@ func (rt *Runtime) interactive() bool {
 
 // renderPlan 渲染计划。banner 是首行提示（空表示不提示）——
 // 由调用方说明"为什么不会执行"，比在渲染函数里猜调用场景更清楚。
+// summarizeList 把一长串 id 压成一行：超过 limit 个就只列前 limit 个，
+// 剩下的用"等 N 个"带过——收尾提示不该比表格还长。
+func summarizeList(ids []string, limit int) string {
+	if len(ids) <= limit {
+		return strings.Join(ids, ", ")
+	}
+	return strings.Join(ids[:limit], ", ") + fmt.Sprintf(" 等 %d 个", len(ids))
+}
+
 func (rt *Runtime) renderPlan(plan install.Plan, banner string) error {
 	if rt.Opts.JSON {
 		return rt.emit(plan)
@@ -768,15 +777,19 @@ func (rt *Runtime) renderPlan(plan install.Plan, banner string) error {
 	w := rt.newTable()
 	fmt.Fprintln(w, "工具\t动作\t方式\t说明")
 	planned := 0
+	// "无需处理"的行（已装好、或卸载时本来就没装）不占表格：新机器上真正要看的是
+	// "要装什么"。名字不丢——收尾那行把它们列出来，-v 则照旧逐行展开。
+	var noop []string
 	for _, s := range plan.Steps {
 		label := string(s.Status)
 		switch s.Status {
-		case install.StepInstall:
+		case install.StepInstall, install.StepUpgrade, install.StepUninstall:
 			planned++
-		case install.StepUpgrade:
-			planned++
-		case install.StepUninstall:
-			planned++
+		case install.StepSkip:
+			noop = append(noop, s.ToolID)
+			if rt.Opts.Verbose == 0 {
+				continue
+			}
 		}
 		note := s.Summary
 		if note == "" {
@@ -801,7 +814,14 @@ func (rt *Runtime) renderPlan(plan install.Plan, banner string) error {
 	for _, p := range plan.Problems {
 		fmt.Fprintf(rt.errOut(), "提示：%s\n", p)
 	}
-	fmt.Fprintf(out, "共 %d 个工具，其中 %d 个需要处理。\n", len(plan.Steps), planned)
+	fmt.Fprintf(out, "共 %d 个工具：%d 个需要处理", len(plan.Steps), planned)
+	if len(noop) > 0 {
+		fmt.Fprintf(out, "，%d 个无需处理", len(noop))
+		if rt.Opts.Verbose == 0 {
+			fmt.Fprintf(out, "（%s）", summarizeList(noop, 12))
+		}
+	}
+	fmt.Fprintln(out, "。")
 	return nil
 }
 
@@ -812,6 +832,7 @@ func (rt *Runtime) renderReport(report install.Report, op install.Op) error {
 			fb.ToolID, fb.From, fb.To, firstLine(fb.Reason))
 	}
 	var ok, skipped, failed, unsupported int
+	var skipNames []string
 	w := rt.newTable()
 	fmt.Fprintln(w, "工具\t结果\t方式\t说明")
 	for _, s := range report.Steps {
@@ -823,6 +844,11 @@ func (rt *Runtime) renderReport(report install.Report, op install.Op) error {
 		case install.StepSkip:
 			label = "跳过"
 			skipped++
+			skipNames = append(skipNames, s.ToolID)
+			if rt.Opts.Verbose == 0 {
+				// 这些在计划表里已经看过一遍了，别再占一行（-v 才逐行展开）。
+				continue
+			}
 		case install.StepFailed:
 			label = "失败"
 			failed++
@@ -854,6 +880,9 @@ func (rt *Runtime) renderReport(report install.Report, op install.Op) error {
 		fmt.Fprintf(out, "，不支持 %d", unsupported)
 	}
 	fmt.Fprintf(out, "（耗时 %s）\n", report.Elapsed.Round(1e6))
+	if len(skipNames) > 0 && rt.Opts.Verbose == 0 {
+		fmt.Fprintf(out, "跳过的 %d 个：%s\n", len(skipNames), summarizeList(skipNames, 12))
+	}
 	if failed > 0 {
 		// 失败时把日志位置说清楚：apt/cargo 的输出很长，只在终端刷一遍是不够的。
 		for _, s := range report.Steps {

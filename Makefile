@@ -116,8 +116,10 @@ smoke: build
 # 命令本身都是 --dry-run，读写只发生在 .cache/pty 里。
 .PHONY: pty
 pty: build
+	@# 干跑下只打计划表（结果表是同一份内容的翻版，已不再重复），所以断言"计划算出来了"。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
-		--expect-code 0 --expect-text "安装：完成 0" \
+		--expect-code 0 --expect-text "（dry-run：以下操作都不会被执行）" \
+		--expect-text "个需要处理" \
 		--keys n DOWN ENTER -- init --dry-run
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已取消，未做任何修改" \
