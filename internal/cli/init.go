@@ -9,7 +9,9 @@ import (
 
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/install"
+	"github.com/kingfs/Bootstrap/internal/shellsnip"
 	"github.com/kingfs/Bootstrap/internal/ui"
+	"github.com/kingfs/Bootstrap/pkg/fsx"
 )
 
 // initCmd 是 `bs init`：新机器上的第一条命令。
@@ -34,6 +36,8 @@ func (rt *Runtime) initCmd() *cobra.Command {
   1. 仓库根目录 —— 显示当前默认值，回车沿用，也可以直接改成别的路径；
   2. 代理地址   —— 可留空（留空＝不设置/不修改）；
   3. 装哪些工具 —— 按套装 / 只补缺失 / 手工勾选 / 先不装，随时可以选"先不装"。
+     子菜单（选套装 / 手工勾选）里按 Shift+Tab 退回上一级，纯文本界面按 b。
+  收尾把 bs 受管块写进 shell 启动文件（不再问一句），并提示 source 一下让它生效。
 
 【非交互式】关键就一条：加 --yes。
 管道、CI=1、--json、--non-interactive 这些"问不了"的环境里，没有 --yes 会以
@@ -54,7 +58,8 @@ func (rt *Runtime) initCmd() *cobra.Command {
 
 安全约定：
   * --dry-run 只展示：不写配置、不装东西、不碰 rc 文件；
-  * 非交互环境绝不阻塞：没有 --yes 就以退出码 5 结束；
+  * 非交互环境绝不阻塞：没有 --yes 就以退出码 5 结束；此时也跳过 shell 受管块
+    （没人能点头就不擅自改别人的 rc），并在收尾提示加 --yes 或 --with-shell；
   * 确认时输入 n 视为主动取消，退出码 0（什么都没做）。
 
 交互式界面相关（全局开关）：
@@ -132,7 +137,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&toolList, "tools", nil, "只处理这些工具（逗号分隔，可重复）")
 	cmd.Flags().BoolVar(&missingOnly, "missing-only", false, "只处理当前缺失的工具")
 	cmd.Flags().BoolVar(&noTools, "no-tools", false, "只做环境准备（配置/仓库根/受管块），不安装任何工具")
-	cmd.Flags().BoolVar(&withShell, "with-shell", false, "顺便把 bs 受管块写进 shell 启动文件")
+	cmd.Flags().BoolVar(&withShell, "with-shell", false, "把 bs 受管块写进 shell 启动文件（默认就写；非交互环境用它明确授权）")
 	cmd.Flags().BoolVar(&noShell, "no-shell", false, "明确不碰 shell 启动文件")
 	return cmd
 }
@@ -231,25 +236,31 @@ func (rt *Runtime) renderInitResult(res app.InitResult) error {
 		}
 	}
 	if res.Shell != nil {
+		rc := fsx.ShortenHome(res.Shell.RCFile, rt.app().Paths.HomeDir)
 		switch {
 		case !res.Shell.Changed:
-			fmt.Fprintf(rt.out(), "%s 中的受管块已是最新，未修改\n", res.Shell.RCFile)
+			fmt.Fprintf(rt.out(), "%s 里的 bs 受管块已是最新，未改动\n", rc)
 		case rt.Opts.DryRun:
-			fmt.Fprintf(rt.out(), "[dry-run] 将更新 %s（%s）\n", res.Shell.RCFile, res.Shell.DryRunDiff)
+			fmt.Fprintf(rt.out(), "[dry-run] 将更新 %s（%s）\n", rc, res.Shell.DryRunDiff)
 		default:
-			fmt.Fprintf(rt.out(), "已更新 %s（shell=%s）\n", res.Shell.RCFile, res.Shell.Shell)
-			if res.Shell.Backup != "" {
-				fmt.Fprintf(rt.out(), "备份：%s\n", res.Shell.Backup)
-			}
+			// 收尾只说两件事：写到哪了、怎么让它立刻生效。备份路径、"shell=bash" 这类
+			// 内部细节不再刷屏（`bs shell uninstall` 能整段撤掉，用不着用户自己去翻备份）。
+			fmt.Fprintf(rt.out(), "已把 bs 受管块写进 %s\n", rc)
+			fmt.Fprintf(rt.out(), "执行 `%s` 立刻生效（新开的 shell 会自动加载）\n",
+				reloadCmd(res.Shell.Shell, rc))
 		}
 	}
 	if res.Shell == nil && res.ShellSkippedReason != "" {
-		// 别把"跳过"说得像"失败"：前四步都已经成功了，只是最后一步没法自动做。
-		// 识别不出 shell 时给一条能照着敲的命令；识别出来了但不支持，就别乱指路。
-		if res.Overview.Shell == "" {
+		// 别把"跳过"说得像"失败"：前面几步都已经成功了，只是最后一步没法自动做。
+		// 按原因给不同的下一步，而不是一句放之四海而皆准的套话。
+		switch {
+		case res.ShellNeedsConsent:
+			fmt.Fprintf(rt.errOut(), "提示：%s，已跳过 shell 集成；加 --yes（或 --with-shell）就会自动写入\n",
+				res.ShellSkippedReason)
+		case res.Overview.Shell == "":
 			fmt.Fprintf(rt.errOut(), "提示：%s，已跳过 shell 集成；想接管请手动执行 `bs shell install <bash|zsh|fish|pwsh>`\n",
 				res.ShellSkippedReason)
-		} else {
+		default:
 			fmt.Fprintf(rt.errOut(), "提示：%s，已跳过 shell 集成（受管块目前只认 bash/zsh/fish/pwsh）\n",
 				res.ShellSkippedReason)
 		}
@@ -257,11 +268,22 @@ func (rt *Runtime) renderInitResult(res app.InitResult) error {
 	if res.Mode == app.SelectionNone && res.Report == nil {
 		fmt.Fprintln(rt.out(), "没有需要处理的工具，环境已经是目标状态。")
 	}
-	// 收尾提示只在"确实装了东西"时给，避免刷屏（dry-run 下什么都没装，也不该说"新装的工具"）。
-	if res.Report != nil && res.Report.Changed() {
+	// PATH 是受管块装配的：刚把受管块写进去时上面那句 source 已经说清楚了，
+	// 再说一遍 eval 只是噪音；只有"rc 没动"时才需要这条兜底。
+	if res.Report != nil && res.Report.Changed() && res.Shell == nil {
 		fmt.Fprintln(rt.errOut(), "提示：新装的工具可能需要重开 shell 或执行 `eval \"$(bs env path)\"` 才能进入 PATH。")
 	}
 	return nil
+}
+
+// reloadCmd 给出"让受管块立刻生效"的那条命令。
+//
+// POSIX/fish 是 source；PowerShell 没有 source，用点号（`.`＝dot-source）。
+func reloadCmd(shell, rc string) string {
+	if fam, err := shellsnip.FamilyForShell(shell); err == nil && fam == shellsnip.FamilyPwsh {
+		return ". " + rc
+	}
+	return "source " + rc
 }
 
 // splitList 把 --tools 的值拆成 id 列表（逗号分隔，忽略空白）。

@@ -373,11 +373,12 @@ func TestInitInteractiveProfileFlow(t *testing.T) {
 	a := initApp(t)
 	addFakeManager(t, a)
 
-	// 交互式：先选"按套装"（默认第一项），再选 tiny 套装，最后确认执行、不装 shell。
+	// 交互式：选"按套装"（默认第一项）→ 选 tiny 套装 → 确认执行。
+	// shell 受管块不再问一句，直接写（用户实测反馈：bs 自己维护的那段没必要征求同意）。
 	p := &fakePrompter{
 		interactive: true,
 		selects:     []string{"profile", "tiny"},
-		confirms:    []bool{true, false},
+		confirms:    []bool{true},
 	}
 	res, err := a.Init(context.Background(), InitOptions{Prompter: p})
 	if err != nil {
@@ -389,12 +390,19 @@ func TestInitInteractiveProfileFlow(t *testing.T) {
 	if res.Report == nil || res.Report.Failed() != nil {
 		t.Fatalf("应当装成功：%+v", res.Report)
 	}
-	if !res.SkippedShell || res.Shell != nil {
-		t.Errorf("回答了不装 shell，就不该动 rc 文件：%+v", res.Shell)
+	if res.Shell == nil || !res.Shell.Changed || res.SkippedShell {
+		t.Errorf("交互式下应当直接写入受管块：shell=%+v skipped=%v", res.Shell, res.SkippedShell)
 	}
-	// 两次 confirm：计划一次、shell 一次。
-	if got := countCalls(p.calls, "confirm"); got != 2 {
-		t.Errorf("confirm 次数 = %d, want 2（计划 + shell）", got)
+	rc, err := os.ReadFile(filepath.Join(a.Paths.HomeDir, ".bashrc"))
+	if err != nil {
+		t.Fatalf("读 rc：%v", err)
+	}
+	if !strings.Contains(string(rc), ">>> bootstrap") {
+		t.Errorf("受管块没写进 rc：\n%s", rc)
+	}
+	// 只该有一次 confirm（执行计划那一次），shell 那一步不再问。
+	if got := countCalls(p.calls, "confirm"); got != 1 {
+		t.Errorf("confirm 次数 = %d, want 1（只问执行计划）", got)
 	}
 }
 
@@ -695,6 +703,47 @@ func TestInitShellInstallOptIn(t *testing.T) {
 	}
 	if !strings.HasPrefix(res.Shell.RCFile, a.Paths.HomeDir) {
 		t.Errorf("rc 文件必须落在沙箱 home 里：%s", res.Shell.RCFile)
+	}
+}
+
+// TestInitShellConsentOnlyNeededOffTerminal：默认就直接写受管块，不需要点头；
+// 唯一"没点头就不写"的场景是非交互环境——那里没人能确认，也不该擅自改人家的 rc。
+func TestInitShellConsentOnlyNeededOffTerminal(t *testing.T) {
+	a := initApp(t)
+
+	// 非交互 + 没有 --yes：一个文件都不碰，并把原因带回去（cli 据此提示加 --yes）。
+	res, err := a.Init(context.Background(), InitOptions{Prompter: ui.NonInteractive{}, NoTools: true})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if !res.SkippedShell || !res.ShellNeedsConsent || res.Shell != nil {
+		t.Fatalf("非交互没授权时应当跳过 shell 集成：%+v", res)
+	}
+	if res.ShellSkippedReason == "" {
+		t.Error("跳过必须带原因，否则收尾提示没法说清下一步")
+	}
+	if _, err := os.Stat(filepath.Join(a.Paths.HomeDir, ".bashrc")); err == nil {
+		t.Error("没授权就不该创建 rc 文件")
+	}
+
+	// --yes ＝全自动：非交互也直接写（这是脚本里的正规授权方式）。
+	res, err = a.Init(context.Background(), InitOptions{
+		Prompter:  ui.NonInteractive{},
+		AssumeYes: true,
+		NoTools:   true,
+	})
+	if err != nil {
+		t.Fatalf("Init --yes: %v", err)
+	}
+	if res.Shell == nil || !res.Shell.Changed || res.SkippedShell {
+		t.Fatalf("--yes 下应当直接写入受管块：%+v", res)
+	}
+	data, err := os.ReadFile(filepath.Join(a.Paths.HomeDir, ".bashrc"))
+	if err != nil {
+		t.Fatalf("读 rc：%v", err)
+	}
+	if !strings.Contains(string(data), ">>> bootstrap") {
+		t.Errorf("受管块没写进 rc：\n%s", data)
 	}
 }
 

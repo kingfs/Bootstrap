@@ -178,6 +178,14 @@ pty: build
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已跳过工具安装" --expect-text "Shift+Tab 返回上一步" \
 		--keys ENTER ENTER DOWN DOWN ENTER SHIFTTAB DOWN DOWN DOWN ENTER -- init --dry-run
+	@# 收尾一步：shell 受管块**不再问一句**，直接写进 rc 并只提示"怎么让它生效"。
+	@# 这条特意不加 --dry-run（干跑会跳过写 rc）：老版本会弹确认框、回车＝默认拒绝，
+	@# 于是既不会出现"已把 bs 受管块写进"，也就暴露不了"到底写没写"的区别。
+	@# 这一跑仍无副作用：选"先不装工具"，不装任何东西，rc 落在 .cache/pty/home 里。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet --fresh \
+		--expect-code 0 --expect-text "已把 bs 受管块写进" \
+		--expect-text "source ~/.bashrc" \
+		--keys ENTER ENTER DOWN DOWN DOWN ENTER WAIT1 -- init
 	@# 破坏性操作的确认框：只按回车必须走"默认拒绝"，绝不能悄悄开装
 	@# （duf 只是"多半没装"的普通 CLI，用来触发确认框；按 n/回车都不会真的安装）
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \

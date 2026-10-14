@@ -54,6 +54,7 @@ make cross          # 交叉编译 6 个平台组合到 dist/
 ```sh
 bs init                         # 交互式全屏向导：问仓库根目录、代理地址、装哪些工具，确认后安装
                                 #（工具菜单里 Shift+Tab 返回上一级；Ctrl-C 取消）
+                                # 收尾自动把受管块写进 rc，并提示 source 一下让它生效
 bs init --dry-run               # 只看看会发生什么，一行都不写
 bs init --yes                   # 全自动：默认套装 + 现有仓库根/代理，一个问题都不问
 bs init --profile base --yes    # 指定套装
@@ -89,17 +90,18 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 
 | 命令 | 说明 |
 | --- | --- |
-| `bs init` | 新机器一把梭：打印环境概览 → **全屏向导**依次问仓库根目录、代理地址、装哪些工具（套装 / 只补缺失 / 手工勾选 / 先不装）→ 确认 → 安装，可选顺手 `shell install`。在「选一个套装」「手工挑选」里按 **Shift+Tab** 可退回上一级菜单（纯文本界面按 `b`），选错了不必 Ctrl-C 重跑 |
+| `bs init` | 新机器一把梭：打印环境概览 → **全屏向导**依次问仓库根目录、代理地址、装哪些工具（套装 / 只补缺失 / 手工勾选 / 先不装）→ 确认 → 安装 → 把 shell 受管块写进 rc（不再多问，收尾只提示 `source` 一下生效）。在「选一个套装」「手工挑选」里按 **Shift+Tab** 可退回上一级菜单（纯文本界面按 `b`），选错了不必 Ctrl-C 重跑 |
 | `bs init --yes` | 全自动：不提问、不再确认（仓库根/代理/工具都按配置来）。非交互环境下这是"必须"的那一条 |
 | `bs init --profile P` / `--tools a,b` / `--missing-only` | 明确"装什么"，不再问选择（三者互斥） |
-| `bs init --no-tools` | 只做准备：生成配置、建仓库根、可选的 shell 受管块，**一个工具都不装**（不想让 init 顺手装一堆软件时用；之后随时 `bs tool install`） |
-| `bs init --with-shell` / `--no-shell` | 是否在收尾时安装 shell 受管块（交互时问一次） |
+| `bs init --no-tools` | 只做准备：生成配置、建仓库根、装 shell 受管块，**一个工具都不装**（不想让 init 顺手装一堆软件时用；之后随时 `bs tool install`） |
+| `bs init --with-shell` / `--no-shell` | 收尾要不要写 shell 受管块（默认就写；`--no-shell` 明确不碰，`--with-shell` 用于非交互环境明确授权） |
 | `bs self-update` | 下载最新发布版、校验 sha256、自检新二进制能跑、备份旧文件后原地替换 |
 | `bs self-update --check` | 只查有没有新版本（不下载、不改动） |
 | `bs self-update --version vX.Y.Z` / `--force` / `--repo owner/repo` | 指定版本 / 同版本重装 / 换 release 来源 |
 
 `bs init` 的安全约定：配置文件不存在时直接生成默认配置（这一步不需要 `--yes`）；
-`--dry-run` 一个字节都不写；非交互环境（管道/CI/`--json`）没有 `--yes` 就以退出码 5 拒绝；
+`--dry-run` 一个字节都不写；非交互环境（管道/CI/`--json`）没有 `--yes` 就以退出码 5 拒绝
+（这时也会**跳过** shell 受管块、不擅自改别人的 rc，并提示加 `--yes`）；
 确认框里按回车＝拒绝；Ctrl-C 取消＝什么都没做（退出码 0）；
 容器里没有 `$SHELL` 时会从 `/etc/passwd`、父进程名推断，实在认不出来就跳过 shell 集成并给出提示。
 `bs self-update` 在替换前会**先跑一遍新二进制的 `version`**，跑不起来就保留旧的。

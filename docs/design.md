@@ -1466,6 +1466,33 @@ OSC 11（查背景色）与 DSR（查光标位置），然后从 stdin 读回应
   `make pty` 里有一条真回归：手工挑选 → Shift+Tab → 改选"先不装工具"，必须落到
   "已跳过工具安装"（没有返回键的版本会一路走进计划表）。
 
+**收尾的 shell 受管块默认就写**（2026-10，用户实测反馈）：向导最后不再问
+"要把 bs 的受管块写进 shell 启动文件吗"。那一段本来就是 bs 自己维护的
+（块外内容字节级不变、`bs shell uninstall` 可精确撤掉、写前有备份），为"允许 bs 维护
+自己那段"点一次头纯属多余。新的判定顺序（`internal/app/init.go` 的 `finishInit`）：
+
+| 情形 | 行为 |
+| --- | --- |
+| `--no-shell` / `--with-shell` | 显式说了算（`false` 时静默跳过，`true` 时做不了就报错） |
+| `--dry-run` | 一行都不碰 |
+| 有终端，或 `--yes`（含 `ui.confirm=false`） | **直接写**，不再问 |
+| 非交互且没有 `--yes` | 跳过并带原因（`ShellNeedsConsent`）——没人能点头就不擅自改别人的 rc；收尾提示加 `--yes`/`--with-shell` 即可 |
+
+收尾输出也随之收敛成"**写到哪 + 怎么让它生效**"两件事：
+
+```
+已把 bs 受管块写进 ~/.bashrc
+执行 `source ~/.bashrc` 立刻生效（新开的 shell 会自动加载）
+```
+
+- 不再打印备份路径与 `（shell=bash）`：备份/还原是 `bs shell uninstall` 的事，
+  不是用户要读的信息（用户原话："其他多余的内容不需要打印"）；
+- 路径经 `fsx.ShortenHome` 缩成 `~`（对不上就原样打印，绝不猜）；PowerShell 没有 `source`，
+  提示改用点号（`reloadCmd` 按 `shellsnip.FamilyForShell` 分派）；
+- 受管块已是最新时只说"已是最新，未改动"，不硬塞一句 `source`；
+- "新装的工具可能需要重开 shell 或 `eval "$(bs env path)"`"只在 **rc 没动**时出现——
+  PATH 本来就是受管块装配的，刚写完受管块时上面那句 `source` 已经覆盖它了。
+
 **日志**：`log/slog` 结构化日志，默认 stderr，级别取 `log.level`（`-v` debug、`-vv` trace）。
 外部命令的完整 argv 与退出码在 debug 级可见；`*_PROXY` 值一律脱敏（保留 host:port，
 userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`）由引擎按步骤写入
@@ -1640,7 +1667,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 判据 | 验证方式 | 结果 |
 |---|---|---|
 | `bs init` 能一把梭 | `bs init --dry-run --yes --tools ripgrep` 零写入；`make pty` 里真勾选后落地 | ✅ |
-| init 向导形态（ADR-0015） | 单测：配置缺失时直接生成且不再问；仓库根/代理写回配置并立即生效；`--yes` 下一问都不问；未识别 shell 时跳过而不是报错；子菜单返回（`ui.ErrBack`）后"想怎么装？"被重问且改选生效。`make pty`：全屏表单走完三问；手工挑选 → Shift+Tab → 改选"先不装工具"；在 `ubuntu:26.04` 容器里（`$SHELL` 未设置）真实走完"仓库根 → 代理 → 不装工具 → 装 shell 受管块" | ✅ |
+| init 向导形态（ADR-0015） | 单测：配置缺失时直接生成且不再问；仓库根/代理写回配置并立即生效；`--yes` 下一问都不问；未识别 shell 时跳过而不是报错；子菜单返回（`ui.ErrBack`）后"想怎么装？"被重问且改选生效；shell 受管块在有终端/`--yes` 时**不问就写**、非交互没授权时跳过且 `ShellNeedsConsent` 为真。`make pty`：全屏表单走完三问；手工挑选 → Shift+Tab → 改选"先不装工具"；不带 `--dry-run` 跑完一遍，收尾必须是"已把 bs 受管块写进 …"+`source ~/.bashrc`（`--fresh` 沙箱保证看的是首次写入）；在 `ubuntu:26.04` 容器里（`$SHELL` 未设置）真实走完"仓库根 → 代理 → 不装工具 → 装 shell 受管块" | ✅ |
 | 非交互不阻塞 | `init` / `self-update` 无 `--yes` → 退出码 5；`--json` 也走这条路 | ✅ |
 | 参数互斥/未知目标 | `--missing-only --profile`、`--with-shell --no-shell`、未知 profile/tool → 退出码 2 | ✅ |
 | 交互式勾选（huh） | `make pty`：多选勾选后干跑落地；勾选数回填正确（缺失项默认勾选） | ✅ |
@@ -1684,7 +1711,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0012 | **个人 shell 片段归宿** | **主要放仓库内置 `tools/snippets/`**（随二进制发布，换机器零同步，升级即带上）；`<config>/shell/` 仅作机器特定/临时覆盖 | 片段变更需提交；不再依赖 dotfiles 同步 |
 | ADR-0013 | **fallback 默认值** | 交互式终端默认**开**；非交互（管道/CI/`--json`/`--non-interactive`）默认**关**；降级必须在 Report 与 `--json` 中显式标注 | 自动化场景绝不静默换安装方式 |
 | ADR-0014 | **首批平台范围** | 首批清单（`base/golang/nodejs/python`）只覆盖 **linux + darwin**；Windows 首批仅保证 `bs` 本体 + `repo`/`proxy`/`shell(pwsh)` 可用，工具清单在 M5+ 单独补 | Go 用 `g` 管理的前提是其在各平台可用；Windows 不冒险 |
-| ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错；⑥工具选择是两级菜单（想怎么装 → 套装/手工勾选），子菜单里 Shift+Tab（纯文本 `b`）退回上一级，选错不必重跑命令 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举、进了勾选列表回不到上一级菜单 |
+| ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错；⑥工具选择是两级菜单（想怎么装 → 套装/手工勾选），子菜单里 Shift+Tab（纯文本 `b`）退回上一级，选错不必重跑命令；⑦收尾的 shell 受管块**不再问一句**（有终端或 `--yes` 就直接写；非交互没授权则跳过并说明），成功后只提示"已写进哪份 rc + 执行 `source` 让它生效"，不再打印备份路径之类的内部细节 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举、进了勾选列表回不到上一级菜单、"要不要写受管块"同样多此一举、收尾信息太吵（只要一句 `source` 就好） |
 | ADR-0016 | **补全的安装形态** | `bs completion install [shell]` 负责"打开 `shell.completion` + 幂等写入受管块"；补全片段由 `bs shell init` 现算，**不新增第二组受管块标记**；默认关（与 `auto_proxy` 同理，不擅自改变每个新 shell 的行为）；`bs completion bash\|zsh\|fish\|powershell` 保持"只打印脚本"的 cobra 契约 | 用户反馈"生成完不知道下一步该干什么"；沿用 ADR-0007 的单受管块可以一次卸载干净，代价是只想补全的人会连带装上代理包装/PATH 片段 |
 
 ### 18.2 已闭环

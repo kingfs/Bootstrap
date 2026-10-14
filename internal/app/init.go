@@ -130,9 +130,12 @@ type InitResult struct {
 	DryRunPlannedConfig bool `json:"dry_run_planned_config,omitempty"`
 	// SkippedShell 表示按用户/配置的决定没有动 shell 启动文件。
 	SkippedShell bool `json:"skipped_shell,omitempty"`
-	// ShellSkippedReason 说明"为什么没问/没动 shell"（探测不到，或探测到的 shell 不受支持）。
+	// ShellSkippedReason 说明"为什么没问/没动 shell"（探测不到、不受支持，或非交互没授权）。
 	// 非空时 cli 会提示用户怎么手动补上。
 	ShellSkippedReason string `json:"shell_skipped_reason,omitempty"`
+	// ShellNeedsConsent 为真表示"非交互环境里没人能点头，所以没动 rc"——
+	// 收尾提示据此告诉用户加 --yes 就会自动写入（而不是让他去手工装受管块）。
+	ShellNeedsConsent bool `json:"shell_needs_consent,omitempty"`
 	// SkipTools 表示这次没有处理任何工具（--no-tools，或交互式里选了"先不装工具"）。
 	// 概览里的探测结果照旧有效：调用方据此告诉用户"缺什么、想装时敲哪条命令"。
 	SkipTools bool `json:"skip_tools,omitempty"`
@@ -400,7 +403,14 @@ func (a *App) applyInitProxy(ctx context.Context, proxyURL string) error {
 	return err
 }
 
-// finishInit 处理收尾：可选的 shell 受管块。
+// finishInit 处理收尾：把 bs 受管块写进 shell 启动文件（可显式关掉）。
+//
+// 为什么不再问一句"要不要写"：那一段本来就是 bs 自己维护的受管块
+// （块外内容字节级不变、`bs shell install/uninstall` 随时增删、写前有备份），
+// 让用户为"允许 bs 维护自己那段"点一次头纯属多余（用户实测反馈）。
+// 需要的话有显式开关：`--no-shell` 不动它，`--with-shell` 强制写。
+// 非交互环境仍然不擅自改人家的 rc——那里没人能点头，也没法确认
+// （AGENTS.md §8.6 的"非交互绝不阻塞"，此处选择"跳过并说明"而不是让整条 init 失败）。
 func (a *App) finishInit(opt InitOptions, res *InitResult) error {
 	// 探测不到 shell（容器里没有 $SHELL，/etc/passwd 与父进程也给不出答案）时，
 	// 跳过这一步并说明原因。以前这里会一路走到 ShellInstall("") 才报
@@ -428,13 +438,13 @@ func (a *App) finishInit(opt InitOptions, res *InitResult) error {
 	case a.DryRun:
 		// dry-run 不碰 rc 文件。
 		return nil
-	case opt.Prompter.Interactive() && !opt.AssumeYes:
-		ok, err := a.askYes(opt, "要把 bs 的受管块写进 shell 启动文件吗？（代理命令即时生效 + 自动装配 PATH）")
-		if err != nil {
-			return err
-		}
-		installShell = ok
+	case opt.Prompter.Interactive() || opt.AssumeYes:
+		// 有终端（或 --yes 这种"全自动"）＝默认就写，不再问。
+		installShell = true
 	default:
+		res.SkippedShell = true
+		res.ShellNeedsConsent = true
+		res.ShellSkippedReason = "非交互环境没有授权修改 shell 启动文件"
 		return nil
 	}
 	if !installShell {

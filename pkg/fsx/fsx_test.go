@@ -35,6 +35,35 @@ func TestExpandPathUsesEnv(t *testing.T) {
 	}
 }
 
+// TestShortenHome 锁住"显示用"的 ~ 缩写：只在家目录**边界**上缩写，
+// 前缀相同的另一个目录（/home/kingfs 与 /home/kingfs-other）不能被说成 ~-other。
+func TestShortenHome(t *testing.T) {
+	sep := string(filepath.Separator)
+	home := sep + "home" + sep + "kingfs"
+	tests := []struct {
+		path, want string
+	}{
+		{home, "~"},
+		{home + sep + ".bashrc", "~" + sep + ".bashrc"},
+		{home + sep + ".config" + sep + "fish" + sep + "config.fish", "~" + sep + ".config" + sep + "fish" + sep + "config.fish"},
+		{home + "-other" + sep + ".bashrc", home + "-other" + sep + ".bashrc"}, // 同前缀但不是子目录
+		{sep + "etc" + sep + "profile", sep + "etc" + sep + "profile"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := ShortenHome(tc.path, home); got != tc.want {
+			t.Errorf("ShortenHome(%q, %q) = %q, want %q", tc.path, home, got, tc.want)
+		}
+	}
+	// home 为空或就是根目录时不猜：原样返回比编一个 `~` 出来安全。
+	if got := ShortenHome(home+sep+".bashrc", ""); got != home+sep+".bashrc" {
+		t.Errorf("home 为空时应当原样返回，得到 %q", got)
+	}
+	if got := ShortenHome(home+sep+"x", string(filepath.Separator)); got != filepath.Join(home, "x") {
+		t.Errorf("home 为分隔符时应当原样返回，得到 %q", got)
+	}
+}
+
 func TestAtomicWriteFileAndExists(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "file.txt")

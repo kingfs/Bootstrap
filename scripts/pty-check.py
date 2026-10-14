@@ -23,6 +23,10 @@
 
 按键名：DOWN / UP / ENTER / SPACE / TAB / SHIFTTAB / ESC / CTRLC / WAIT<n>（等 n 秒）/
 其它按字面量发。SHIFTTAB 是交互界面的"返回上一步"（见 internal/ui/huh.go 的 huhBackKey）。
+
+沙箱（--root，默认 .cache/pty）默认**跨次调用保留**（跑得快、也便于复现）。要断言
+"第一次写入"这类输出（例：受管块是新建还是"已是最新"）时加 `--fresh`：脚本会先清空沙箱，
+并拒绝清空根目录/家目录/当前目录。
 """
 
 import argparse
@@ -31,6 +35,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import struct
 import sys
@@ -75,6 +80,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="在 PTY 里驱动 bs 交互界面")
     ap.add_argument("--bin", default="bin/bs", help="要跑的 bs 二进制（默认 bin/bs）")
     ap.add_argument("--root", default=".cache/pty", help="沙箱目录（默认 .cache/pty）")
+    ap.add_argument(
+        "--fresh",
+        action="store_true",
+        help="先清空沙箱目录：断言'第一次写入'的输出时必须用它（留着上次的 rc 会让结果随调用历史漂移）",
+    )
     ap.add_argument("--timeout", type=float, default=25.0, help="总超时秒数")
     ap.add_argument("--first-key-delay", type=float, default=1.5, help="首个按键前的等待")
     ap.add_argument("--key-gap", type=float, default=0.7, help="按键间隔秒数")
@@ -110,6 +120,14 @@ def main() -> int:
         cmd = ["init", "--dry-run"]
 
     root = os.path.abspath(args.root)
+    if args.fresh:
+        # 有些不变量只在"干净状态"下成立（例：shell 受管块是首次写入还是"已是最新"）。
+        # 清空前先确认目标不是根/家目录/当前目录——脚本自己算出来的路径也要能一眼核对。
+        for unsafe in (os.path.abspath(os.sep), os.path.expanduser("~"), os.getcwd()):
+            if root == os.path.abspath(unsafe):
+                print(f"--fresh 拒绝清空 {root}", file=sys.stderr)
+                return 2
+        shutil.rmtree(root, ignore_errors=True)
     for sub in ("home", "config", "state", "cache"):
         os.makedirs(os.path.join(root, sub), exist_ok=True)
 

@@ -273,6 +273,15 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   配置文件缺失时**直接生成、不再询问**；`--yes` 是"全自动"（连选什么都不问）。
   改这条链路时注意：`Auto` 与 `AssumeYes` 是两件事——前者管"问不问选择"，
   后者管"要不要确认"，非交互环境仍然必须 `--yes`（AGENTS §8.6）。
+- **收尾的 shell 受管块默认就写，不再问一句**（ADR-0015 第⑦条）：有终端或 `--yes` 就直接
+  `ShellInstall`，`--no-shell`/`--with-shell` 是显式开关，`--dry-run` 一行不碰；
+  唯一"不写"的自动场景是**非交互又没有 `--yes`**（没人能点头就不擅自改别人的 rc，
+  跳过时置 `ShellNeedsConsent`，收尾提示加 `--yes` 即可）。成功后只打两行
+  ——"已把 bs 受管块写进 `~/.bashrc`" + "执行 `source ~/.bashrc` 立刻生效"——
+  备份路径、`（shell=bash）` 这类内部细节不打印（用户实测反馈："其他多余的内容不需要打印"）；
+  已是最新时只说一句"未改动"。"PATH 可能要 `eval "$(bs env path)"`"那句只在 **rc 没动**时出现。
+  改这块跑 `make pty`：最后一条用例不带 `--dry-run`（`--fresh` 起干净沙箱），
+  断言这两行必须在输出里；老版本会弹确认框、回车＝拒绝，于是它必红。
 - 交互式界面的按键行为**无法在单测里验证**（需要真 PTY，见 §4 第 0 条），
   改动 `internal/ui` 后除了 `make check` 还要跑 `make pty`。
 - 探测（`tool list`/`plan`/`init`）会执行清单里的 `verify.command`，而**工具自己的命令可能有副作用**：

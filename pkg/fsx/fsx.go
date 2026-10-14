@@ -76,6 +76,29 @@ func ExpandPath(path, home string) string {
 	return p
 }
 
+// ShortenHome 是 ExpandPath 的逆操作：把家目录前缀换成 ~。**只用于显示**。
+//
+// 提示里写 `source ~/.bashrc` 比 `/home/k/.bashrc` 好读也好敲；
+// 对不上（home 为空、路径不在家目录下）时原样返回，绝不猜。
+func ShortenHome(path, home string) string {
+	if path == "" || home == "" {
+		return path
+	}
+	home = strings.TrimRight(home, `/\`)
+	if home == "" {
+		return path // 家目录就是根目录（Windows 上罕见但可能），别把整条路径说成 ~
+	}
+	if path == home {
+		return "~"
+	}
+	rest := strings.TrimPrefix(path, home)
+	// 剩下的第一段必须是分隔符：/home/king 不能把 /home/kingfs 也缩成 ~fs。
+	if rest == path || rest == "" || (rest[0] != '/' && rest[0] != '\\') {
+		return path
+	}
+	return "~" + rest
+}
+
 // Exists 报告路径是否存在（不区分文件/目录）。
 func Exists(path string) bool {
 	_, err := os.Stat(path)
