@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kingfs/Bootstrap/internal/buildinfo"
 	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/manifest"
@@ -54,6 +55,11 @@ type App struct {
 	// 用于在 Linux/CI 上检查 macOS/Windows 的清单是否写错。
 	GOOSOverride string
 
+	// CurrentVersion 是当前二进制的版本（自更新时用来判断"要不要换"）。
+	CurrentVersion string
+	// ExePath 是自更新要替换的二进制路径（空 = os.Executable()；测试注入用）。
+	ExePath string
+
 	// loaded 缓存已装载的清单，避免一次命令里重复解析 YAML。
 	loaded *manifest.Loaded
 }
@@ -62,14 +68,15 @@ type App struct {
 func New(paths config.Paths, cfg *config.Config, sources []string, platform hostinfo.Platform, log *slog.Logger, out, errw io.Writer) *App {
 	store := state.NewStore(paths.StateFile())
 	a := &App{
-		Paths:         paths,
-		Cfg:           cfg,
-		ConfigSources: sources,
-		Platform:      platform,
-		Store:         store,
-		Log:           log,
-		Out:           out,
-		Err:           errw,
+		Paths:          paths,
+		Cfg:            cfg,
+		ConfigSources:  sources,
+		Platform:       platform,
+		Store:          store,
+		Log:            log,
+		Out:            out,
+		Err:            errw,
+		CurrentVersion: buildinfo.Get().Version,
 	}
 	a.Runner = &cmdx.Runner{
 		Log:            log,

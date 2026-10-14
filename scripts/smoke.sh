@@ -255,6 +255,39 @@ assert_contains "doctor 输出平台信息" "platform" "$out"
 assert_contains "doctor 检查 git" "git" "$out"
 if [ "$code" -eq 0 ] || [ "$code" -eq 4 ]; then ok "doctor 退出码合理（$code）"; else bad "doctor 退出码异常：$code"; fi
 
+step "新机器一把梭（bs init）"
+# 干跑必须是只读的：计划要看得到，但一个文件都不能落。
+out="$("$BIN" init --dry-run --yes --tools ripgrep 2>&1)"
+assert_contains "init 干跑展示环境概览" "系统" "$out"
+assert_contains "init 干跑标注不会执行" "dry-run" "$out"
+assert_contains "init 干跑列出待处理工具" "ripgrep" "$out"
+# 配置缺失时，干跑要"报告会生成"但**不**真的生成。
+out="$(BS_CONFIG_HOME="$WORK/freshcfg" "$BIN" init --dry-run --yes --tools ripgrep 2>&1)"
+assert_contains "init 干跑说明会生成配置文件" "会生成配置文件" "$out"
+assert_missing "init 干跑不真的生成配置" "$WORK/freshcfg/config.yaml"
+assert_missing "init 干跑不装东西" "$WORK/home/.local/bin/ripgrep"
+assert_missing "init 干跑不碰 rc" "$WORK/home/.bashrc.init-test"
+
+# 非交互 + 没有 --yes：必须拒绝（退出码 5），绝不能阻塞等输入
+code=0; out="$("$BIN" init 2>&1)" || code=$?
+assert_eq "init 缺 --yes 退出码 5" "5" "$code"
+assert_contains "init 缺 --yes 提示怎么办" "--yes" "$out"
+code=0; out="$("$BIN" init --tools ripgrep 2>&1)" || code=$?
+assert_eq "init 指定工具仍需 --yes" "5" "$code"
+
+# 矛盾参数属于用法错误
+code=0; out="$("$BIN" init --with-shell --no-shell 2>&1)" || code=$?
+assert_eq "init 矛盾参数退出码 2" "2" "$code"
+code=0; out="$("$BIN" init --missing-only --profile golang 2>&1)" || code=$?
+assert_eq "init 互斥选择退出码 2" "2" "$code"
+
+step "自更新（bs self-update）"
+# 不联网也必须先要同意：非交互 + 没有 --yes → 退出码 5，且一个请求都不发
+code=0; out="$("$BIN" self-update 2>&1)" || code=$?
+assert_eq "self-update 缺 --yes 退出码 5" "5" "$code"
+assert_contains "self-update 缺 --yes 提示怎么办" "--yes" "$out"
+assert_contains "self-update 帮助说明校验策略" "sha256" "$("$BIN" self-update --help)"
+
 step "退出码约定"
 set +e
 "$BIN" definitely-not-a-command >/dev/null 2>&1

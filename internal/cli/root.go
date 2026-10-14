@@ -46,6 +46,9 @@ type Options struct {
 	Interactive bool
 	// PlainUI 由 `--plain-ui` 置位：用纯文本提问而不是交互式界面。
 	PlainUI bool
+	// ExePath 由隐藏的 `--exe` 置位：覆盖自更新要替换的可执行文件
+	// （测试与"把 bs 装在包装脚本后面"的特殊布局用；默认 os.Executable()）。
+	ExePath string
 
 	In  io.Reader
 	Out io.Writer
@@ -128,6 +131,8 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 	pf.BoolVar(&rt.Opts.NonInteractive, "non-interactive", false, "绝不等待输入：破坏性操作需要 --yes，否则以退出码 5 结束")
 	pf.BoolVar(&rt.Opts.Interactive, "interactive", false, "强制允许交互提问（默认按终端自动判定）")
 	pf.BoolVar(&rt.Opts.PlainUI, "plain-ui", false, "交互时使用纯文本问答，不用交互式界面")
+	pf.StringVar(&rt.Opts.ExePath, "exe", "", "内部：自更新要替换的可执行文件（默认当前进程）")
+	_ = pf.MarkHidden("exe")
 	pf.CountVarP(&rt.Opts.Verbose, "verbose", "v", "输出详细日志（可重复：-v 调试，-vv 追踪）")
 	pf.StringVar(&rt.Opts.LogLevel, "log-level", "", "日志级别 debug|info|warn|error（默认取配置）")
 
@@ -136,6 +141,7 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 	cmd.AddCommand(
 		rt.versionCmd(),
 		rt.initCmd(),
+		rt.selfUpdateCmd(),
 		rt.configCmd(),
 		rt.proxyCmd(),
 		rt.shellCmd(),
@@ -206,6 +212,7 @@ func (rt *Runtime) init(cmd *cobra.Command) error {
 	rt.App.Runner.DryRun = rt.Opts.DryRun
 	// 进度输出由配置 ui.progress 决定（auto = 只在终端上打）。
 	rt.App.Progress = rt.progressHook()
+	rt.App.ExePath = rt.Opts.ExePath
 	return nil
 }
 
