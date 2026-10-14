@@ -253,14 +253,14 @@ assert_contains_any "重复安装是幂等的" "$OUT" "0 个需要处理" "已�
 if have_proxy "代理全链路"; then
   echo
   echo "== 代理：配置与连通性"
-  bsr proxy add chaitin --http "$PROXY_URL" --https "$PROXY_URL" --no-proxy "localhost,127.0.0.1" --write
+  bsr proxy add corp --http "$PROXY_URL" --https "$PROXY_URL" --no-proxy "localhost,127.0.0.1" --write
   assert_contains "代理 profile 写入配置" "已写入" "$OUT"
   bsr proxy list
-  assert_contains "list 能看到它" "chaitin" "$OUT"
-  bsr proxy use chaitin
-  assert_contains "激活成功" "chaitin" "$OUT"
+  assert_contains "list 能看到它" "corp" "$OUT"
+  bsr proxy use corp
+  assert_contains "激活成功" "corp" "$OUT"
   bsr proxy status
-  assert_contains "status 报告当前生效" "chaitin" "$OUT"
+  assert_contains "status 报告当前生效" "corp" "$OUT"
 
   bsr proxy test
   assert_contains "proxy test 给出直连结论" "直连" "$OUT"
@@ -326,8 +326,8 @@ if have_proxy "代理全链路"; then
 
   echo
   echo "== 正面对照：换回真代理，同一件事必须成功"
-  bsr proxy use chaitin
-  assert_contains "切回真代理" "chaitin" "$OUT"
+  bsr proxy use corp
+  assert_contains "切回真代理" "corp" "$OUT"
   bsr tool install lazygit --yes
   if [ "$RC" -eq 0 ]; then ok "再次走真代理装 lazygit 成功"; else bad "走真代理仍然失败（退出码 ${RC}）"; note "$(printf '%s' "$OUT" | head -c 400)"; fi
   assert_exists "走代理装出来的二进制存在" "$HOME_DIR/.local/bin/lazygit"

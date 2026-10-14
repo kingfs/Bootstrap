@@ -19,7 +19,8 @@
 # 环境变量：
 #   BS_IMAGES      镜像列表（默认 "ubuntu:24.04"）
 #   BS_BIN         被测二进制（默认 dist/linux-<arch>/bs，即 make cross 的产物）
-#   BS_PROXY_URL   代理地址（默认 http://proxy.in.chaitin.net:8123；给空串则跳过代理阶段）
+#   BS_PROXY_URL   代理地址。**必须自己给**（例如 http://127.0.0.1:7890 或公司代理）：
+#                  这里是公开仓库，不内置任何内网地址；给空串则跳过代理阶段。
 
 set -eu
 
@@ -54,7 +55,11 @@ else
   images="${BS_IMAGES:-ubuntu:24.04}"
 fi
 
-PROXY_URL="${BS_PROXY_URL-http://proxy.in.chaitin.net:8123}"
+PROXY_URL="${BS_PROXY_URL:-}"
+# 没给地址就跳过代理阶段（容器里 github.com 直连不通，所以走代理的下载都排在代理配置之后）。
+if [ -z "$PROXY_URL" ]; then
+  echo "提示：未设置 BS_PROXY_URL，本次跳过代理阶段（要用代理就显式给地址，例如 http://127.0.0.1:7890）" >&2
+fi
 
 WORK="$ROOT/.cache/docker-integration"
 rm -rf "$WORK"

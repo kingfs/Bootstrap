@@ -117,11 +117,11 @@ proxy:
     local:
       http_proxy: http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
-      no_proxy: 127.0.0.1,localhost,10.2.0.0/16
-    chaitin:
-      http_proxy: http://proxy.in.chaitin.net:8123
-      https_proxy: http://proxy.in.chaitin.net:8123
-      no_proxy: 127.0.0.1,localhost,.chaitin.net,.chaitin.cn
+      no_proxy: 127.0.0.1,localhost,10.0.0.0/8
+    corp:
+      http_proxy: http://proxy.example.com:8123
+      https_proxy: http://proxy.example.com:8123
+      no_proxy: 127.0.0.1,localhost,.example.com
     secret:
       http_proxy: http://user:pw@proxy.example:8080
       https_proxy: http://user:pw@proxy.example:8080
@@ -131,13 +131,13 @@ tool:
 EOF
 out="$("$BIN" proxy list)"
 assert_contains "proxy list 列出 local" "local" "$out"
-assert_contains "proxy list 列出 chaitin" "chaitin" "$out"
+assert_contains "proxy list 列出 corp" "corp" "$out"
 out="$("$BIN" proxy status)"
 assert_contains "默认 profile 生效" "config profile local" "$out"
-out="$("$BIN" proxy use chaitin)"
-assert_contains "切换 profile" "chaitin" "$out"
+out="$("$BIN" proxy use corp)"
+assert_contains "切换 profile" "corp" "$out"
 out="$("$BIN" proxy env --apply)"
-assert_contains "env --apply 输出 export" "export HTTP_PROXY='http://proxy.in.chaitin.net:8123'" "$out"
+assert_contains "env --apply 输出 export" "export HTTP_PROXY='http://proxy.example.com:8123'" "$out"
 out="$("$BIN" proxy env --apply)"
 assert_contains "env --apply 同时输出小写变量" "export http_proxy=" "$out"
 out="$("$BIN" proxy status)"
@@ -163,7 +163,7 @@ out="$("$BIN" shell init bash)"
 assert_contains "shell init 含包装函数" "command bs \"\$@\"" "$out"
 assert_contains "shell init 含 startproxy" "startproxy()" "$out"
 out="$("$BIN" shell init bash)"
-assert_contains "shell init 含 chaitinproxy" "chaitinproxy()" "$out"
+assert_contains "shell init 含 stopproxy" "stopproxy()" "$out"
 "$BIN" shell install --shell bash --rc "$WORK/home/.bashrc" >/dev/null
 out="$(cat "$WORK/home/.bashrc")"
 assert_contains "受管块起始标记" "# >>> bootstrap (managed by 'bs shell install') >>>" "$out"
@@ -441,10 +441,11 @@ out="$(env BS_GITHUB_API="http://127.0.0.1:1/api" BS_GITHUB_ASSET_BASE="http://1
 if [ "$code" -ne 0 ]; then ok "镜像不可用时明确失败（退出码 ${code}）"; else bad "镜像不可用却成功了"; fi
 assert_contains "自更新走的是 BS_GITHUB_API 指的前缀" "127.0.0.1:1" "$out"
 assert_not_contains "没有偷偷去连 api.github.com" "api.github.com" "$out"
-# 只给 ASSET_BASE：API 保持默认，不许"给了下载前缀就把 API 也指过去"
-code=0
-out="$(env BS_GITHUB_ASSET_BASE="http://127.0.0.1:1/gh" "$BIN" self-update --check 2>&1)" || code=$?
-assert_contains "没给 API 时仍用官方 API 前缀" "api.github.com" "$out"
+# 只给 ASSET_BASE：API 保持默认，不许"给了下载前缀就把 API 也指过去"。
+# 这条**由单测锁定**：internal/app 的 TestApplyGitHubMirror 直接断言 APIBaseURL 仍是默认值。
+# 这里曾经再断言一次"self-update --check 的报错里出现 api.github.com"，那有两个毛病：
+# 它真的发了一次外网请求（冒烟测试的规矩是不联网），而且依赖"仓库还没有 Release"这个状态
+# ——v0.1.0 一发布，--check 就会成功返回，那条断言就随仓库状态漂移了。
 
 step "工具升级（--all）"
 # 造一台"装了旧版 go"的机器：verify.min_version 要求 1.22，假二进制报 1.20.1。
