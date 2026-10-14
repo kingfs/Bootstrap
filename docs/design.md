@@ -1221,7 +1221,8 @@ shell  status                           显示受管块安装状态
 shell  snippet list|new|path            查看/创建 shell 片段
 shell  [--profile P]                    开一个已装配环境的交互式子 shell（不改 rc；不接受命令参数）
 
-completion <shell>   由 cobra 提供
+completion <shell>   由 cobra 提供（bash/zsh/fish/powershell）
+help [命令]          由 cobra 提供
 ```
 
 **退出码约定**（Agent 与 CI 友好，映射集中在 `internal/cli/exit.go`）：
@@ -1322,7 +1323,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 外部命令 | 一律走 `pkg/cmdx`（超时、干跑、脱敏、日志都在那里），业务代码不直接 `os/exec` |
 | 测试 | 表驱动单测；安装引擎用 `internal/install/fake_test.go` 的 `fakeEnv`/`fakeDetector`（记录命令、可编排返回值），探测用注入的 `Executor`/`LookPath`；CLI 层用进程内 `Runtime.Run` + 临时 `BS_CONFIG_HOME`/`BS_STATE_HOME`/`BS_CACHE_HOME` + 缓冲区输出；端到端用 `scripts/smoke.sh`（POSIX）与 `scripts/smoke.ps1`（Windows），两者都不发网络请求；另有**需要网络的**可选 `scripts/e2e-install.sh`（真下载真校验，产物全部落在 `.cache/e2e/`，不属于 CI 必跑项） |
 | 无副作用测试（硬要求） | 全部读写都在 `t.TempDir()`；`--dry-run` 断言"目标路径不存在/文件数不变"；幂等断言"第二次执行 mtime 不变"（`fsx.WriteFileIfChanged`/`state`）；涉及用户文件的逻辑断言"内容字节级未变"（`shellsnip`）；单测与 smoke **都不发网络请求** |
-| 静态检查 | `make check` = `gofmt -l` + `go vet ./...` + `go test ./...` + `go test -race ./...`；CI 在 ubuntu/macos/windows 三个 runner 上跑同样的四件事 + 冒烟。**尚未接入** `golangci-lint` / `govulncheck`（设计里提过，属 M4 打磨） |
+| 静态检查 | `make check` = `gofmt -l` + `go vet ./...` + `go test ./...` + `go test -race ./...`；CI 在 ubuntu/macos/windows 三个 runner 上跑同样的四件事 + 冒烟。另有 **`make lint`**（golangci-lint，`.golangci.yml` 里只留"真错误"类 linter）与 **`make vuln`**（govulncheck）——两者**刻意不进 `check`**：一个慢、一个要联网，不该拦住本地提交 |
 | 依赖策略 | 直接依赖 5 个：`spf13/cobra`、`spf13/viper`、`gopkg.in/yaml.v3`、`golang.org/x/sync`、`charmbracelet/huh`；huh 只允许出现在 `internal/ui`（其余包通过 `Prompter` 提问）；`pkg/*` 不 import `internal/*` |
 | 提交规范 | Conventional Commits（`feat(tool): ...`），正文写动机与影响；每个提交都要"可编译、可发布、可用" |
 | 版本管理 | `internal/buildinfo.{Version,Commit,Date}`，由 `-ldflags -X` 注入（`Makefile` 与 `.goreleaser.yaml` 各一份）；`bs version --json` 暴露 |

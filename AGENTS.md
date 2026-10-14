@@ -5,7 +5,10 @@
 ## 1. 这个项目是什么
 
 `bs`（仓库名 Bootstrap）是维护者个人的开发环境重建工具：新机器上用它拉回仓库、
-恢复代理与 shell 环境、按清单安装/更新工具链（M1–M3 已完成：`bs init` 一把梭 + 自更新）。
+恢复代理与 shell 环境、按清单安装/更新工具链。
+M1–M3 已完成（`bs init` 一把梭 + 自更新），M4 打磨进行中（`--timeout`、`-i` 勾选、
+下载断点续传、`bs doctor --fix`、`make lint`/`make vuln`）；尚未做的是 Windows 清单、
+Docker 集成矩阵与 `config get|set|edit` 这类长尾命令（见 §10 与 design §18.3）。
 
 - 语言：Go（版本见 `go.mod`），命令框架 cobra + 配置 viper
 - 支持平台：Linux / macOS / Windows；Linux 与 macOS 的 `amd64`、`arm64` 都必须可用

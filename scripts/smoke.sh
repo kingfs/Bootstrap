@@ -367,6 +367,15 @@ assert_contains "--timeout 报出生效的时长" "500ms" "$out"
 if [ "$elapsed" -le 5 ]; then ok "超时后立即返回（${elapsed}s）"; else bad "超时后拖了 ${elapsed}s：进程树没停掉"; fi
 assert_missing "被掐断的 clone 不留半个仓库" "$WORK/home/src/github.com/kingfs/Bootstrap"
 
+step "补全脚本"
+# cobra 自带补全，但要确认四种 shell 都真能产出脚本（不是空输出、不是报错）。
+for sh in bash zsh fish powershell; do
+  out="$("$BIN" completion "$sh" 2>&1)" || { bad "completion $sh 执行失败"; continue; }
+  if [ -n "$out" ]; then ok "completion $sh 有输出（$(printf '%s' "$out" | wc -l) 行）"; else bad "completion $sh 输出为空"; fi
+done
+out="$("$BIN" completion zsh 2>&1)"
+assert_contains "zsh 补全以 compdef 开头" "compdef _bs bs" "$out"
+
 step "退出码约定"
 set +e
 "$BIN" definitely-not-a-command >/dev/null 2>&1

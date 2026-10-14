@@ -7,8 +7,10 @@
 - **先看后做**：所有会改动文件系统或外部状态的命令都支持 `--dry-run`
 - **可脚本化**：`--json` 输出 + 明确区分的退出码
 
-> 当前进度：M1（仓库拉取、代理、shell 集成、体检）、M2（工具清单 / 安装引擎，`bs tool`）与
-> M3（新机器一把梭 `bs init`、自更新 `bs self-update`、交互式界面）已完成；Windows 的工具清单尚未编写。
+> 当前进度：M1（仓库拉取、代理、shell 集成、体检）、M2（工具清单 / 安装引擎，`bs tool`）、
+> M3（新机器一把梭 `bs init`、自更新 `bs self-update`、交互式界面）已完成；
+> M4 进行中（全局 `--timeout`、`tool install -i` 勾选、下载断点续传与缓存、`bs doctor --fix`、
+> `make lint`/`make vuln`）。Windows 的工具清单尚未编写。
 
 ## 安装
 
@@ -217,6 +219,7 @@ bs tool manifest validate --os darwin
 | `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |
 | `bs doctor --fix` | 顺手修掉能安全自动修的问题：生成配置、建仓库根、装 shell 受管块（写前备份；先给计划再问一句） |
 | `bs version` | 版本信息（`--json` 可脚本消费） |
+| `bs completion bash\|zsh\|fish\|powershell` | 输出补全脚本（`bs completion zsh > ~/.zsh/completions/_bs`） |
 
 全局参数里有两个和"等多久"有关：`--timeout 30s` 给整条命令设总时限（到点连子进程一起停掉），
 配置文件 `timeouts.command`/`download` 则用来放宽单个命令与下载的默认时限（10m / 15m）。
@@ -272,7 +275,10 @@ make build        # 构建 bin/bs
 make test         # 单元测试
 make race         # 单元测试（-race）
 make smoke        # 无副作用端到端冒烟测试（沙箱目录，不碰真实 HOME，不发网络请求）
-make check        # gofmt + vet + test + race
+make check        # gofmt + vet + test + race（提交前必跑）
+make lint         # golangci-lint（需先 make tools；刻意不进 check，慢）
+make vuln         # 依赖已知漏洞扫描（需联网；改动依赖或发版前跑）
+make tools        # 安装上面两个目标的二进制（版本固定在 Makefile 里）
 make pty          # 在真 PTY 里验证交互式界面（勾选/取消/默认拒绝）
 make e2e          # 真实下载安装验证（**需要网络**，产物只落在 .cache/e2e）
 make cross        # 交叉编译 6 个平台
