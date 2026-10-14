@@ -88,6 +88,20 @@ assert_eq "重复 init 未修改文件" "$before" "$after"
 out="$("$BIN" config validate)"
 assert_contains "默认配置合法" "配置合法" "$out"
 
+# 时限：默认配置里 timeouts 全为空（＝各环节用内置默认值），
+# 写错了要在 validate 阶段一次性报出来，而不是等某条命令跑到一半。
+grep -q "^timeouts:" "$WORK/config/config.yaml" && ok "默认配置包含 timeouts 段" || bad "默认配置缺少 timeouts 段"
+cat > "$WORK/badtimeouts.yaml" <<'EOF'
+version: 1
+log: {level: error}
+timeouts:
+  global: 5
+EOF
+code=0; out="$("$BIN" --config "$WORK/badtimeouts.yaml" config validate 2>&1)" || code=$?
+assert_eq "非法时限退出码 4" "4" "$code"
+assert_contains "非法时限指明字段" "timeouts.global" "$out"
+assert_contains "非法时限给出示例" "10m" "$out"
+
 step "代理 profile"
 cat > "$WORK/config/config.yaml" <<'EOF'
 version: 1
@@ -296,6 +310,24 @@ code=0; out="$("$BIN" self-update 2>&1)" || code=$?
 assert_eq "self-update 缺 --yes 退出码 5" "5" "$code"
 assert_contains "self-update 缺 --yes 提示怎么办" "--yes" "$out"
 assert_contains "self-update 帮助说明校验策略" "sha256" "$("$BIN" self-update --help)"
+
+step "总时限（--timeout）"
+# 用一个"慢命令"验证超时真的会掐断：这里借用 PATH 里的假 git（sleep 很久）。
+FAKEBIN="$WORK/slowbin"
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/git" <<'EOF'
+#!/bin/sh
+sleep 30 & sleep 30
+EOF
+chmod +x "$FAKEBIN/git"
+start=$(date +%s)
+code=0; out="$(PATH="$FAKEBIN:$PATH" "$BIN" --timeout 500ms repo get kingfs/Bootstrap 2>&1)" || code=$?
+elapsed=$(( $(date +%s) - start ))
+assert_eq "--timeout 掐断后退出码 1" "1" "$code"
+assert_contains "--timeout 说清是总时限" "超过总时限" "$out"
+assert_contains "--timeout 报出生效的时长" "500ms" "$out"
+if [ "$elapsed" -le 5 ]; then ok "超时后立即返回（${elapsed}s）"; else bad "超时后拖了 ${elapsed}s：进程树没停掉"; fi
+assert_missing "被掐断的 clone 不留半个仓库" "$WORK/home/src/github.com/kingfs/Bootstrap"
 
 step "退出码约定"
 set +e

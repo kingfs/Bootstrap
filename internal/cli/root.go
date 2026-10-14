@@ -5,7 +5,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -46,6 +49,8 @@ type Options struct {
 	Interactive bool
 	// PlainUI 由 `--plain-ui` 置位：用纯文本提问而不是交互式界面。
 	PlainUI bool
+	// Timeout 由 `--timeout` 置位：整个命令的总时限（0 = 不限，覆盖 timeouts.global）。
+	Timeout time.Duration
 	// ExePath 由隐藏的 `--exe` 置位：覆盖自更新要替换的可执行文件
 	// （测试与"把 bs 装在包装脚本后面"的特殊布局用；默认 os.Executable()）。
 	ExePath string
@@ -59,7 +64,9 @@ type Options struct {
 type Runtime struct {
 	Opts *Options
 	App  *app.App
-	Log  *slog.Logger
+	// cancelTimeout 解除 `--timeout` 挂上的 deadline（Run 收尾时调用）。
+	cancelTimeout context.CancelFunc
+	Log           *slog.Logger
 
 	// loadErr 记录配置装载失败的原因（容忍模式下用于提示）。
 	loadErr error
@@ -85,10 +92,23 @@ func (rt *Runtime) Run(args []string) int {
 	root.SetErr(rt.Opts.Err)
 	root.SetArgs(args)
 
+	// 总时限在 init（PersistentPreRunE）里才知道（配置里有 timeouts.global），
+	// 那里会把带 deadline 的 context 挂到目标命令上；这里只负责在收尾时解除。
+	defer func() {
+		if rt.cancelTimeout != nil {
+			rt.cancelTimeout()
+		}
+	}()
+
 	if err := root.Execute(); err != nil {
 		code := ExitCode(err)
 		if msg := strings.TrimSpace(err.Error()); msg != "" {
 			fmt.Fprintf(rt.Opts.Err, "bs: %s\n", msg)
+		}
+		// 超时是"没做完"，必须说清是超时而不是某一步失败，否则用户会去查错方向。
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(rt.Opts.Err, "bs: 超过总时限（%s）已中止：进程树已停掉，已完成的步骤不会回滚；可加大 --timeout 或分步执行\n",
+				rt.timeoutLabel())
 		}
 		switch code {
 		case ExitUsage:
@@ -131,6 +151,8 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 	pf.BoolVar(&rt.Opts.NonInteractive, "non-interactive", false, "绝不等待输入：破坏性操作需要 --yes，否则以退出码 5 结束")
 	pf.BoolVar(&rt.Opts.Interactive, "interactive", false, "强制允许交互提问（默认按终端自动判定）")
 	pf.BoolVar(&rt.Opts.PlainUI, "plain-ui", false, "交互时使用纯文本问答，不用交互式界面")
+	pf.DurationVar(&rt.Opts.Timeout, "timeout", 0,
+		"整个命令的总时限，如 30s/10m（默认不限；到点后连子进程一起停掉。不含个别环节自己的默认时限）")
 	pf.StringVar(&rt.Opts.ExePath, "exe", "", "内部：自更新要替换的可执行文件（默认当前进程）")
 	_ = pf.MarkHidden("exe")
 	pf.CountVarP(&rt.Opts.Verbose, "verbose", "v", "输出详细日志（可重复：-v 调试，-vv 追踪）")
@@ -213,7 +235,51 @@ func (rt *Runtime) init(cmd *cobra.Command) error {
 	// 进度输出由配置 ui.progress 决定（auto = 只在终端上打）。
 	rt.App.Progress = rt.progressHook()
 	rt.App.ExePath = rt.Opts.ExePath
+
+	// 时限：flag > 配置 timeouts.global。flag 用默认值 0 表示"没给"，
+	// 因此这里不能区分"显式 --timeout 0"——那本来就等于"不限"，语义一致。
+	if err := rt.applyTimeouts(cmd, res.Config); err != nil {
+		return usageErr(err)
+	}
 	return nil
+}
+
+// applyTimeouts 把命令/探测/查询/下载时限装进执行器，并给当前命令挂上总时限。
+//
+// 挂 context 的对象必须是"正在执行的这条命令"：cobra 在 PersistentPreRunE 之后
+// 才调用 RunE，而 RunE 里用的正是 cmd.Context()。
+func (rt *Runtime) applyTimeouts(cmd *cobra.Command, cfg *config.Config) error {
+	t, err := cfg.ResolvedTimeouts()
+	if err != nil {
+		return err
+	}
+	if rt.Opts.Timeout > 0 {
+		t.Global = rt.Opts.Timeout
+	}
+	if t.Command > 0 {
+		// 单个外部命令的时限：不设就保持 cmdx 的 10 分钟默认值。
+		rt.App.Runner.DefaultTimeout = t.Command
+	}
+	if t.Global <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), t.Global)
+	rt.cancelTimeout = cancel
+	cmd.SetContext(ctx)
+	return nil
+}
+
+// timeoutLabel 用于报错文案：优先说显式 flag，其次说配置。
+func (rt *Runtime) timeoutLabel() string {
+	if rt.Opts.Timeout > 0 {
+		return rt.Opts.Timeout.String()
+	}
+	if rt.App != nil {
+		if t, err := rt.App.Cfg.ResolvedTimeouts(); err == nil {
+			return t.Global.String()
+		}
+	}
+	return "?"
 }
 
 func (rt *Runtime) newLogger() (*slog.Logger, error) {

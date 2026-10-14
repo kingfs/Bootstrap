@@ -3,8 +3,11 @@ package cmdx
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -173,5 +176,31 @@ func TestLookPath(t *testing.T) {
 	}
 	if _, ok := r.LookPath("definitely-not-here"); ok {
 		t.Error("LookPath found a missing binary")
+	}
+}
+
+// TestRunKillsProcessTreeOnTimeout：超时必须把整棵进程树停掉。
+//
+// 只杀直接子进程是不够的：`sh -c "sleep 30 & sleep 30"` 里孤儿 `sleep` 会抱着
+// 写管道不放，`cmd.Wait` 于是被拖到 30 秒——超时形同虚设（这条用例曾经真的跑满 30s）。
+func TestRunKillsProcessTreeOnTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 sh/sleep 构造进程树只在类 Unix 上成立")
+	}
+	r := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := r.Run(ctx, Command{Name: "sh", Args: []string{"-c", "sleep 30 & sleep 30"}})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("超时应当返回错误")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("错误链里应当能找到 context.DeadlineExceeded：%v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("超时后 %v 才返回：进程树没有被停掉", elapsed)
 	}
 }

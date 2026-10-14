@@ -48,6 +48,11 @@ var envBindings = map[string][]string{
 	"tool.default_profile":  {"BS_TOOL_PROFILE"},
 	"tool.manifest.builtin": {"BS_MANIFEST_BUILTIN"},
 	"shell.snippets_dir":    {"BS_SHELL_SNIPPETS_DIR"},
+	"timeouts.global":       {"BS_TIMEOUT"},
+	"timeouts.command":      {"BS_TIMEOUT_COMMAND"},
+	"timeouts.probe":        {"BS_TIMEOUT_PROBE"},
+	"timeouts.lookup":       {"BS_TIMEOUT_LOOKUP"},
+	"timeouts.download":     {"BS_TIMEOUT_DOWNLOAD"},
 }
 
 // Load 按"默认值 → 系统级 → 用户级 → 项目级 → 环境变量"的顺序合并配置。

@@ -42,7 +42,11 @@ func (rt *Runtime) repoGetCmd() *cobra.Command {
 			results, err := rt.app().RepoGet(cmd.Context(), args, opts)
 			renderRepoResults(rt, results)
 			if err != nil {
-				return coded(ExitPartial, err)
+				// "部分成功"才有退出码 3；全军覆没是普通失败（1）。
+				// 否则脚本会把"一个都没拉下来"当成"拉下来一部分"。
+				return coded(batchExitCode(results, func(r app.RepoGetResult) bool {
+					return r.Status != "failed"
+				}), err)
 			}
 			return nil
 		},
@@ -109,10 +113,16 @@ func (rt *Runtime) repoSyncCmd() *cobra.Command {
 				return nil
 			}
 			renderRepoStatuses(rt, views)
+			failed, ok := 0, 0
 			for _, v := range views {
 				if v.Action == "failed" {
-					return coded(ExitPartial, fmt.Errorf("部分仓库更新失败"))
+					failed++
+					continue
 				}
+				ok++
+			}
+			if failed > 0 {
+				return coded(batchExitCode2(ok, failed), fmt.Errorf("有 %d 个仓库更新失败", failed))
 			}
 			return nil
 		},
@@ -175,4 +185,25 @@ func renderRepoStatuses(rt *Runtime, views []app.RepoStatusView) {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", orDash(v.Action), v.Path, v.Message)
 	}
 	_ = w.Flush()
+}
+
+// batchExitCode 把"批量结果里有成功也有失败"映射成退出码 3，全失败则是 1。
+func batchExitCode[T any](results []T, succeeded func(T) bool) int {
+	ok, bad := 0, 0
+	for _, r := range results {
+		if succeeded(r) {
+			ok++
+		} else {
+			bad++
+		}
+	}
+	return batchExitCode2(ok, bad)
+}
+
+// batchExitCode2 是上面那条规则的"已经数好了"的版本。
+func batchExitCode2(ok, failed int) int {
+	if failed > 0 && ok == 0 {
+		return ExitFail
+	}
+	return ExitPartial
 }

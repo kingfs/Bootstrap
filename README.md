@@ -216,6 +216,9 @@ bs tool manifest validate --os darwin
 | `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |
 | `bs version` | 版本信息（`--json` 可脚本消费） |
 
+全局参数里有两个和"等多久"有关：`--timeout 30s` 给整条命令设总时限（到点连子进程一起停掉），
+配置文件 `timeouts.command`/`download` 则用来放宽单个命令与下载的默认时限（10m / 15m）。
+
 ## 退出码
 
 | 码 | 含义 |
@@ -254,7 +257,7 @@ bs tool manifest validate --os darwin
 ```
 
 常用环境变量：`BS_CONFIG_HOME`、`BS_STATE_HOME`、`BS_CACHE_HOME`、`BS_REPO_ROOT`、
-`BS_PROXY_PROFILE`、`BS_LOG_LEVEL`、`NO_COLOR`。完整字段见
+`BS_PROXY_PROFILE`、`BS_LOG_LEVEL`、`BS_TIMEOUT`（整条命令的总时限）、`NO_COLOR`。完整字段见
 [docs/configuration.md](docs/configuration.md)。
 
 ## 开发

@@ -55,13 +55,15 @@ proxy: {...}
 tool: {...}
 shell: {...}
 ui: {...}
+timeouts: {...}
 ```
 
 `bs config validate` 的校验面：`version`、`log.level`、`log.color`、`repo.layout`（必须含
 `{{.Repo}}` 且能渲染）、`repo.clone.protocol`、`repo.pull.strategy`、`repo.clone.depth >= 0`、
 `repo.sync.jobs >= 1`、`repo.hosts` 无空项、`proxy.default_profile` 必须存在于 `proxy.profiles`、
 每个 profile 至少一个非空代理地址且 URL 合法（`http`/`https`/`socks5(h)`/`socks4`）、
-`tool.allow_system_for` 与 `tool.managers` 的键值非空、`ui.progress`。
+`tool.allow_system_for` 与 `tool.managers` 的键值非空、`ui.progress`、
+`timeouts.*` 必须是带单位的正数时长（`30s`/`10m`/`1h`；写 `300` 会报错，因为不同环节的裸数字含义不同）。
 校验失败会**一次报出全部问题**（`errors.Join`），不会改一个跑一次。
 
 ### `log`
@@ -160,6 +162,30 @@ rc 文件自动探测规则：`bash` → `~/.bashrc`（macOS 优先 `~/.bash_pro
 | `confirm` | 布尔 | `true` | 置 `false` 时，**交互会话里**不再问"继续？"（非交互环境仍需 `--yes`，否则退出码 5） |
 | `progress` | `auto\|plain\|off` | `auto` | 安装过程中的逐步骤进度：`auto` 只在交互终端打；`plain` 总是打；`off` 从不打 |
 
+### `timeouts`
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `global` | 时长 | 空（不限） | **整条命令**的总时限：到点后连子进程一起停掉（可用 `--timeout` 临时覆盖） |
+| `command` | 时长 | 空（10m） | 单个外部命令（git / go / apt / cargo…）的时限 |
+| `probe` | 时长 | 空（5s） | 单次版本探测的时限 |
+| `lookup` | 时长 | 空（60s） | 查"最新 tag / 校验和文件"这类元数据请求的时限 |
+| `download` | 时长 | 空（15m） | 单个归档下载的时限 |
+
+```yaml
+timeouts:
+  command: 30m      # 在慢机器上编译/装依赖超过 10 分钟时调大
+  download: 30m     # 限速代理下下载大归档
+  # global: 1h      # 整条命令的上限；不建议常设，容易把"慢"误判成"坏"
+```
+
+留空＝用该环节的内置默认值。配置里的 `global` 会被命令行 `--timeout` 覆盖，
+其余四项也可以用环境变量临时改：`BS_TIMEOUT`（总时限）、`BS_TIMEOUT_COMMAND`、
+`BS_TIMEOUT_PROBE`、`BS_TIMEOUT_LOOKUP`、`BS_TIMEOUT_DOWNLOAD`。
+
+> 超时不是"某一步失败"：bs 会明说"超过总时限（…）已中止"，并且**不会回滚**已经完成的步骤
+>（重跑即可，安装类操作是幂等的）。因此 `--timeout` 适合放在脚本/CI 里兜底，而不是日常随手设。
+
 ## 3. 完整示例
 
 ```yaml
@@ -220,6 +246,10 @@ shell:
 ui:
   confirm: true
   progress: auto
+
+timeouts:
+  command: 30m
+  download: 30m
 ```
 
 ## 4. 常见问题

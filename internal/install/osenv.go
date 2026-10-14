@@ -36,6 +36,8 @@ type OSEnv struct {
 	log      *slog.Logger
 	extraBin []string
 	versions map[string]string
+	// lookup 是元数据查询（最新 tag / 校验和文件）的时限，0 时用 LookupTimeout。
+	lookup time.Duration
 }
 
 // OSEnvOptions 是 OSEnv 的构造参数。
@@ -58,6 +60,10 @@ type OSEnvOptions struct {
 	Runner *cmdx.Runner
 	// Client 允许注入自定义 HTTP 客户端（默认按 Env 构造）。
 	Client *httpx.Client
+	// LookupTimeout 覆盖元数据查询时限（0 = LookupTimeout 常量）。
+	LookupTimeout time.Duration
+	// DownloadTimeout 覆盖单个归档的下载时限（0 = httpx.DefaultDownloadTimeout）。
+	DownloadTimeout time.Duration
 }
 
 // NewOSEnv 构造真实执行环境。
@@ -69,6 +75,9 @@ func NewOSEnv(opt OSEnvOptions) *OSEnv {
 	client := opt.Client
 	if client == nil {
 		client = httpx.New(httpx.DefaultTimeout, opt.Env)
+	}
+	if opt.DownloadTimeout > 0 {
+		client.DownloadTimeout = opt.DownloadTimeout
 	}
 	if httpx.Logger == nil {
 		httpx.Logger = func(format string, args ...any) { log.Debug("http", "msg", fmt.Sprintf(format, args...)) }
@@ -85,7 +94,16 @@ func NewOSEnv(opt OSEnvOptions) *OSEnv {
 		log:      log,
 		extraBin: opt.ExtraPath,
 		versions: opt.Versions,
+		lookup:   opt.LookupTimeout,
 	}
+}
+
+// lookupTimeout 返回元数据查询时限（配置留空时用内置默认值）。
+func (e *OSEnv) lookupTimeout() time.Duration {
+	if e.lookup > 0 {
+		return e.lookup
+	}
+	return LookupTimeout
 }
 
 // Run 实现 ExecEnv。
@@ -125,7 +143,7 @@ const LookupTimeout = 60 * time.Second
 // 这是只读请求，干跑时也照常进行：plan 需要真实的校验和才能在预览里
 // 显示"将下载什么、校验什么"，而读取本身不会改变系统状态。
 func (e *OSEnv) FetchText(ctx context.Context, url string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, LookupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.lookupTimeout())
 	defer cancel()
 	start := time.Now()
 	text, err := e.client.GetString(ctx, url)
@@ -140,7 +158,7 @@ func (e *OSEnv) LatestRelease(ctx context.Context, repo string) (string, error) 
 	if e.dryRun {
 		return "", ErrDryRun
 	}
-	ctx, cancel := context.WithTimeout(ctx, LookupTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.lookupTimeout())
 	defer cancel()
 	start := time.Now()
 	tag, err := ghrelease.LatestTag(ctx, e.client, repo)

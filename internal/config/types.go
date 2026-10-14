@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kingfs/Bootstrap/pkg/proxyenv"
@@ -31,13 +33,82 @@ var AllKinds = []Kind{KindRuntime, KindVersionMgr, KindPkgMgr, KindCLI, KindDevD
 //
 // 业务代码只读这个结构体，不直接调用 viper.Get —— 见 docs/design.md §5.2。
 type Config struct {
-	Version int         `mapstructure:"version" yaml:"version"`
-	Log     LogConfig   `mapstructure:"log" yaml:"log"`
-	Repo    RepoConfig  `mapstructure:"repo" yaml:"repo"`
-	Proxy   ProxyConfig `mapstructure:"proxy" yaml:"proxy"`
-	Tool    ToolConfig  `mapstructure:"tool" yaml:"tool"`
-	Shell   ShellConfig `mapstructure:"shell" yaml:"shell"`
-	UI      UIConfig    `mapstructure:"ui" yaml:"ui"`
+	Version int           `mapstructure:"version" yaml:"version"`
+	Log     LogConfig     `mapstructure:"log" yaml:"log"`
+	Repo    RepoConfig    `mapstructure:"repo" yaml:"repo"`
+	Proxy   ProxyConfig   `mapstructure:"proxy" yaml:"proxy"`
+	Tool    ToolConfig    `mapstructure:"tool" yaml:"tool"`
+	Shell   ShellConfig   `mapstructure:"shell" yaml:"shell"`
+	UI      UIConfig      `mapstructure:"ui" yaml:"ui"`
+	Time    TimeoutConfig `mapstructure:"timeouts" yaml:"timeouts"`
+}
+
+// TimeoutConfig 是各环节的时限，写成 Go 时长字符串（"30s"、"10m"）。
+//
+// 留空表示"用该环节的内置默认值"（外部命令 10min、版本探测 5s、元数据查询 60s、
+// 下载 15min）——默认值散落在各自包里，这里只负责覆盖，不重复定义一遍。
+type TimeoutConfig struct {
+	// Global 是整个 bs 命令的总时限：到点后所有子进程一起被停掉。
+	Global string `mapstructure:"global" yaml:"global"`
+	// Command 是单个外部命令（git/go/apt/...）的时限。
+	Command string `mapstructure:"command" yaml:"command"`
+	// Probe 是单次版本探测的时限。
+	Probe string `mapstructure:"probe" yaml:"probe"`
+	// Lookup 是"查最新 tag / 校验和文件"这类元数据请求的时限。
+	Lookup string `mapstructure:"lookup" yaml:"lookup"`
+	// Download 是单个归档下载的时限。
+	Download string `mapstructure:"download" yaml:"download"`
+}
+
+// Timeouts 是 TimeoutConfig 解析后的形式；0 表示"用内置默认值"。
+type Timeouts struct {
+	Global   time.Duration
+	Command  time.Duration
+	Probe    time.Duration
+	Lookup   time.Duration
+	Download time.Duration
+}
+
+// ResolvedTimeouts 解析时限配置。字段留空即为 0（用内置默认值）。
+func (c *Config) ResolvedTimeouts() (Timeouts, error) {
+	var out Timeouts
+	for _, f := range []struct {
+		key string
+		raw string
+		dst *time.Duration
+	}{
+		{"timeouts.global", c.Time.Global, &out.Global},
+		{"timeouts.command", c.Time.Command, &out.Command},
+		{"timeouts.probe", c.Time.Probe, &out.Probe},
+		{"timeouts.lookup", c.Time.Lookup, &out.Lookup},
+		{"timeouts.download", c.Time.Download, &out.Download},
+	} {
+		d, err := ParseTimeout(f.key, f.raw)
+		if err != nil {
+			return Timeouts{}, err
+		}
+		*f.dst = d
+	}
+	return out, nil
+}
+
+// ParseTimeout 解析一个时限字符串：空串合法（返回 0＝用默认值），否则必须是正数时长。
+//
+// 只接受带单位的写法（"30s"/"10m"/"1h"）：裸数字在不同环节含义不同（秒？分？），
+// 与其猜，不如要求写清楚。
+func ParseTimeout(key, raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a valid duration (try 30s, 10m, 1h)", key, raw)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be > 0", key)
+	}
+	return d, nil
 }
 
 // LogConfig 控制日志输出。

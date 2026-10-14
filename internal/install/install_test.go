@@ -3,12 +3,17 @@ package install
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kingfs/Bootstrap/internal/manifest"
+	"github.com/kingfs/Bootstrap/pkg/httpx"
 )
 
 func TestRender(t *testing.T) {
@@ -746,5 +751,35 @@ tools:
 		if action.Summary != tc.want {
 			t.Errorf("%v summary = %q, want %q", tc.op, action.Summary, tc.want)
 		}
+	}
+}
+
+// TestOSEnvTimeoutsAreApplied：`timeouts.lookup` / `timeouts.download` 必须落到
+// HTTP 客户端与元数据请求上——"配置写了但没接线"是这类功能最容易翻的车。
+func TestOSEnvTimeoutsAreApplied(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer slow.Close()
+
+	client := httpx.New(time.Minute, nil)
+	env := NewOSEnv(OSEnvOptions{
+		Client:          client,
+		HomeDir:         t.TempDir(),
+		GOOS:            "linux",
+		DownloadTimeout: 5 * time.Minute,
+		LookupTimeout:   50 * time.Millisecond,
+	})
+	if client.DownloadTimeout != 5*time.Minute {
+		t.Errorf("客户端下载时限 = %v，期望 5m", client.DownloadTimeout)
+	}
+
+	start := time.Now()
+	if _, err := env.FetchText(context.Background(), slow.URL+"/checksums.txt"); err == nil {
+		t.Fatal("元数据请求超时应当报错")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("%v 才返回：lookup 时限没有生效（应当 ~50ms）", elapsed)
 	}
 }

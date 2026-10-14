@@ -1168,7 +1168,7 @@ type Platform struct {
 
 ```
 bs [--config FILE] [--repo-root DIR] [--dry-run] [--yes] [--json] [--no-color]
-   [--interactive|--non-interactive] [--plain-ui] [-v|-vv] [--log-level LEVEL] <command>
+   [--interactive|--non-interactive] [--plain-ui] [--timeout DURATION] [-v|-vv] [--log-level LEVEL] <command>
 
 version              版本信息（--json：version/commit/date/go_version/os/arch）
 doctor               环境自检（只读）：平台、必需命令、包管理器、配置、清单、代理、PATH、rc 受管块、仓库根
@@ -1236,7 +1236,7 @@ completion <shell>   由 cobra 提供
 **尚未实现**（设计意图，不在当前二进制里；写在这里以免误读）：
 `config get|set|edit`、`tool upgrade --all`、`tool uninstall --allow-system`、`proxy remove`、`repo info`、
 `shell snippet edit|show|remove`、`shell update`、
-跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、全局 `--timeout`、
+跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、
 Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
 
 ---
@@ -1309,7 +1309,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 关注点 | 方案（当前实现） |
 |---|---|
 | 错误处理 | `fmt.Errorf("...: %w", err)` 逐层包装；领域错误用 Sentinel + `errors.Is/As`；`internal/cli/exit.go` 是**唯一**把 error 映射成退出码的地方（`codedError` + cobra 文案识别） |
-| 上下文 | 所有 IO 首参 `context.Context`；超时集中在四处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、元数据查询 60s（`install.LookupTimeout`，只用于"最新 tag / 校验和文件 / 版本文本"）、通用 GET 60s 与下载 15min（`httpx.DefaultTimeout` / `httpx.DefaultDownloadTimeout`）、单条连接 10s（`httpx.dialTimeout`）。全局 `--timeout` **尚未实现** |
+| 上下文 | 所有 IO 首参 `context.Context`；超时集中在四处：外部命令默认 10min（`cmdx.DefaultCommandTimeout`）、版本探测 5s（`detect.ProbeTimeout`）、元数据查询 60s（`install.LookupTimeout`，只用于"最新 tag / 校验和文件 / 版本文本"）、通用 GET 60s 与下载 15min（`httpx.DefaultTimeout` / `httpx.DefaultDownloadTimeout`）、单条连接 10s（`httpx.dialTimeout`）。这五个数都能被配置覆盖（`timeouts.{command,probe,lookup,download}`），`--timeout`/`timeouts.global` 再给整条命令加一层总时限；取消时**杀整棵进程组**并配 `cmd.WaitDelay`，否则孤儿子进程会抱着管道把 `Wait` 拖住，超时形同虚设 |
 | 并发 | `errgroup` 只用在两处：工具探测（`min(8, NumCPU)`）与 `repo sync`（`repo.sync.jobs`）；安装执行是**串行**的（依赖顺序优先，暂不并行） |
 | 配置注入 | 依赖显式构造（`app.New` 装配 `Runtime`/`App`），**没有 `init()` 副作用**——安装器注册表也由 `install.NewRegistry()` 显式构建 |
 | 平台分支 | 平台差异收敛在 `pkg/hostinfo`（探测）与 `internal/config/paths.go`（目录策略）；业务代码里不散落 `runtime.GOOS` |
@@ -1410,7 +1410,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | `golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、`bs doctor --fix`、shell completion 覆盖、README/AGENTS/ADR 定稿 | ⏳ 未开始 |
+| **M4 打磨** | 长期好用 | 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、`tool install -i` 交互勾选、`bs doctor --fix`、下载断点续传、`golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、shell completion 覆盖、README/AGENTS/ADR 定稿 | 🔄 进行中 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
 
 **M2 完成判据的自查**：
@@ -1508,7 +1508,8 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 M3 已把上面这批接线补齐：`ui.confirm`（交互会话里可关掉确认）、`ui.progress`（逐步骤进度）、
 `shell.auto_path` / `shell.auto_proxy`（`bs shell init` 渲染时生效，不写 rc）、
 `--interactive` / `--plain-ui`、`huh` 交互式勾选、`bs init`、`bs self-update`。
-仍未接线（属 M4）：全局 `--timeout`、`golangci-lint`/`govulncheck`。
+M4 又补上了全局 `--timeout`（含 `timeouts.*` 配置与"取消时杀整棵进程组"）。
+仍未接线：`golangci-lint`/`govulncheck` 的接入。
 
 ## 18.4 待修缺陷（代码与设计不一致，已知且未修）
 

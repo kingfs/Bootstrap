@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/detect"
 	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/manifest"
@@ -131,7 +132,7 @@ func (a *App) detector() *detect.Detector {
 		Executor:    &probe,
 		LookPath:    lookup,
 		HomeDir:     a.Paths.HomeDir,
-		Timeout:     detect.ProbeTimeout,
+		Timeout:     withDefault(a.timeouts().Probe, detect.ProbeTimeout),
 		Concurrency: detect.MaxConcurrency,
 		Cache:       &detect.Cache{Path: filepath.Join(a.Paths.CacheDir, "probe.json")},
 	}
@@ -477,7 +478,28 @@ func (a *App) installEnv() install.ExecEnv {
 		Versions:  a.Cfg.Tool.Versions,
 		Log:       a.Log,
 		Runner:    a.Runner,
+		// 时限留空 = 用各环节内置默认值（见 config.TimeoutConfig 的注释）。
+		LookupTimeout:   a.timeouts().Lookup,
+		DownloadTimeout: a.timeouts().Download,
 	})
+}
+
+// timeouts 返回解析后的时限配置（已在 config.Validate 阶段校验过，这里解析失败就退回默认值）。
+func (a *App) timeouts() config.Timeouts {
+	t, err := a.Cfg.ResolvedTimeouts()
+	if err != nil {
+		a.Log.Warn("timeouts config ignored", "err", err)
+		return config.Timeouts{}
+	}
+	return t
+}
+
+// withDefault 让"0 = 用内置默认值"这条约定只写一次。
+func withDefault(override, fallback time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	return fallback
 }
 
 // extraPathDirs 是参与 LookPath 的额外目录（配置 + 约定俗成的用户 bin 目录）。

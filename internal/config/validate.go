@@ -32,6 +32,11 @@ func (c *Config) Validate() error {
 		fail("log.color %q must be one of auto|always|never", c.Log.Color)
 	}
 
+	// timeouts：格式错误要在 `bs config validate` 里一次性报出来，而不是等到某条命令跑一半。
+	if _, err := c.ResolvedTimeouts(); err != nil {
+		fail("%v", err)
+	}
+
 	// repo
 	if strings.TrimSpace(c.Repo.Layout) == "" {
 		fail("repo.layout must not be empty")

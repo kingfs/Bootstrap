@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sandbox 把配置/状态/缓存目录全部重定向到临时目录，并返回一个可注入输出缓冲区的 Runtime。
@@ -535,4 +537,84 @@ func diffPaths(a, b []string) []string {
 		}
 	}
 	return out
+}
+
+// TestGlobalTimeoutStopsProcessTree：`--timeout` 必须真的把慢命令连同子进程一起停掉。
+//
+// 假 git 里套一个后台 sleep：只杀直接子进程的话，孤儿 sleep 会抱着管道不放，
+// 命令要等它自然结束才返回（这条用例以前真的会卡满）。
+func TestGlobalTimeoutStopsProcessTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 sh/sleep 构造进程树只在类 Unix 上成立")
+	}
+	rt, _, _, root := sandbox(t)
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFakeBin(t, bin, "git", "#!/bin/sh\nsleep 30 & sleep 30\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	code, _, stderr := run(t, rt, "--timeout", "300ms", "repo", "get", "kingfs/Bootstrap")
+	elapsed := time.Since(start)
+
+	if code != ExitFail {
+		t.Fatalf("exit = %d，期望 %d\nstderr=%s", code, ExitFail, stderr)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("超时后 %v 才返回：进程树没被停掉", elapsed)
+	}
+	if !strings.Contains(stderr, "超过总时限") || !strings.Contains(stderr, "300ms") {
+		t.Errorf("应当说清是总时限到了：\n%s", stderr)
+	}
+	// 沙箱里不该留下半个仓库（假的 git 什么也不做，这里主要防"停不掉还写盘"）
+	if _, err := os.Stat(filepath.Join(root, "home", "src", "github.com", "kingfs", "Bootstrap")); err == nil {
+		t.Error("失败的 clone 不该留下目录")
+	}
+}
+
+// TestTimeoutFromConfigAndCommandRunner：配置里的 timeouts.global 与 timeouts.command
+// 都要生效，并且 flag 覆盖配置。
+func TestTimeoutFromConfigAndCommandRunner(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, `version: 1
+log: {level: error}
+timeouts:
+  global: 2s
+  command: 1500ms
+`)
+
+	code, _, stderr := run(t, rt, "version")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstderr=%s", code, stderr)
+	}
+	if got := rt.App.Runner.DefaultTimeout; got != 1500*time.Millisecond {
+		t.Errorf("Runner.DefaultTimeout = %v，期望取 timeouts.command", got)
+	}
+
+	// flag 覆盖配置：配置说 5s，flag 说 300ms，实际必须按 300ms 掐断。
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFakeBin(t, bin, "git", "#!/bin/sh\nsleep 30\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeConfig(t, root, `version: 1
+log: {level: error}
+timeouts:
+  global: 5s
+`)
+	start := time.Now()
+	code, _, stderr = run(t, rt, "--timeout", "300ms", "repo", "get", "kingfs/Bootstrap")
+	elapsed := time.Since(start)
+	if code != ExitFail {
+		t.Fatalf("exit = %d，期望 %d\nstderr=%s", code, ExitFail, stderr)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("%v 才返回：flag 没有覆盖配置里的 5s", elapsed)
+	}
+	if !strings.Contains(stderr, "300ms") {
+		t.Errorf("报错应当提到 flag 给的 300ms：\n%s", stderr)
+	}
 }

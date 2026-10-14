@@ -7,8 +7,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kingfs/Bootstrap/internal/config"
+	"github.com/kingfs/Bootstrap/internal/detect"
 	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/ui"
 )
@@ -484,5 +486,45 @@ tools:
 	}
 	if len(f.multiSeen) != 0 {
 		t.Error("没有候选时不该弹界面")
+	}
+}
+
+// TestTimeoutsReachDetectorAndEnv：配置里的时限必须真的装到执行器上。
+//
+// 断言的是"装配结果"而不是"某次超时行为"：行为测试靠 pkg/cmdx 与 internal/cli 两层覆盖，
+// 这里只要保证配置里的数没有在路上被丢掉。
+func TestTimeoutsReachDetectorAndEnv(t *testing.T) {
+	a, _ := toolSandboxApp(t, testManifest)
+	a.Cfg.Time = config.TimeoutConfig{
+		Global: "1m", Command: "2m", Probe: "3s", Lookup: "4s", Download: "5m",
+	}
+
+	if got := a.timeouts().Probe; got != 3*time.Second {
+		t.Errorf("timeouts().Probe = %v，期望 3s", got)
+	}
+	if got := a.detector().Timeout; got != 3*time.Second {
+		t.Errorf("detector.Timeout = %v，期望取配置的 3s", got)
+	}
+	if _, ok := a.installEnv().(*install.OSEnv); !ok {
+		t.Fatal("installEnv 应当是 *install.OSEnv")
+	}
+	// 元数据/下载时限如何落到 HTTP 客户端上，由 internal/install 的单测直接断言
+	//（那里能拿到自己注入的 client），这里只负责"配置有没有被读出来"。
+}
+
+// TestTimeoutsFallBackToBuiltinDefaults：配置留空时不能变成"0 秒超时"。
+func TestTimeoutsFallBackToBuiltinDefaults(t *testing.T) {
+	a, _ := toolSandboxApp(t, testManifest)
+	if got := a.timeouts(); got != (config.Timeouts{}) {
+		t.Fatalf("默认应当是全 0（＝用各环节默认值），实际 %+v", got)
+	}
+	if got := a.detector().Timeout; got != detect.ProbeTimeout {
+		t.Errorf("detector.Timeout = %v，期望回退到 %v", got, detect.ProbeTimeout)
+	}
+	if got := withDefault(0, 7*time.Second); got != 7*time.Second {
+		t.Errorf("withDefault(0, 7s) = %v", got)
+	}
+	if got := withDefault(3*time.Second, 7*time.Second); got != 3*time.Second {
+		t.Errorf("withDefault(3s, 7s) = %v", got)
 	}
 }

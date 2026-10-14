@@ -69,7 +69,9 @@ func (a *App) selfUpdateOptions(opt SelfUpdateOptions) selfupdate.Options {
 
 // httpClient 造一个走当前网络环境的 HTTP 客户端（代理注入与其它下载一致）。
 func (a *App) httpClient() *httpx.Client {
-	return httpx.New(httpx.DefaultTimeout, a.NetworkEnv())
+	c := httpx.New(httpx.DefaultTimeout, a.NetworkEnv())
+	c.DownloadTimeout = withDefault(a.timeouts().Download, httpx.DefaultDownloadTimeout)
+	return c
 }
 
 // exePath 返回被替换的二进制路径（测试可注入 ExePath）。

@@ -123,6 +123,13 @@ func (r *Runner) Run(ctx context.Context, c Command) (Result, error) {
 	if timeout <= 0 {
 		timeout = DefaultCommandTimeout
 	}
+	// 上层（`--timeout`）可能挂了更短的总时限：报错文案要说**真正生效**的那个数，
+	// 否则用户按 "(timeout 10m0s)" 去查，永远对不上自己设的 30s。
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < timeout {
+			timeout = left
+		}
+	}
 
 	res := Result{Command: c}
 	if r.DryRun {
@@ -153,6 +160,12 @@ func (r *Runner) Run(ctx context.Context, c Command) (Result, error) {
 		cmd.Stderr = io.MultiWriter(&stderr, r.Stderr)
 	}
 
+	// 取消时杀整棵进程树；WaitDelay 是兜底：万一某个子孙进程仍抱着管道不放，
+	// 等待最多 3 秒就放弃读取（否则 `cmd.Wait` 会被孤儿进程拖住，超时形同虚设）。
+	setProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	cmd.WaitDelay = 3 * time.Second
+
 	start := time.Now()
 	r.logf(ctx, slog.LevelDebug, "exec", "cmd", r.Redact(c.String()), "dir", dir)
 	err := cmd.Run()
@@ -168,7 +181,9 @@ func (r *Runner) Run(ctx context.Context, c Command) (Result, error) {
 	exitErr := &ExitError{Result: res}
 	exitErr.cause = err
 	if cctx.Err() == context.DeadlineExceeded {
-		return res, fmt.Errorf("%w (timeout %s)", exitErr, timeout)
+		// 把 context 的错误一起包进来：上层（例如总时限提示）用 errors.Is 判得出来，
+		// 只看文案的话"命令被杀"和"命令自己失败"是分不清的。
+		return res, fmt.Errorf("%w (timeout %s): %w", exitErr, timeout, context.DeadlineExceeded)
 	}
 	return res, exitErr
 }
