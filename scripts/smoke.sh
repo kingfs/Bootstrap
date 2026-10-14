@@ -543,6 +543,16 @@ assert_missing "init 干跑不真的生成配置" "$WORK/freshcfg/config.yaml"
 assert_missing "init 干跑不装东西" "$WORK/home/.local/bin/ripgrep"
 assert_missing "init 干跑不碰 rc" "$WORK/home/.bashrc.init-test"
 
+# --no-tools：只做准备（生成配置），一个工具都不装——不想让 init 顺手装一堆软件时用
+code=0; out="$(BS_CONFIG_HOME="$WORK/notoolscfg" "$BIN" init --no-tools --yes --no-shell 2>&1)" || code=$?
+assert_eq "init --no-tools 退出码 0" "0" "$code"
+assert_contains "init --no-tools 说明跳过了工具安装" "已跳过工具安装" "$out"
+assert_contains "init --no-tools 指出想装时敲什么" "bs tool install" "$out"
+assert_exists "init --no-tools 仍然生成配置" "$WORK/notoolscfg/config.yaml"
+assert_missing "init --no-tools 一个工具都不装" "$WORK/home/.local/bin/ripgrep"
+code=0; out="$("$BIN" init --no-tools --tools ripgrep --yes 2>&1)" || code=$?
+assert_eq "init --no-tools 与 --tools 互斥" "2" "$code"
+
 # 非交互 + 没有 --yes：必须拒绝（退出码 5），绝不能阻塞等输入
 code=0; out="$("$BIN" init 2>&1)" || code=$?
 assert_eq "init 缺 --yes 退出码 5" "5" "$code"

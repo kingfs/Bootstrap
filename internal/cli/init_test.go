@@ -84,8 +84,8 @@ func sandboxForInit(t *testing.T) (*Runtime, *bytes.Buffer, *bytes.Buffer, strin
 	}
 	writeConfig(t, root, strings.ReplaceAll(initTestConfig, "%USERDIR%", userDir))
 
-	// 假管理器：`g install <x>` 把对应命令"装"出来。
-	// PATH 里保留 /usr/bin:/bin 是因为脚本需要 chmod（shell 内建改不了权限位）。
+	// 假管理器：`g install <x>` 把对应命令"装"出来（脚本要用 chmod 设可执行位，
+	// 下面把它软链进 binDir，因为 shell 内建改不了权限位）。
 	binDir := filepath.Join(root, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
@@ -369,5 +369,155 @@ func TestInitMissingOnlyInstallsOnlyMissing(t *testing.T) {
 	}
 	if res.Mode != "missing" || len(res.Tools) != 1 || res.Tools[0] != "cli-b" {
 		t.Errorf("应当只补缺失的 cli-b：mode=%s tools=%v", res.Mode, res.Tools)
+	}
+}
+
+// TestInitNoToolsSkipsInstall：--no-tools 只做环境准备——配置照生成，一个工具都不装。
+// 新机器上"先看清环境、装什么以后再说"就靠这条路径。
+func TestInitNoToolsSkipsInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
+	rt, _, _, root := sandboxForInit(t)
+	// 沙箱里先没有配置：--no-tools 也不该跳过"生成默认配置"这一步。
+	if err := os.Remove(filepath.Join(root, "config", "config.yaml")); err != nil {
+		t.Fatalf("remove config: %v", err)
+	}
+
+	code, stdout, stderr := run(t, rt, "init", "--no-tools", "--yes", "--no-shell", "--json")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	var res struct {
+		Mode          string   `json:"selection_mode"`
+		SkipTools     bool     `json:"skip_tools"`
+		Tools         []string `json:"tools"`
+		ConfigCreated bool     `json:"config_created"`
+		Report        *struct {
+			Steps []struct {
+				Status string `json:"status"`
+			} `json:"steps"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil {
+		t.Fatalf("bad json: %v\n%s", err, stdout)
+	}
+	if !res.SkipTools || res.Mode != "skipped" {
+		t.Errorf("应当报告「跳过了工具安装」：mode=%s skip_tools=%v", res.Mode, res.SkipTools)
+	}
+	if !res.ConfigCreated {
+		t.Error("--no-tools 只跳过装工具，配置该生成还得生成")
+	}
+	if res.Report != nil {
+		t.Errorf("--no-tools 不该跑安装：%+v", res.Report)
+	}
+	// 探测阶段可能只读地问一句假管理器的版本，但绝不能出现安装动作。
+	if log, err := os.ReadFile(filepath.Join(root, "fake-g.log")); err == nil {
+		if strings.Contains(string(log), "install") {
+			t.Errorf("--no-tools 下不该执行安装：\n%s", log)
+		}
+	}
+
+	// 文本模式要顺带告诉用户"想装的时候敲什么"。
+	_, stdout, _ = run(t, rt, "init", "--no-tools", "--yes", "--no-shell")
+	if !strings.Contains(stdout, "已跳过工具安装") || !strings.Contains(stdout, "bs tool install") {
+		t.Errorf("应当说明跳过了什么、以及想装时怎么办：\n%s", stdout)
+	}
+}
+
+// TestInitInteractiveSkipTools：交互式里选"先不装工具"等价于 --no-tools。
+func TestInitInteractiveSkipTools(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
+	rt, _, _, root := sandboxForInit(t)
+	yes := true
+	rt.interactiveOverride = &yes
+	// 纯文本向导按"编号或名字"选：这里直接指名道姓（--json 属于非交互，会走另一条分支）。
+	rt.Opts.In = strings.NewReader("none\n")
+
+	code, stdout, stderr := run(t, rt, "init", "--no-shell")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "已跳过工具安装") {
+		t.Errorf("应当说明跳过了工具安装：\n%s", stdout)
+	}
+	if log, err := os.ReadFile(filepath.Join(root, "fake-g.log")); err == nil {
+		if strings.Contains(string(log), "install") {
+			t.Errorf("选了「先不装」就不该执行安装：\n%s", log)
+		}
+	}
+}
+
+// TestInitNoToolsConflicts：--no-tools 与"选工具"的旗标互斥（它们表达相反的意思）。
+func TestInitNoToolsConflicts(t *testing.T) {
+	rt, _, _, _ := sandboxForInit(t)
+	cases := [][]string{
+		{"init", "--no-tools", "--tools", "cli-b", "--yes"},
+		{"init", "--no-tools", "--profile", "golang", "--yes"},
+		{"init", "--no-tools", "--missing-only", "--yes"},
+	}
+	for _, args := range cases {
+		code, _, stderr := run(t, rt, args...)
+		if code != ExitUsage {
+			t.Errorf("%v: exit = %d, want %d（stderr=%s）", args, code, ExitUsage, stderr)
+		}
+		if !strings.Contains(stderr, "--no-tools") {
+			t.Errorf("%v: 错误信息应当点出 --no-tools：%s", args, stderr)
+		}
+	}
+}
+
+// TestInitDryRunPrintsPlanOnce：干跑只该有一份表——计划表。
+// 结果表在干跑下是同一份内容的翻版（状态从 install 变成 planned），不该再刷一遍。
+func TestInitDryRunPrintsPlanOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
+	rt, _, _, _ := sandboxForInit(t)
+	code, stdout, stderr := run(t, rt, "init", "--dry-run", "--yes", "--tools", "cli-b", "--no-shell")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if n := strings.Count(stdout, "动作"); n != 1 {
+		t.Errorf("计划表应当只出现一次，实际 %d 次：\n%s", n, stdout)
+	}
+	if strings.Contains(stdout, "结果") {
+		t.Errorf("干跑不该再打一份结果表：\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "1 个需要处理") {
+		t.Errorf("汇总行应当说明要处理几个：\n%s", stdout)
+	}
+}
+
+// TestInitReportCollapsesSkips：真跑时结果表只列"动过的"，
+// 已就绪的项目收成一行带名字的汇总（信息不丢，只是不占表格）。
+func TestInitReportCollapsesSkips(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
+	rt, _, _, _ := sandboxForInit(t)
+	// 第一次：假管理器把 cli-b 装出来。
+	if code, stdout, stderr := run(t, rt, "init", "--tools", "cli-b", "--yes", "--no-shell"); code != ExitOK {
+		t.Fatalf("第一次 exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	// 第二次：cli-b 已经装好 → 计划里是"无需处理"，结果里是"跳过"。
+	code, stdout, stderr := run(t, rt, "init", "--tools", "cli-b", "--yes", "--no-shell")
+	if code != ExitOK {
+		t.Fatalf("第二次 exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "无需处理") {
+		t.Errorf("计划里应当把已就绪的收成一行：\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "跳过的 1 个：cli-b") {
+		t.Errorf("结果汇总应当列出跳过的名字：\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "安装：完成 0，跳过 1，失败 0") {
+		t.Errorf("计数行不对：\n%s", stdout)
 	}
 }

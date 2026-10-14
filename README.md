@@ -54,6 +54,7 @@ bs init                         # 交互式：看概览 → 勾选工具 → 确
 bs init --dry-run               # 只看看会发生什么，一行都不写
 bs init --profile base --yes    # 全自动：用默认套装，不问任何问题
 bs init --missing-only --yes    # 只补当前缺的
+bs init --no-tools --yes        # 只做准备（配置/仓库根/受管块），一个工具都不装
 ```
 
 日常则是这套循环：
@@ -80,8 +81,9 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 
 | 命令 | 说明 |
 | --- | --- |
-| `bs init` | 新机器一把梭：打印环境概览 → 选工具（交互勾选 / 套装 / 只补缺失）→ 确认 → 安装，可选顺手 `shell install` |
+| `bs init` | 新机器一把梭：打印环境概览 → 选工具（交互勾选 / 套装 / 只补缺失 / 先不装）→ 确认 → 安装，可选顺手 `shell install` |
 | `bs init --profile P` / `--tools a,b` / `--missing-only` | 明确"装什么"，不再问选择（三者互斥） |
+| `bs init --no-tools` | 只做准备：生成配置、建仓库根、可选的 shell 受管块，**一个工具都不装**（不想让 init 顺手装一堆软件时用；之后随时 `bs tool install`） |
 | `bs init --with-shell` / `--no-shell` | 是否在收尾时安装 shell 受管块（交互时问一次） |
 | `bs self-update` | 下载最新发布版、校验 sha256、自检新二进制能跑、备份旧文件后原地替换 |
 | `bs self-update --check` | 只查有没有新版本（不下载、不改动） |

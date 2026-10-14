@@ -62,6 +62,7 @@ const (
 	SelectionManual  InitSelectionMode = "manual"  // 交互式手工勾选
 	SelectionMissing InitSelectionMode = "missing" // 只补缺失
 	SelectionNone    InitSelectionMode = "none"    // 没有需要处理的工具
+	SelectionSkipped InitSelectionMode = "skipped" // 明确要求这次不装工具（--no-tools / 交互选"先不装"）
 )
 
 // InitOptions 控制 `bs init` 的行为。
@@ -72,6 +73,9 @@ type InitOptions struct {
 	Tools []string
 	// MissingOnly 为真时自动只选"当前缺失"的工具（给已有机器"补缺"用）。
 	MissingOnly bool
+	// NoTools 为真时只做"环境准备"（生成配置、可选 shell 受管块），一个工具都不装：
+	// 新机器上想先看清环境、或者本来就有自己的装法时用得上。
+	NoTools bool
 	// Prompter 是交互通道；非交互会话请传 ui.NonInteractive{}。
 	Prompter ui.Prompter
 	// AssumeYes 表示已获得授权（--yes 或 ui.confirm=false）：不再询问确认。
@@ -100,6 +104,9 @@ type InitResult struct {
 	DryRunPlannedConfig bool `json:"dry_run_planned_config,omitempty"`
 	// SkippedShell 表示按用户/配置的决定没有动 shell 启动文件。
 	SkippedShell bool `json:"skipped_shell,omitempty"`
+	// SkipTools 表示这次没有处理任何工具（--no-tools，或交互式里选了"先不装工具"）。
+	// 概览里的探测结果照旧有效：调用方据此告诉用户"缺什么、想装时敲哪条命令"。
+	SkipTools bool `json:"skip_tools,omitempty"`
 }
 
 // EnsureConfig 生成默认配置文件（已存在且未 force 时什么都不做）。
@@ -199,8 +206,16 @@ func (a *App) Init(ctx context.Context, opt InitOptions) (InitResult, error) {
 			}
 			res.ConfigCreated = created
 			res.DryRunPlannedConfig = a.DryRun
-			a.Log.Info("config", "file", path, "created", created, "dry_run", a.DryRun)
+			// 用户可见的提示由 cli 打（"已生成配置文件 …"）；这里只留调试信息，
+			// 否则 `level=INFO msg=config …` 会混进正常输出里。
+			a.Log.Debug("config", "file", path, "created", created, "dry_run", a.DryRun)
 		}
+	}
+
+	if opt.NoTools {
+		// 只做准备：概览（含"缺什么"的只读探测）已经给过，计划与执行整段跳过。
+		res.Mode, res.SkipTools = SelectionSkipped, true
+		return res, a.finishInit(opt, &res)
 	}
 
 	ids, profile, mode, err := a.chooseInitTools(ctx, opt, overview)
@@ -208,6 +223,10 @@ func (a *App) Init(ctx context.Context, opt InitOptions) (InitResult, error) {
 		return res, err
 	}
 	res.Mode, res.Profile, res.Tools = mode, profile, ids
+	if mode == SelectionSkipped {
+		res.SkipTools = true
+		return res, a.finishInit(opt, &res)
+	}
 
 	if len(ids) == 0 && profile == "" {
 		// 没有任何要处理的工具（例如"只补缺失"时一个都不缺）：不是错误。
@@ -316,11 +335,14 @@ func (a *App) chooseInitTools(ctx context.Context, opt InitOptions, overview Ini
 		{Value: "profile", Label: "按套装快速开始", Hint: "推荐；默认套装 " + a.Cfg.Tool.DefaultProfile},
 		{Value: "missing", Label: "只补缺失的工具", Hint: fmt.Sprintf("%d 个", overview.Tools.Missing)},
 		{Value: "manual", Label: "手工挑选", Hint: "逐个勾选"},
+		{Value: "none", Label: "先不装工具", Hint: "只配好环境，之后随时 bs tool install"},
 	})
 	if err != nil {
 		return nil, "", "", err
 	}
 	switch entry {
+	case "none":
+		return nil, "", SelectionSkipped, nil
 	case "missing":
 		missing, err := a.missingIDs(ctx)
 		if err != nil {

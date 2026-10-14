@@ -23,6 +23,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
 		missingOnly bool
 		withShell   bool
 		noShell     bool
+		noTools     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -31,7 +32,8 @@ func (rt *Runtime) initCmd() *cobra.Command {
 
   1. 只读探测并展示环境（系统/架构、配置与目录、仓库根、代理、工具装机情况）；
   2. 配置文件不存在时，问一句后生成默认配置（等价 ` + "`bs config init`" + `）；
-  3. 选工具：交互式可选套装 / 只补缺失 / 逐个勾选；非交互式用配置里的默认套装；
+  3. 选工具：交互式可选套装 / 只补缺失 / 逐个勾选 / 先不装；非交互式用配置里的默认套装
+     （--no-tools 直接跳过这一步：只做准备，一个工具都不装）；
   4. 先算好计划并展示，确认后执行（幂等：已装好的会跳过）；
   5. 可选把受管块写进 shell 启动文件（代理命令即时生效 + 自动装配 PATH）。
 
@@ -40,6 +42,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
   bs init --profile full --yes       # 指定套装
   bs init --tools golang,ripgrep -y  # 只装指定的几个
   bs init --missing-only --yes       # 只补当前缺的
+  bs init --no-tools --yes           # 只做准备（配置/仓库根/受管块），一个工具都不装
 
 安全约定：
   * --dry-run 只展示，不写配置、不装东西、不碰 rc 文件；
@@ -53,10 +56,14 @@ func (rt *Runtime) initCmd() *cobra.Command {
 			if missingOnly && (profile != "" || len(toolList) > 0) {
 				return usageErrf("--missing-only 不能与 --profile/--tools 同时使用（它们已经明确了要装什么）")
 			}
+			if noTools && (profile != "" || len(toolList) > 0 || missingOnly) {
+				return usageErrf("--no-tools 表示不装任何工具，不能与 --profile/--tools/--missing-only 同时使用")
+			}
 			opt := app.InitOptions{
 				Profile:     profile,
 				Tools:       splitList(toolList),
 				MissingOnly: missingOnly,
+				NoTools:     noTools,
 				Prompter:    rt.prompter(),
 				// ui.confirm=false 只影响"交互会话里还要不要问一句"：
 				// 非交互环境依然必须 --yes，否则退出码 5（AGENTS.md §8.6 红线）。
@@ -104,6 +111,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "用哪个套装（默认：配置里的 tool.default_profile，交互时可改选）")
 	cmd.Flags().StringSliceVar(&toolList, "tools", nil, "只处理这些工具（逗号分隔，可重复）")
 	cmd.Flags().BoolVar(&missingOnly, "missing-only", false, "只处理当前缺失的工具")
+	cmd.Flags().BoolVar(&noTools, "no-tools", false, "只做环境准备（配置/仓库根/受管块），不安装任何工具")
 	cmd.Flags().BoolVar(&withShell, "with-shell", false, "顺便把 bs 受管块写进 shell 启动文件")
 	cmd.Flags().BoolVar(&noShell, "no-shell", false, "明确不碰 shell 启动文件")
 	return cmd
@@ -166,16 +174,27 @@ func (rt *Runtime) renderInitResult(res app.InitResult) error {
 	if rt.Opts.JSON {
 		return rt.emit(res)
 	}
-	if res.Report != nil {
-		if err := rt.renderReport(*res.Report, install.OpInstall); err != nil {
-			return err
-		}
-	}
+	// 顺序按"实际动手的顺序"来：配置 → 工具 → shell 受管块。
 	switch {
 	case res.DryRunPlannedConfig:
 		fmt.Fprintf(rt.out(), "[dry-run] 会生成配置文件 %s\n", res.Overview.ConfigFile)
 	case res.ConfigCreated:
 		fmt.Fprintf(rt.out(), "已生成配置文件 %s\n", res.Overview.ConfigFile)
+	}
+	if res.SkipTools {
+		fmt.Fprintf(rt.out(), "已跳过工具安装（本机适用 %d：已装 %d，缺失 %d）。\n",
+			res.Overview.Tools.Applicable, res.Overview.Tools.Installed, res.Overview.Tools.Missing)
+		if p := strings.TrimSpace(rt.app().Cfg.Tool.DefaultProfile); p != "" {
+			fmt.Fprintf(rt.out(), "想装的时候：bs tool install --profile %s --yes（或重跑 bs init）\n", p)
+		} else {
+			fmt.Fprintln(rt.out(), "想装的时候：bs tool install --profile <套装> --yes（或重跑 bs init）")
+		}
+	}
+	// dry-run 下计划表刚刚已经逐行展示过，结果表只会是同一份内容的翻版。
+	if res.Report != nil && !rt.Opts.DryRun {
+		if err := rt.renderReport(*res.Report, install.OpInstall); err != nil {
+			return err
+		}
 	}
 	if res.Shell != nil {
 		switch {
@@ -193,8 +212,8 @@ func (rt *Runtime) renderInitResult(res app.InitResult) error {
 	if res.Mode == app.SelectionNone && res.Report == nil {
 		fmt.Fprintln(rt.out(), "没有需要处理的工具，环境已经是目标状态。")
 	}
-	// 收尾提示只在"确实装了东西"时给，避免刷屏。
-	if res.Report != nil && res.Report.Failed() == nil {
+	// 收尾提示只在"确实装了东西"时给，避免刷屏（dry-run 下什么都没装，也不该说"新装的工具"）。
+	if res.Report != nil && res.Report.Changed() {
 		fmt.Fprintln(rt.errOut(), "提示：新装的工具可能需要重开 shell 或执行 `eval \"$(bs env path)\"` 才能进入 PATH。")
 	}
 	return nil

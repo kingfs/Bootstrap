@@ -106,6 +106,10 @@ $out = & $Bin repo get kingfs/Bootstrap --dry-run 2>&1 | Out-String
 Assert-Contains 'dry-run 显示 clone' 'git clone' $out
 Assert-Missing 'dry-run 不创建目录' (Join-Path $homeDir 'src')
 
+Write-Host "`n== init --no-tools（只做准备）" -ForegroundColor Cyan
+$out = & $Bin init --no-tools --yes --no-shell --dry-run 2>&1 | Out-String
+Assert-Contains 'init --no-tools 说明跳过了工具安装' '已跳过工具安装' $out
+
 Write-Host "`n== 退出码" -ForegroundColor Cyan
 & $Bin definitely-not-a-command *> $null
 Assert-Equal '未知命令退出码为 2' 2 $LASTEXITCODE
