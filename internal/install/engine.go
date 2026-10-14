@@ -40,6 +40,9 @@ type EngineOptions struct {
 	Recorder *Recorder
 	// LogDir 非空时，每个工具的命令输出会留一份日志（<LogDir>/logs/...）。
 	LogDir string
+	// OnStep 在每个工具**开始处理前**调用一次，供界面打进度（nil = 不打）。
+	// 放在执行前是刻意的：慢命令要让人知道"现在在做什么"，而不是等结束才看到。
+	OnStep func(Step)
 	// Now 便于测试注入时间。
 	Now func() time.Time
 }
@@ -353,6 +356,9 @@ func (e *Engine) Apply(ctx context.Context, plan Plan, op Op) (Report, error) {
 		if s.Status != StepInstall && s.Status != StepUpgrade && s.Status != StepUninstall {
 			report.Steps = append(report.Steps, s)
 			continue
+		}
+		if e.opt.OnStep != nil {
+			e.opt.OnStep(s)
 		}
 		stepStart := time.Now()
 		out, err := e.applyStep(ctx, s, op)

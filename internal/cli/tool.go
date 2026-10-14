@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/manifest"
+	"github.com/kingfs/Bootstrap/internal/ui"
 )
 
 // toolCmd 是 `bs tool` 的根：清单查询 + 安装/升级/卸载。
@@ -332,7 +332,7 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 	// 真会动系统之前先要一句明确同意（安装/升级/卸载都算破坏性操作）。
 	if err := rt.confirmDestructive(fmt.Sprintf("即将%s %d 个工具，继续？",
 		install.OpLabel(op), plannedCount(plan))); err != nil {
-		if errors.Is(err, errCancelled) {
+		if errors.Is(err, ui.ErrCancelled) {
 			return nil
 		}
 		return err
@@ -529,26 +529,34 @@ func (rt *Runtime) confirmDestructive(prompt string) error {
 		return coded(ExitNeedsInteraction, errors.New(
 			"需要确认但当前是非交互模式：请加 --yes 明确授权（或用 --dry-run 先看计划）"))
 	}
-	fmt.Fprintf(rt.Opts.Err, "%s [y/N] ", prompt)
-	line, err := bufio.NewReader(rt.Opts.In).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return failf("读取确认输入失败：%v", err)
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
+	// ui.confirm=false 只在"能交互"时被尊重：用户明确表示过"别问我"。
+	// 非交互环境的 --yes 要求不受影响（AGENTS.md §8.6 的红线）。
+	if !rt.app().Cfg.UI.Confirm {
 		return nil
 	}
-	fmt.Fprintln(rt.out(), "已取消，未做任何修改。")
-	return errCancelled
+	ok, err := rt.prompter().Confirm(ui.Question{Title: prompt})
+	if err != nil {
+		if errors.Is(err, ui.ErrNotInteractive) {
+			return coded(ExitNeedsInteraction, errors.New(
+				"需要确认但当前是非交互模式：请加 --yes 明确授权（或用 --dry-run 先看计划）"))
+		}
+		return failf("读取确认输入失败：%v", err)
+	}
+	if !ok {
+		fmt.Fprintln(rt.out(), "已取消，未做任何修改。")
+		return ui.ErrCancelled
+	}
+	return nil
 }
-
-// errCancelled 表示"用户主动取消"：不是失败，调用方转成退出码 0。
-var errCancelled = errors.New("cancelled by user")
 
 // interactive 报告当前是否可以进行交互式提问。
 func (rt *Runtime) interactive() bool {
 	if rt.Opts.JSON || rt.Opts.NonInteractive || os.Getenv("CI") != "" {
 		return false
+	}
+	// --interactive 是"我的终端被包装器挡住了，但确实有人"时的显式声明。
+	if rt.Opts.Interactive {
+		return true
 	}
 	if rt.interactiveOverride != nil {
 		return *rt.interactiveOverride

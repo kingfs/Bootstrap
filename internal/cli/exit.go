@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kingfs/Bootstrap/internal/ui"
 	"github.com/kingfs/Bootstrap/pkg/cmdx"
 )
 
@@ -68,6 +69,14 @@ func ExitCode(err error) int {
 	var exitErr *cmdx.ExitError
 	if errors.As(err, &exitErr) {
 		return ExitFail
+	}
+	// 向导类错误：问不了用户 = 需要交互（退出码 5）；用户主动取消不是失败（退出码 0）。
+	// 取消通常在上层就被拦下并打印"已取消"，这里兜底以免冒出一个吓人的退出码。
+	if errors.Is(err, ui.ErrNotInteractive) {
+		return ExitNeedsInteraction
+	}
+	if errors.Is(err, ui.ErrCancelled) {
+		return ExitOK
 	}
 	// cobra 的用法类错误：cobra 不区分类型，只能按文案识别（cobra 的固定前缀）。
 	msg := err.Error()

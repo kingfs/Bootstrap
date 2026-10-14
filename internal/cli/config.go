@@ -103,16 +103,21 @@ func (rt *Runtime) configInitCmd() *cobra.Command {
 		Short: "生成默认配置文件（已存在时不覆盖）",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			path, created, err := config.WriteDefault(rt.app().Paths, force)
+			// 走 app 层（AGENTS.md §2：命令层不直接读写配置文件），
+			// 也让 `bs init` 与这里共用同一份"生成默认配置"的逻辑。
+			path, created, err := rt.app().EnsureConfig(force)
 			if err != nil {
 				return failf("%v", err)
 			}
 			if rt.Opts.JSON {
-				return rt.emit(map[string]any{"file": path, "created": created})
+				return rt.emit(map[string]any{"file": path, "created": created, "dry_run": rt.Opts.DryRun})
 			}
-			if created {
+			switch {
+			case rt.Opts.DryRun:
+				fmt.Fprintf(rt.out(), "[dry-run] 将生成 %s\n", path)
+			case created:
 				fmt.Fprintf(rt.out(), "已生成 %s\n", path)
-			} else {
+			default:
 				fmt.Fprintf(rt.out(), "%s 已存在，未修改（如需覆盖请加 --force）\n", path)
 			}
 			return nil

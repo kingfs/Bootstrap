@@ -41,6 +41,11 @@ type Options struct {
 	// NonInteractive 由 `--non-interactive`、`CI=1` 或"输出不是终端"置位：
 	// 此时绝不阻塞等待输入，破坏性操作必须由 `--yes` 明确授权（ADR-0003）。
 	NonInteractive bool
+	// Interactive 由 `--interactive` 置位：即使 stdin 不是终端也允许提问
+	// （有些包装器/IDE 终端会被误判为非交互）。与 --non-interactive 互斥。
+	Interactive bool
+	// PlainUI 由 `--plain-ui` 置位：用纯文本提问而不是交互式界面。
+	PlainUI bool
 
 	In  io.Reader
 	Out io.Writer
@@ -121,6 +126,8 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 	pf.BoolVar(&rt.Opts.JSON, "json", false, "以 JSON 输出（便于脚本消费）")
 	pf.BoolVar(&rt.Opts.NoColor, "no-color", false, "禁用彩色输出")
 	pf.BoolVar(&rt.Opts.NonInteractive, "non-interactive", false, "绝不等待输入：破坏性操作需要 --yes，否则以退出码 5 结束")
+	pf.BoolVar(&rt.Opts.Interactive, "interactive", false, "强制允许交互提问（默认按终端自动判定）")
+	pf.BoolVar(&rt.Opts.PlainUI, "plain-ui", false, "交互时使用纯文本问答，不用交互式界面")
 	pf.CountVarP(&rt.Opts.Verbose, "verbose", "v", "输出详细日志（可重复：-v 调试，-vv 追踪）")
 	pf.StringVar(&rt.Opts.LogLevel, "log-level", "", "日志级别 debug|info|warn|error（默认取配置）")
 
@@ -128,6 +135,7 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		rt.versionCmd(),
+		rt.initCmd(),
 		rt.configCmd(),
 		rt.proxyCmd(),
 		rt.shellCmd(),
@@ -143,6 +151,9 @@ func (rt *Runtime) newRootCmd() *cobra.Command {
 
 // init 在每个命令执行前装配 App。
 func (rt *Runtime) init(cmd *cobra.Command) error {
+	if rt.Opts.Interactive && rt.Opts.NonInteractive {
+		return usageErrf("--interactive 与 --non-interactive 不能同时使用")
+	}
 	logger, err := rt.newLogger()
 	if err != nil {
 		return usageErr(err)
@@ -193,6 +204,8 @@ func (rt *Runtime) init(cmd *cobra.Command) error {
 	rt.App.Verbose = rt.Opts.Verbose
 	// dry-run 必须一路传导到命令执行器，否则"预览"会真的动手。
 	rt.App.Runner.DryRun = rt.Opts.DryRun
+	// 进度输出由配置 ui.progress 决定（auto = 只在终端上打）。
+	rt.App.Progress = rt.progressHook()
 	return nil
 }
 

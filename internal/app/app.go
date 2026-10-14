@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kingfs/Bootstrap/internal/config"
+	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/manifest"
 	"github.com/kingfs/Bootstrap/internal/proxy"
 	"github.com/kingfs/Bootstrap/internal/state"
@@ -47,6 +48,8 @@ type App struct {
 	NonInteractive bool
 	// DefaultViaOverride 是 --via 指定的安装方式（覆盖配置里的 tool.default_via）。
 	DefaultViaOverride string
+	// Progress 在每个工具开始处理前被调用（由 cli 按 ui.progress 决定是否设置）。
+	Progress func(install.Step)
 	// GOOSOverride 让清单按"另一个系统"加载与校验（`bs tool manifest --os darwin`），
 	// 用于在 Linux/CI 上检查 macOS/Windows 的清单是否写错。
 	GOOSOverride string

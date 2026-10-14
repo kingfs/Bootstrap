@@ -374,6 +374,7 @@ func (a *App) engine(loaded *manifest.Loaded) (*install.Engine, error) {
 		Versions:   a.Cfg.Tool.Versions,
 		Recorder:   rec,
 		LogDir:     logDir,
+		OnStep:     a.Progress,
 		Now:        Now,
 	})
 }
