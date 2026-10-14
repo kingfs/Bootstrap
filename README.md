@@ -142,7 +142,7 @@ https://github.com/kingfs/Bootstrap/tree/dev/internal/foo
 | `bs proxy off` | 关闭代理（状态被记住，不再回退到环境变量） |
 | `bs proxy env [--apply] [--profile P] [--shell S]` | 输出 shell 语句供 `eval` |
 | `bs proxy exec -- <cmd>` | 在带代理的子进程里执行命令（不需要 rc 集成） |
-| `bs proxy test [url]` | 分别测试直连与走代理的连通性 |
+| `bs proxy test [url]` | 分别测试直连与走代理的连通性（"直连"不读环境里的代理变量，两行都会标出实际打到哪儿） |
 | `bs proxy add <name> --http ... [--write]` | 新增 profile（默认只打印可直接粘贴的 YAML 片段） |
 
 代理 profile 定义在配置文件里，`bs` 自己发起的网络操作会自动带上它：

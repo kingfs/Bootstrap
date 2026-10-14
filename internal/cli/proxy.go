@@ -3,12 +3,14 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/shellsnip"
 	"github.com/kingfs/Bootstrap/pkg/proxyenv"
+	"github.com/kingfs/Bootstrap/pkg/textwidth"
 )
 
 // inShellHook 报告这次调用是不是来自 rc 里的包装函数（tools/snippets/*/10-proxy.*）。
@@ -288,7 +290,15 @@ func (rt *Runtime) proxyTestCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "test [url]",
 		Short: "分别测试直连与走代理的连通性（会发起真实网络请求）",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `分别测试直连与走代理的连通性（各发一个 HEAD 请求）。
+
+"直连"这一列**不走任何代理**：shell 里的 HTTP(S)_PROXY 对它无效，所以它回答的是
+"这条线路本身通不通"。"代理(...)"那一列才走当前活跃 profile（括号里是来源名，
+env 表示沿用环境变量），末尾用"（经 <地址>）"标出实际打到的上游。
+
+两列对照才有意义：只有直连失败 → 线路/证书问题；只有代理失败 → 代理本身不可用。
+证书类失败（x509）会补一句补系统 CA 的提示，更细的诊断见 ` + "`bs doctor`" + `。`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := ""
 			if len(args) == 1 {
@@ -302,19 +312,35 @@ func (rt *Runtime) proxyTestCmd() *cobra.Command {
 				return rt.emit(res)
 			}
 			fmt.Fprintf(rt.out(), "目标: %s\n", res.Target)
-			printAttempt(rt, "直连", res.Direct)
-			printAttempt(rt, "代理("+orDash(res.Profile)+")", res.Proxied)
+			printAttempt(rt, "直连(不走代理)", "", res.Direct)
+			printAttempt(rt, "代理("+orDash(res.Profile)+")", res.ProxyURL, res.Proxied)
 			return nil
 		},
 	}
 }
 
-func printAttempt(rt *Runtime, label string, a app.TestAttempt) {
+// attemptColWidth 是两行标签的对齐列宽（按显示宽度算，见 printAttempt）。
+const attemptColWidth = 16
+
+// printAttempt 打印一次连接尝试；via 非空时把"实际打到哪儿"附在后面。
+//
+// 标签列按**显示宽度**补齐而不是 %-16s：后者数的是字节，CJK 一个字三字节，
+// 于是"直连(不走代理)"与"代理(env)"会错开好几列。
+func printAttempt(rt *Runtime, label, via string, a app.TestAttempt) {
+	note := ""
+	if via != "" {
+		note = "（经 " + via + "）"
+	}
+	pad := attemptColWidth - textwidth.Width(label)
+	if pad < 0 {
+		pad = 0
+	}
+	col := label + strings.Repeat(" ", pad)
 	switch {
 	case a.OK:
-		fmt.Fprintf(rt.out(), "%-16s ok   %s\n", label, a.Latency)
+		fmt.Fprintf(rt.out(), "%s ok   %s%s\n", col, a.Latency, note)
 	default:
-		fmt.Fprintf(rt.out(), "%-16s 失败 %s\n", label, a.Error)
+		fmt.Fprintf(rt.out(), "%s 失败 %s%s\n", col, a.Error, note)
 	}
 }
 

@@ -1079,7 +1079,7 @@ bs proxy env [profile]             # 输出可 eval 的环境变量族（按 --s
       --apply                      # 按"当前活跃 profile"渲染；无活跃 profile 时输出 unset/清除语句
       --print                      # 只打印，不做任何 state 变更
 bs proxy exec [profile] -- <cmd...># 临时带代理执行命令（无需 eval）
-bs proxy test [--url https://github.com]   # 分别测直连与代理连通性/延迟
+bs proxy test [url]                # 分别测直连与代理连通性/延迟（直连不读环境代理）
 bs proxy add <name> --http ... --no-proxy ...   # 快速新增 profile（写用户配置）
 ```
 
@@ -1090,6 +1090,15 @@ bs proxy add <name> --http ... --no-proxy ...   # 快速新增 profile（写用�
 `BS_SHELL_HOOK` 没置位（说明没人会 eval 输出）时，才在 **stderr** 补一句 `bs shell install`。
 `bs proxy add` 默认输出以 YAML 注释开头，整段可直接粘进配置文件；`bs proxy status` 里的
 "shell 里已有的代理变量"只有 `-v` 才展开（`--json` 始终保留）。
+
+`bs proxy test` 的两列刻意分开：`直连(不走代理)` **不走任何代理**——它用的是
+`&http.Transport{}`（`Proxy` 为 nil），而不是 `http.Client{}`（nil Transport 会落到读
+`HTTP(S)_PROXY` 的 `http.DefaultTransport`）；`代理(...)` 那一列才走当前活跃 profile，
+行尾用"（经 <脱敏地址>）"标出实际打到的上游。两列分开才有诊断价值：直连偷用环境代理时，
+公司网关 MITM 造成的 x509 会被读成"直连不可用"，而真正的问题在代理那一侧。
+注意 Go 的 `ProxyFromEnvironment` 对回环地址有"一律不走代理"的特例，所以这条性质的
+回归测试必须把目标绑在**非回环**地址上（`internal/app/proxy_test.go`）。
+两列的错误都过一遍 `httpx.TLSHint`：缺系统 CA 时补一句"去装系统 CA"的提示，与下载路径同口径。
 
 ### 8.3 按平台渲染
 

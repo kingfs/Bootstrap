@@ -385,13 +385,16 @@ func (c *Client) do(ctx context.Context, rawURL string) (*http.Response, error) 
 	return nil, lastErr
 }
 
-// tlsHint 给"系统缺少 CA 证书"这类 TLS 错误补一句可行动的提示。
+// TLSHint 给"系统缺少 CA 证书"这类 TLS 错误补一句可行动的提示。
 //
 // 为什么必须补：全新最小镜像（ubuntu:24.04 docker 镜像就是这样）里没有系统证书文件，
 // 第一次 HTTPS 请求只会得到 `x509: certificate signed by unknown authority`——
 // 看到这句话的人无从下手。提示用英文（与包内其它错误一致），"该执行什么命令"交给
 // 上层（`bs doctor` 会按发行版给出具体命令）。
-func tlsHint(err error) error {
+//
+// 导出是因为不经过本包的探测路径（`bs proxy test` 的两条连通性测试）也要说同一句话：
+// 同一个故障在两处给出两套说法，最容易被误读成两个问题。
+func TLSHint(err error) error {
 	var (
 		unknownAuthority x509.UnknownAuthorityError
 		systemRoots      x509.SystemRootsError
@@ -410,7 +413,7 @@ func tlsHint(err error) error {
 func (c *Client) doOnce(req *http.Request, rawURL string) (*http.Response, error) {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", rawURL, tlsHint(err))
+		return nil, fmt.Errorf("GET %s: %w", rawURL, TLSHint(err))
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil

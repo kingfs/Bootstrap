@@ -426,7 +426,7 @@ func TestTLSHint(t *testing.T) {
 		{"超时不改写", &url.Error{Op: "Get", URL: "https://x/", Err: errors.New("timeout")}, ""},
 	}
 	for _, tc := range cases {
-		got := tlsHint(tc.err).Error()
+		got := TLSHint(tc.err).Error()
 		if tc.want == "" {
 			if got != tc.err.Error() {
 				t.Errorf("%s：不该改写，得到 %q", tc.name, got)
@@ -437,7 +437,7 @@ func TestTLSHint(t *testing.T) {
 			t.Errorf("%s：期望包含 %q，实际 %q", tc.name, tc.want, got)
 		}
 		// 原始错误必须保留，便于 -v 日志里查真正的原因
-		if !errors.Is(tlsHint(tc.err), tc.err) && !strings.Contains(got, tc.err.Error()) {
+		if !errors.Is(TLSHint(tc.err), tc.err) && !strings.Contains(got, tc.err.Error()) {
 			t.Errorf("%s：原始错误被丢了：%q", tc.name, got)
 		}
 	}

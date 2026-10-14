@@ -163,6 +163,12 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   正常路径只打一行结果，没置位时才在 stderr 提示 `bs shell install`。
   改 `internal/cli/proxy.go` 的输出或三个 `10-proxy.*` 片段时，两边要一起改。
 - 凭据只能在日志/输出里以 `***` 出现（`proxyenv.MaskProxyURL`、`cmdx.Runner.Redact`）。
+- `bs proxy test` 的"直连"必须**真的直连**：用 `&http.Transport{}`（`Proxy` 为 nil），
+  不要用 `http.Client{}`——nil Transport 会落到会读 `HTTP(S)_PROXY` 的 `http.DefaultTransport`，
+  于是 shell 里一有代理，"直连失败"就会把代理的问题（证书/认证）说成线路不通。
+  注意 Go 的 `ProxyFromEnvironment` 对**回环地址**一律不走代理，所以这条性质的回归测试
+  必须把目标绑在非回环地址上，否则改成错的实现也照样通过（`internal/app/proxy_test.go`
+  的 `newLocalServer`）。证书类错误统一过 `pkg/httpx` 的 `TLSHint`，别在两处各写一套提示。
 
 ## 8. 安全红线
 

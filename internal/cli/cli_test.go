@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -312,6 +314,40 @@ func TestProxyUseUnknownProfileIsPreconditionError(t *testing.T) {
 	code, _, errOut := run(t, rt, "proxy", "use", "nope")
 	if code != ExitPrecondition {
 		t.Fatalf("exit = %d, want %d (stderr=%s)", code, ExitPrecondition, errOut)
+	}
+}
+
+// TestProxyTestRendersRouteLabels：`bs proxy test` 的两行必须说清"走不走代理、打到哪儿"。
+//
+// 用户就是靠这两行区分"直连不通"与"代理不通"；标签含糊时会把代理的证书问题
+// 误读成直连不可用（真实踩过）。目标用本地服务，全程不出本机。
+func TestProxyTestRendersRouteLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+
+	code, out, errOut := run(t, rt, "proxy", "test", srv.URL)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr=%s", code, errOut)
+	}
+	var directLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "直连(不走代理)") {
+			directLine = line
+		}
+	}
+	if directLine == "" {
+		t.Fatalf("第一行应标出这一列不走代理：\n%s", out)
+	}
+	if !strings.Contains(directLine, "ok") {
+		t.Fatalf("本地服务可达，直连应 ok：%q\n%s", directLine, out)
+	}
+	if !strings.Contains(out, "（经 http://127.0.0.1:7890）") {
+		t.Errorf("代理那一行应标出实际打到哪儿：\n%s", out)
 	}
 }
 

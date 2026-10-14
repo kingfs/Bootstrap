@@ -16,6 +16,7 @@ import (
 
 	"github.com/kingfs/Bootstrap/internal/proxy"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
+	"github.com/kingfs/Bootstrap/pkg/httpx"
 	"github.com/kingfs/Bootstrap/pkg/proxyenv"
 )
 
@@ -232,6 +233,9 @@ type ProxyTestResult struct {
 	Direct  TestAttempt `json:"direct"`
 	Proxied TestAttempt `json:"proxied"`
 	Profile string      `json:"profile,omitempty"`
+	// ProxyURL 是这次"走代理"实际用的上游地址（已脱敏），
+	// 让用户不用回头翻配置就知道这两行分别打到了哪儿。
+	ProxyURL string `json:"proxy_url,omitempty"`
 }
 
 // TestAttempt 是一次连接尝试的结果。
@@ -248,7 +252,16 @@ func (a *App) ProxyTest(ctx context.Context, target string) (ProxyTestResult, er
 	}
 	res := ProxyTestResult{Target: target}
 
-	direct := &http.Client{Timeout: 5 * time.Second}
+	// "直连"必须真的直连。这里不能图省事用 http.Client{}（Transport 为 nil 时
+	// 落到 http.DefaultTransport），因为 DefaultTransport 会读 HTTP(S)_PROXY：
+	// shell 里一旦有代理，这一列就跟着那个代理一起成功/失败，用户看到"直连失败"
+	// 却以为是网络到不了，而实际上是代理的证书/认证问题（实测踩过：公司网关
+	// MITM 时这一列报 x509，看着像直连不可用）。空 Transport 的 Proxy 字段为 nil，
+	// 正好是我们要的语义。
+	direct := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{},
+	}
 	res.Direct = attempt(ctx, direct, target)
 
 	active, err := a.ProxyService().Active()
@@ -264,6 +277,7 @@ func (a *App) ProxyTest(ctx context.Context, target string) (ProxyTestResult, er
 	if err != nil {
 		return res, fmt.Errorf("invalid proxy URL: %w", err)
 	}
+	res.ProxyURL = proxyenv.MaskProxyURL(proxyURL.String())
 	proxied := &http.Client{
 		Timeout:   5 * time.Second,
 		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
@@ -281,7 +295,9 @@ func attempt(ctx context.Context, client *http.Client, target string) TestAttemp
 	resp, err := client.Do(req)
 	latency := time.Since(start).Round(time.Millisecond)
 	if err != nil {
-		return TestAttempt{Latency: latency.String(), Error: err.Error()}
+		// 证书类错误补一句"去装系统 CA"：这两行是用户排障的第一现场，
+		// 不该只有一句 x509 原文（下载路径早就有这句提示，两处要一致）。
+		return TestAttempt{Latency: latency.String(), Error: httpx.TLSHint(err).Error()}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return TestAttempt{OK: resp.StatusCode < 400, Latency: latency.String()}
