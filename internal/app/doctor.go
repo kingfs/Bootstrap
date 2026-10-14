@@ -24,12 +24,47 @@ const (
 	StatusSkip CheckStatus = "skip"
 )
 
+// trustStoreHint 给出"怎么补系统 CA 证书"的具体命令。
+//
+// 按已探测到的包管理器选，而不是让用户自己猜发行版——这正是这条检查存在的意义。
+func trustStoreHint(p hostinfo.Platform) string {
+	cmds := map[string]string{
+		"apt-get": "sudo apt-get install -y ca-certificates",
+		"apt":     "sudo apt-get install -y ca-certificates",
+		"dnf":     "sudo dnf install -y ca-certificates",
+		"yum":     "sudo yum install -y ca-certificates",
+		"pacman":  "sudo pacman -S --noconfirm ca-certificates",
+		"zypper":  "sudo zypper install -y ca-certificates",
+		"apk":     "sudo apk add ca-certificates",
+	}
+	cmd := ""
+	for _, m := range p.PackageManagers {
+		if c, ok := cmds[m]; ok {
+			cmd = c
+			break
+		}
+	}
+	head := "没有系统 CA 证书时，所有 HTTPS 下载都会失败在 x509 校验上"
+	if cmd == "" {
+		return head + "：请先安装所在发行版的 CA 证书包（如 ca-certificates），再重试"
+	}
+	return head + "：先执行 `" + cmd + "` 再重试"
+}
+
 // Check 是单项体检结果。
 type Check struct {
 	Name   string      `json:"name"`
 	Status CheckStatus `json:"status"`
 	Detail string      `json:"detail,omitempty"`
 	Hint   string      `json:"hint,omitempty"`
+}
+
+// trustStore 取"系统 CA 证书"探测结果（测试可注入）。
+func (a *App) trustStore() hostinfo.TrustStore {
+	if a.TrustStore != nil {
+		return a.TrustStore()
+	}
+	return hostinfo.DetectTrustStore()
 }
 
 // Doctor 执行一组只读的环境体检。
@@ -120,6 +155,23 @@ func (a *App) Doctor(ctx context.Context) []Check {
 			}
 		}
 		add(Check{Name: bin.name, Status: StatusOK, Detail: detail})
+	}
+
+	// 4.5 系统 CA 证书
+	//
+	// 这一条是"在干净容器里跑集成测试"逼出来的：ubuntu:24.04 的 docker 镜像里没有
+	// /etc/ssl/certs/ca-certificates.crt，于是**所有** HTTPS 下载都失败在
+	// `x509: certificate signed by unknown authority`，而那句话完全没提"装 CA 证书"。
+	// doctor 的职责就是把这种"下一步该做什么"讲清楚（真正的修复是装系统包，超出
+	// doctor --fix 的范围：它只改 bs 自己的配置/目录/受管块）。
+	if ts := a.trustStore(); ts.Checked {
+		st, detail := StatusOK, ts.Path
+		if !ts.Present {
+			st = StatusFail
+			detail = "未找到系统 CA 证书（找过：" + strings.Join(ts.Searched, "、") + "）"
+		}
+		add(Check{Name: "ca certs", Status: st, Detail: detail,
+			Hint: hintIf(st == StatusFail, trustStoreHint(a.Platform))})
 	}
 
 	// 5. 包管理器

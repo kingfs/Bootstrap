@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -399,6 +400,40 @@ func TestPartPathIsPerURL(t *testing.T) {
 		}
 		if !strings.HasPrefix(filepath.Base(p), ".bs.") || !strings.HasSuffix(p, ".part") {
 			t.Errorf("半成品命名不符合约定：%s", p)
+		}
+	}
+}
+
+// TestTLSHint：缺系统 CA 证书是"新机器第一公里"最常见的失败，
+// 原样抛出 `x509: certificate signed by unknown authority` 等于没说，
+// 必须补一句"去装系统 CA 包"的提示；其它错误不许被改写（免得掩盖真实原因）。
+func TestTLSHint(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string // 期望出现（空 = 原样返回）
+	}{
+		{"未知签发者", x509.UnknownAuthorityError{}, "no usable system CA certificates"},
+		{"系统根证书缺失", x509.SystemRootsError{}, "no usable system CA certificates"},
+		{"证书无效", x509.CertificateInvalidError{Reason: x509.Expired}, "no usable system CA certificates"},
+		{"包在 url.Error 里也要认出来", &url.Error{Op: "Get", URL: "https://x/", Err: x509.UnknownAuthorityError{}}, "no usable system CA certificates"},
+		{"连接被拒不改写", errors.New("connection refused"), ""},
+		{"超时不改写", &url.Error{Op: "Get", URL: "https://x/", Err: errors.New("timeout")}, ""},
+	}
+	for _, tc := range cases {
+		got := tlsHint(tc.err).Error()
+		if tc.want == "" {
+			if got != tc.err.Error() {
+				t.Errorf("%s：不该改写，得到 %q", tc.name, got)
+			}
+			continue
+		}
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s：期望包含 %q，实际 %q", tc.name, tc.want, got)
+		}
+		// 原始错误必须保留，便于 -v 日志里查真正的原因
+		if !errors.Is(tlsHint(tc.err), tc.err) && !strings.Contains(got, tc.err.Error()) {
+			t.Errorf("%s：原始错误被丢了：%q", tc.name, got)
 		}
 	}
 }

@@ -59,6 +59,8 @@ type App struct {
 	CurrentVersion string
 	// ExePath 是自更新要替换的二进制路径（空 = os.Executable()；测试注入用）。
 	ExePath string
+	// TrustStore 覆盖"系统 CA 证书"探测（nil = hostinfo.DetectTrustStore；测试注入用）。
+	TrustStore func() hostinfo.TrustStore
 
 	// loaded 缓存已装载的清单，避免一次命令里重复解析 YAML。
 	loaded *manifest.Loaded

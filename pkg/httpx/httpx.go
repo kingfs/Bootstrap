@@ -9,6 +9,7 @@ package httpx
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -384,6 +385,24 @@ func (c *Client) do(ctx context.Context, rawURL string) (*http.Response, error) 
 	return nil, lastErr
 }
 
+// tlsHint 给"系统缺少 CA 证书"这类 TLS 错误补一句可行动的提示。
+//
+// 为什么必须补：全新最小镜像（ubuntu:24.04 docker 镜像就是这样）里没有系统证书文件，
+// 第一次 HTTPS 请求只会得到 `x509: certificate signed by unknown authority`——
+// 看到这句话的人无从下手。提示用英文（与包内其它错误一致），"该执行什么命令"交给
+// 上层（`bs doctor` 会按发行版给出具体命令）。
+func tlsHint(err error) error {
+	var (
+		unknownAuthority x509.UnknownAuthorityError
+		systemRoots      x509.SystemRootsError
+		certInvalid      x509.CertificateInvalidError
+	)
+	if errors.As(err, &unknownAuthority) || errors.As(err, &systemRoots) || errors.As(err, &certInvalid) {
+		return fmt.Errorf("%w (hint: no usable system CA certificates; install your distro's CA package, e.g. ca-certificates)", err)
+	}
+	return err
+}
+
 // doRequest 发一次请求（不重试），把非 2xx 变成 *StatusError。
 //
 // 供带自定义头（Range / If-Range）的下载复用；重试策略留在调用方，
@@ -391,7 +410,7 @@ func (c *Client) do(ctx context.Context, rawURL string) (*http.Response, error) 
 func (c *Client) doOnce(req *http.Request, rawURL string) (*http.Response, error) {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", rawURL, err)
+		return nil, fmt.Errorf("GET %s: %w", rawURL, tlsHint(err))
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp, nil
