@@ -12,7 +12,6 @@ package install
 
 import (
 	"context"
-	"io/fs"
 	"log/slog"
 	"os"
 	"time"
@@ -329,12 +328,6 @@ var ErrDryRun = errDryRun{}
 type errDryRun struct{}
 
 func (errDryRun) Error() string { return "dry-run: command not executed" }
-
-// IsNotExist 便于判断文件不存在。
-func isNotExist(err error) bool { return err != nil && os.IsNotExist(err) }
-
-// fileMode 是 fs.FileMode 的别名，缩短签名。
-type fileMode = fs.FileMode
 
 // Duration 便于测试里注入更短的超时。
 type Duration = time.Duration

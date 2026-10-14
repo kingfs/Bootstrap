@@ -19,7 +19,6 @@ type pkgManager struct {
 	via            string
 	bin            string
 	installVerb    string
-	useVerb        string
 	upgradeVerb    string
 	uninstallVerb  string
 	supportsRemove bool

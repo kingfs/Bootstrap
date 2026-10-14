@@ -253,7 +253,7 @@ func (a *App) Init(ctx context.Context, opt InitOptions) (InitResult, error) {
 
 // finishInit 处理收尾：可选的 shell 受管块。
 func (a *App) finishInit(opt InitOptions, res *InitResult) error {
-	installShell := false
+	var installShell bool
 	switch {
 	case opt.ShellInstall != nil:
 		installShell = *opt.ShellInstall

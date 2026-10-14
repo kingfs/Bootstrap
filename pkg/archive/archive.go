@@ -8,6 +8,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -74,7 +75,8 @@ func ExtractTar(r io.Reader, dest string, strip int) ([]string, error) {
 	var written []string
 	for {
 		hdr, err := tr.Next()
-		if err == io.EOF {
+		// tar.Reader 直接返回 io.EOF，但用 errors.Is 判断对"将来被包一层"更稳。
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -233,9 +233,7 @@ func (e *OSEnv) LookPath(name string) (string, bool) {
 
 func (e *OSEnv) searchDirs() []string {
 	dirs := append([]string{}, e.extraBin...)
-	for _, dir := range filepath.SplitList(e.env["PATH"]) {
-		dirs = append(dirs, dir)
-	}
+	dirs = append(dirs, filepath.SplitList(e.env["PATH"])...)
 	if e.home != "" {
 		dirs = append(dirs,
 			filepath.Join(e.home, ".local", "bin"),

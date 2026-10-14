@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -226,8 +225,8 @@ func (rt *Runtime) prompter() ui.Prompter {
 	if !rt.interactive() {
 		return ui.NonInteractive{}
 	}
-	in, ok := rt.Opts.In.(io.Reader)
-	if !ok {
+	in := rt.Opts.In
+	if in == nil {
 		in = strings.NewReader("")
 	}
 	if rt.Opts.PlainUI {

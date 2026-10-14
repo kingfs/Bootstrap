@@ -289,7 +289,7 @@ type TemplateField struct {
 
 // TemplateFields 返回可能含模板的参数值。
 //
-// 安装引擎在清单校验期用它预渲染一遍，从而把"{{verison}} 这种拼写错误"
+// 安装引擎在清单校验期用它预渲染一遍，从而把"模板里写错的变量名"
 // 挡在 validate 阶段，而不是等到真正安装时才失败。
 func (p Params) TemplateFields() []TemplateField {
 	return []TemplateField{

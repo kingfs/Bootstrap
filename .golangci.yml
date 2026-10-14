@@ -1,0 +1,66 @@
+# golangci-lint 配置（v2 格式）。
+#
+# 目标不是"开满所有 linter"：这个仓库更看重
+#  1) 真错误（未处理 error、可疑比较、白写的赋值）；
+#  2) 一致性（import 分组、命名、注释里的错别字）。
+# 体积/性能类的偏好项（gocyclo 阈值、字段对齐等）故意不开——它们不改变正确性，
+# 只会让"改一行触发一堆风格意见"。`make lint` 不进 `make check`：它比 go vet 慢得多，
+# 而且需要额外安装二进制（见 Makefile 的 lint/vuln/tools 目标）。
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet       # 标准 vet 检查（含 printf 参数、锁拷贝等）
+    - errcheck    # 未处理的 error：本仓库的错误处理密度很高，漏一处就是一个静默失败
+    - staticcheck # 静态分析主力（SA/ST/QF 里的高价值部分）
+    - ineffassign # 赋值后从未使用
+    - unused      # 死代码
+    - bodyclose   # HTTP body 必须关闭（下载路径的经典泄漏点）
+    - errorlint   # %w / errors.Is 用法（本仓库大量用错误链）
+    - copyloopvar # 循环变量捕获（配合 -race 一起看并发问题）
+    - misspell    # 注释/字符串里的拼写错误
+    - unconvert   # 多余的类型转换
+    - wastedassign
+    - noctx       # 发 HTTP 请求却没带 context
+  settings:
+    errcheck:
+      # 这几类"忽略 error 是正确做法"的场景：写入 stdout、显式丢弃、清理动作。
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+    govet:
+      enable-all: true
+      disable:
+        # 这两项都不改变正确性，却会把"惯用的 if err := f(); err != nil"全报一遍：
+        # fieldalignment 只影响内存布局；shadow 会抓住每个有意缩窄作用域的 err。
+        - fieldalignment
+        - shadow
+    staticcheck:
+      # 只保留 SA*（真正的可疑代码）。ST*/QF* 是风格与"可以这样改写"的建议，
+      # 与本仓库既有的注释风格/branch 写法冲突，收益不抵噪声。
+      checks: ["all", "-ST1*", "-QF1*"]
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # 测试里允许忽略清理类 error（t.Cleanup、os.Remove）与冗长的 if-err 链。
+      - path: _test\.go
+        linters: [errcheck, noctx]
+      # 生成的/内嵌的资源文件不参与风格检查。
+      - path: tools/
+        linters: [all]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/kingfs/Bootstrap]
+
+run:
+  timeout: 5m
+  tests: true

@@ -363,7 +363,7 @@ func TestEnvPathAndShow(t *testing.T) {
 		t.Fatalf("env show --json exit = %d", code)
 	}
 	var report map[string]any
-	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
 	}
 	if _, ok := report["path_entries"]; !ok {

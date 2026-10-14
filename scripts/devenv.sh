@@ -18,5 +18,8 @@ export GOPATH="${BOOTSTRAP_DEV_GOPATH:-$ROOT/.cache/gopath}"
 export GOMODCACHE="$GOPATH/pkg/mod"
 export GOCACHE="${BOOTSTRAP_DEV_GOCACHE:-$ROOT/.cache/gobuild}"
 export GOFLAGS="${GOFLAGS:--mod=mod}"
+# golangci-lint 默认把分析缓存写到 $HOME/.cache/golangci-lint，受限环境下会刷一屏
+# "read-only file system" 警告（不影响结论，但很吵，且每次都重新分析）。
+export GOLANGCI_LINT_CACHE="${BOOTSTRAP_DEV_LINTCACHE:-$ROOT/.cache/golangci-lint}"
 
-mkdir -p "$GOMODCACHE" "$GOCACHE" 2>/dev/null || true
+mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOLANGCI_LINT_CACHE" 2>/dev/null || true

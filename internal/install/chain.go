@@ -3,7 +3,6 @@ package install
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/manifest"
 )
@@ -242,14 +241,6 @@ func unavailableNote(via string, reg *Registry) string {
 
 // ManagerName 抽取 `via: manager` 的方法所使用的管理器名（供提示与日志）。
 func ManagerName(m manifest.Method) string { return m.Params.Manager }
-
-// viaString 只用于日志。
-func viaString(m manifest.Method) string {
-	if m.Via == "manager" && m.Params.Manager != "" {
-		return "manager:" + m.Params.Manager
-	}
-	return strings.TrimSpace(m.Via)
-}
 
 // ChainVias 按顺序列出链上出现过的 via（去重），用于错误提示。
 func ChainVias(chain Chain) []string {

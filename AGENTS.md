@@ -40,8 +40,14 @@ make race      # -race
 make smoke     # 无副作用端到端冒烟（关键回归保护）
 make pty       # 真 PTY 里验证交互式界面（勾选/取消/破坏性操作默认拒绝）
 make check     # gofmt + vet + test + race（提交前必跑）
+make lint      # golangci-lint 静态检查（需先 `make tools`；刻意不进 check）
+make vuln      # 依赖已知漏洞扫描（需联网查 vuln.go.dev；改动依赖后跑）
+make tools     # 安装上面两个目标需要的二进制（版本固定在 Makefile 里）
 make cross     # 交叉编译 6 个平台组合
 ```
+
+`make lint` / `make vuln` **不进 `make check`**：前者比 `go vet` 慢一个量级且要额外的二进制，
+后者要联网——都不该拦住"本地能跑 check 就能提交"。发版前、改依赖后各跑一次。
 
 受限环境（`$HOME` 只读）下，先 `. scripts/devenv.sh`：它把 `GOPATH`/`GOCACHE` 指到仓库内 `.cache/`。
 
@@ -66,6 +72,7 @@ make cross     # 交叉编译 6 个平台组合
    `pkg/fsx/fsx_test.go`。
 4. 涉及删改用户文件的逻辑，必须有一条"用户文件内容未被破坏"的测试。
 5. 提交前跑 `make check` 与 `make smoke`；两者都绿才算完成。
+   动了 `go.mod` / 依赖，或准备发版时，再跑一遍 `make vuln`（需联网）。
 
 ## 5. 代码风格
 

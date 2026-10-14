@@ -464,7 +464,7 @@ func ProxyFor(getenv func(string) string, target *url.URL) (*url.URL, error) {
 				// （url.Parse 会因为冒号把它当成非法 path 而报错）。
 				u, err = url.Parse("http://" + strings.TrimPrefix(v, "//"))
 				if err != nil || u.Host == "" {
-					return nil, fmt.Errorf("invalid proxy %s=%q: %v", k, v, err)
+					return nil, fmt.Errorf("invalid proxy %s=%q: %w", k, v, err)
 				}
 			}
 			if u.Scheme == "https" || u.Scheme == "http" || strings.HasPrefix(u.Scheme, "socks") {

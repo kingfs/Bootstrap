@@ -54,7 +54,8 @@ func TestRender(t *testing.T) {
 	}
 
 	// 写错变量名必须报错，而不是渲染成空串
-	if _, err := Render("{{verison}}", data); err == nil {
+	// 故意写错变量名：断言校验期就能挡住，而不是渲染成空串。
+	if _, err := Render("{{verison}}", data); err == nil { //nolint:misspell
 		t.Error("unknown variable must fail")
 	}
 	if _, err := Render("{{versions.nodejs}}", data); err == nil {

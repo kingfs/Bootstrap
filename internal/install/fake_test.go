@@ -169,13 +169,6 @@ func (f *fakeEnv) commandLines() []string {
 	return out
 }
 
-func (f *fakeEnv) reset() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.commands = nil
-	f.downloads = nil
-}
-
 // ── 清单与探测器装配 ──
 
 func loadManifest(t *testing.T, body string) *manifest.Loaded {
@@ -207,7 +200,6 @@ func (f *fakeDetector) LookPath(name string) (string, bool) {
 	return "", false
 }
 
-func (f *fakeDetector) executor() detect.Executor { return f }
 func (f *fakeDetector) Run(_ context.Context, c cmdx.Command) (cmdx.Result, error) {
 	f.probes++
 	// 探测用 LookPath 解析出的完整路径执行（工具可能还没进 PATH），

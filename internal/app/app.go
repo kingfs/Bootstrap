@@ -115,14 +115,6 @@ func (a *App) NetworkEnv() map[string]string {
 	return env
 }
 
-// WithNetwork 让 Runner 在本次调用中带上代理与 PATH 环境。
-func (a *App) withNetwork(fn func()) {
-	base := a.Runner.Env
-	a.Runner.Env = mergeMaps(base, a.NetworkEnv())
-	defer func() { a.Runner.Env = base }()
-	fn()
-}
-
 // mergeMaps 合并 map，后者覆盖前者（不修改入参）。
 func mergeMaps(base, overlay map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(overlay))

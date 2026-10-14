@@ -158,7 +158,7 @@ func renderRepoResults(rt *Runtime, results []app.RepoGetResult) {
 	for _, r := range results {
 		status := r.Status
 		if status == "" {
-			status = string(r.Action)
+			status = r.Action
 		}
 		fmt.Fprintf(w, "%-8s %s\n", status, r.Path)
 		if rt.Opts.Verbose > 0 || status == "failed" || status == "skipped" || status == "planned" {

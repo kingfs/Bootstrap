@@ -137,7 +137,7 @@ func Resolve(ctx context.Context, opt Options, checkOnly bool) (Plan, error) {
 	if tag == "" {
 		tag, err = ghrelease.LatestTag(ctx, opt.Client, repo)
 		if err != nil {
-			return Plan{}, fmt.Errorf("%w: %v", ErrNoRelease, err)
+			return Plan{}, fmt.Errorf("%w: %w", ErrNoRelease, err)
 		}
 		tag = normalizeTag(tag)
 	}
@@ -170,11 +170,11 @@ func Resolve(ctx context.Context, opt Options, checkOnly bool) (Plan, error) {
 	// 校验和只在这里取一次：拿不到就中止（ErrNoChecksum），绝不降级为不校验。
 	text, err := opt.Client.GetString(ctx, plan.ChecksumsURL)
 	if err != nil {
-		return plan, fmt.Errorf("%w: fetch %s: %v", ErrNoChecksum, plan.ChecksumsURL, err)
+		return plan, fmt.Errorf("%w: fetch %s: %w", ErrNoChecksum, plan.ChecksumsURL, err)
 	}
 	sum, err := ghrelease.ChecksumFor(text, plan.Asset)
 	if err != nil {
-		return plan, fmt.Errorf("%w: %v", ErrNoChecksum, err)
+		return plan, fmt.Errorf("%w: %w", ErrNoChecksum, err)
 	}
 	plan.SHA256 = sum
 	return plan, nil
@@ -215,7 +215,7 @@ func Apply(ctx context.Context, opt Options, plan Plan) (Result, error) {
 	if _, err := opt.Client.Download(ctx, plan.AssetURL, archivePath, plan.SHA256, 0o644); err != nil {
 		var se *httpx.StatusError
 		if errors.As(err, &se) && se.Status == 404 {
-			return res, fmt.Errorf("%w: %s: %v", ErrAssetMissing, plan.Asset, err)
+			return res, fmt.Errorf("%w: %s: %w", ErrAssetMissing, plan.Asset, err)
 		}
 		return res, fmt.Errorf("download %s: %w", plan.Asset, err)
 	}
@@ -288,7 +288,8 @@ func swapWith(rename func(oldpath, newpath string) error, staged, exe, backup, g
 		if err := rename(staged, exe); err != nil {
 			// 回滚：把原来的二进制放回去，避免留下"没有 bs"的状态。
 			if rerr := rename(backup, exe); rerr != nil {
-				return fmt.Errorf("replace binary: %w (rollback also failed: %v, original kept at %s)", err, rerr, backup)
+				// 两个错误都要留在链上：调用方既要判断"替换失败"，也要能看出回滚失败。
+				return fmt.Errorf("replace binary: %w (rollback also failed: %w, original kept at %s)", err, rerr, backup)
 			}
 			return fmt.Errorf("replace binary: %w", err)
 		}

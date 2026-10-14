@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/kingfs/Bootstrap/internal/detect"
 	"github.com/kingfs/Bootstrap/internal/manifest"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
-	"gopkg.in/yaml.v3"
 )
 
 // 本文件是安装引擎的流水线（docs/design.md §7.5）：
@@ -285,7 +286,8 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		in, _ := e.reg.Get(cand.Via)
 		action, aerr := in.Plan(ctx, e.env, chainTool, cand.Method, op)
 		if aerr != nil {
-			if _, unsupported := aerr.(*ErrUnsupported); unsupported {
+			var unsupported *ErrUnsupported
+			if errors.As(aerr, &unsupported) {
 				step.Status = StepUnsupported
 				step.Reason = aerr.Error()
 			} else {

@@ -391,7 +391,6 @@ func (m *Manager) Sync(ctx context.Context, root string, jobs int, opts Options)
 	g, gctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, jobs)
 	for i, p := range paths {
-		i, p := i, p
 		g.Go(func() error {
 			sem <- struct{}{}
 			defer func() { <-sem }()

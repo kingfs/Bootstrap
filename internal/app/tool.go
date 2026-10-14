@@ -167,13 +167,11 @@ func (a *App) ToolRows(ctx context.Context, opt ToolListOptions) ([]ToolRow, err
 
 	if !opt.NoProbe {
 		var probeTools []manifest.Tool
-		var probeIDs []string
 		for _, t := range selected {
 			if t.Disabled {
 				continue
 			}
 			probeTools = append(probeTools, t)
-			probeIDs = append(probeIDs, t.ID)
 		}
 		if len(probeTools) > 0 {
 			results, derr := a.detector().Detect(ctx, probeTools, detect.Options{
@@ -751,13 +749,6 @@ func matchesSearch(row ToolRow, q string) bool {
 }
 
 // ManifestUserDirs 返回实际参与加载的用户覆盖目录（已展开 ~）。
-// envGOOS 返回构造 ExecEnv 时使用的 GOOS（--os 覆盖优先）。
-func (a *App) envGOOS() string {
-	if a.GOOSOverride != "" {
-		return a.GOOSOverride
-	}
-	return a.Platform.OS
-}
 
 // manifestGOOS 返回清单加载时使用的 GOOS（--os 覆盖优先）。
 func (a *App) manifestGOOS() string {

@@ -161,7 +161,6 @@ func (d *Detector) Detect(ctx context.Context, tools []manifest.Tool, opts Optio
 		g, gctx := errgroup.WithContext(ctx)
 		sem := make(chan struct{}, d.concurrency())
 		for _, t := range pending {
-			t := t
 			g.Go(func() error {
 				sem <- struct{}{}
 				defer func() { <-sem }()

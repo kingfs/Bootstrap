@@ -13,6 +13,14 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# lint/vuln 用的二进制版本（`make tools` 安装）。刻意固定版本：
+# 不同版本的 golangci-lint 结论不同，不固定会让"本地绿、CI 红"变成常态。
+GOLANGCI_VERSION   ?= v2.11.4
+GOVULNCHECK_VERSION ?= v1.2.0
+# lint/vuln 的二进制装在 $(GOPATH)/bin（受限环境里 devenv.sh 会把它指到仓库内），
+# 它未必在 PATH 上，所以这里显式补进搜索路径。
+GOTOOLBIN := $(shell . "$(ROOT)/scripts/devenv.sh" 2>/dev/null; go env GOPATH)/bin
+
 PKG      := github.com/kingfs/Bootstrap/internal/buildinfo
 LDFLAGS  := -s -w \
 	-X $(PKG).Version=$(VERSION) \
@@ -30,6 +38,9 @@ help:
 	@echo "  make smoke      无副作用端到端冒烟测试（沙箱目录）"
 	@echo "  make pty        在真 PTY 里验证交互式界面（空格勾选/取消/退出码）"
 	@echo "  make check      fmt + vet + test + race"
+	@echo "  make lint       golangci-lint 静态检查（需先 make tools；不进 check）"
+	@echo "  make vuln       依赖已知漏洞扫描（需网络访问 vuln.go.dev）"
+	@echo "  make tools      安装 lint/vuln 需要的二进制（需网络）"
 	@echo "  make cross      交叉编译到 6 个平台组合（dist/）"
 	@echo "  make snapshot   goreleaser 本地打包快照"
 	@echo "  make clean      清理 bin/ dist/ .cache/"
@@ -64,6 +75,28 @@ test:
 .PHONY: race
 race:
 	$(GOENV) $(GO) test -race ./...
+
+# lint 与 vuln 刻意**不进 make check**：
+#   - lint 比 go vet 慢一个量级，而且需要额外安装二进制（协作者不装就该能跑 check）；
+#   - vuln 要联网查 vuln.go.dev，无网络环境下会失败——那不该拦住本地提交。
+# 但发版前与改动依赖时应当手动跑一遍（见 AGENTS §3）。
+.PHONY: lint
+lint:
+	@PATH="$(GOTOOLBIN):$$PATH" command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "未找到 golangci-lint；先运行 make tools（或把 $(GOLANGCI_VERSION) 装进 PATH）"; exit 1; }
+	$(GOENV) PATH="$(GOTOOLBIN):$$PATH" golangci-lint run ./...
+
+.PHONY: vuln
+vuln:
+	@PATH="$(GOTOOLBIN):$$PATH" command -v govulncheck >/dev/null 2>&1 || { \
+		echo "未找到 govulncheck；先运行 make tools（或把 $(GOVULNCHECK_VERSION) 装进 PATH）"; exit 1; }
+	$(GOENV) PATH="$(GOTOOLBIN):$$PATH" govulncheck ./...
+
+.PHONY: tools
+tools:
+	$(GOENV) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+	$(GOENV) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@echo "已安装到 $$($(GOENV) $(GO) env GOPATH)/bin"
 
 .PHONY: cover
 cover:

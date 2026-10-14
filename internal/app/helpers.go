@@ -9,7 +9,6 @@ import (
 
 	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
-	"github.com/kingfs/Bootstrap/pkg/cmdx"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
 	"github.com/kingfs/Bootstrap/pkg/hostinfo"
 )
@@ -24,10 +23,6 @@ func asExitError(err error, target **exec.ExitError) bool {
 }
 
 func (a *App) lookPath(name string) (string, bool) { return a.Runner.LookPath(name) }
-
-func cmdxCommand(name string, args ...string) cmdx.Command {
-	return cmdx.Command{Name: name, Args: args}
-}
 
 func gitrepoDiscover(root string) ([]string, error) { return gitrepo.Discover(root, 0) }
 
