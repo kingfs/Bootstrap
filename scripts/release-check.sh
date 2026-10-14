@@ -29,6 +29,9 @@ pass=0
 fail=0
 
 ok() { printf '  \033[32mok\033[0m   %s\n' "$1"; pass=$((pass + 1)); }
+# warn 不计入断言：它提示"这次彩排的结论可能不可信"，但不该让脚本红掉
+# （直接跑本脚本、拿一份旧 dist/ 来对照时会出现这种情况）。
+warn() { printf '  \033[33mwarn\033[0m %s\n' "$1"; }
 bad() {
   printf '  \033[31mFAIL\033[0m %s\n' "$1"
   fail=$((fail + 1))
@@ -59,6 +62,15 @@ need() { # 命令名（缺了就退出：这是脚本自身的依赖，不是被
 need curl
 need tar
 need python3
+
+# sha256_of_file：脚本内部比较"二进制有没有被换掉"用（外部命令存在性在上面检查过）
+sha256_of_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
 command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || {
   printf 'release-check: 需要 sha256sum 或 shasum\n' >&2
   exit 4
@@ -71,6 +83,13 @@ fi
 if [ ! -f "$INSTALLER" ]; then
   printf 'release-check: 找不到 %s\n' "$INSTALLER" >&2
   exit 4
+fi
+
+# 陈旧产物会给出假结论（这条是踩出来的：改了 install.sh 忘了重打包，脚本却"验过了"）
+if [ -n "$(find "$ROOT/cmd" "$ROOT/internal" "$ROOT/pkg" "$ROOT/tools" \
+  "$ROOT/scripts/install.sh" "$ROOT/scripts/install.ps1" \
+  -newer "$DIST/checksums.txt" -type f 2>/dev/null | head -1)" ]; then
+  warn "dist/ 比源码旧：先跑 \`make snapshot\`（\`make release-check\` 会先重新打包），否则下面的结论只对新代码之外的东西有效"
 fi
 
 # 本机平台（只有本机那一份能真正跑起来；其它平台只检查"在不在、名字对不对"）
@@ -257,7 +276,112 @@ assert_eq "重复安装退出码 0" "0" "$code"
 out="$("$BINDIR/bs" version 2>&1)"
 assert_contains "重复安装后版本仍然正确" "$VERSION" "$out"
 
-# ---------- 3. 失败路径 ----------
+# ---------- 3. 自更新（走本地镜像前缀）----------
+# 自更新是整条发布链里最危险的一步：它会替换正在运行的二进制。所以这里用
+# BS_GITHUB_API / BS_GITHUB_ASSET_BASE 把 bs 指向本地站点，真跑一遍"更新成功"，
+# 以及两条必须失败的路（校验和对不上、站点没有校验和文件）。
+#
+# 站点摆成 GitHub 的路径形状：<assets>/<repo>/releases/download/<tag>/<asset>，
+# API 是 <api>/repos/<repo>/releases/latest（返回 {"tag_name": ...}）。
+selfupdate_section() {
+  newver="0.0.2-next"
+  newtag="v$newver"
+  pkg="github.com/kingfs/Bootstrap/internal/buildinfo"
+  gh="$WORK/gh"
+  release_dir="$gh/github/kingfs/Bootstrap/releases/download"
+  api_dir="$gh/api/repos/kingfs/Bootstrap/releases"
+  mkdir -p "$api_dir" "$release_dir/$newtag" "$WORK/newrel"
+
+  commit="$(git -C "$ROOT" rev-parse --short HEAD)"
+  ldflags="-s -w -X $pkg.Version=$newver -X $pkg.Commit=$commit -X $pkg.Date=2026-01-01T00:00:00Z"
+  # 走 bash 起一层：scripts/devenv.sh 是 bash 专有（受限环境里 $HOME 只读，必须靠它把
+  # GOPATH/GOCACHE 指到仓库内），而本脚本是 POSIX sh，直接 source 会算错根目录。
+  if ! (cd "$ROOT" && bash -c '
+      [ -f scripts/devenv.sh ] && . scripts/devenv.sh >/dev/null 2>&1
+      exec go build -trimpath -ldflags "$1" -o "$2" ./cmd/bs
+    ' bash "$ldflags" "$WORK/newrel/bs"); then
+    bad "编译出用于自更新的新版本（$newver）"
+    return
+  fi
+  ok "编译出用于自更新的新版本（$newver）"
+
+  printf '{"tag_name":"%s"}' "$newtag" >"$api_dir/latest"
+  printf '{"tag_name":"%s"}' "$newtag" >"$gh/github/kingfs/Bootstrap/releases/latest"
+  new_asset="bootstrap_${newver}_${OS}_${ARCH}.tar.gz"
+  (cd "$WORK/newrel" && tar -czf "$release_dir/$newtag/$new_asset" bs)
+  (cd "$release_dir/$newtag" && sha256sum "$new_asset" >checksums.txt)
+
+  # 额外的两个 tag：一个"产物被篡改但校验和是旧的"，一个"根本没有 checksums.txt"
+  for extra in 0.0.3-next 0.0.4-next; do
+    mkdir -p "$release_dir/v$extra"
+    cp "$release_dir/$newtag/$new_asset" "$release_dir/v$extra/bootstrap_${extra}_${OS}_${ARCH}.tar.gz"
+  done
+  (cd "$release_dir/v0.0.3-next" && sha256sum bootstrap_0.0.3-next_"$OS"_"$ARCH".tar.gz >checksums.txt \
+    && printf 'tampered' >>bootstrap_0.0.3-next_"$OS"_"$ARCH".tar.gz)
+
+  if ! start_site "$gh" gh; then
+    bad "自更新站点没起来"
+    return
+  fi
+  gh_base="http://127.0.0.1:$SITE_PORT"
+  export BS_GITHUB_API="$gh_base/api"
+  export BS_GITHUB_ASSET_BASE="$gh_base/github"
+  # 万一镜像变量没生效，别真去连 api.github.com：把代理指到一个必然连不上的本地端口
+  export HTTPS_PROXY="http://127.0.0.1:1"
+  export HTTP_PROXY="$HTTPS_PROXY"
+
+  before_sum="$(sha256_of_file "$BINDIR/bs")"
+  code=0
+  out="$("$BINDIR/bs" self-update --check 2>&1)" || code=$?
+  assert_eq "--check 退出码 0（走本地镜像解析最新版本）" "0" "$code"
+  assert_contains "--check 认出镜像上的新版本" "$newver" "$out"
+  assert_eq "--check 之后当前二进制没被换掉" "$before_sum" "$(sha256_of_file "$BINDIR/bs")"
+  log="$(cat "$WORK/http-gh.log" 2>/dev/null || true)"
+  assert_contains "--check 问了 API（latest）" "releases/latest" "$log"
+  if printf '%s' "$log" | grep -q "bootstrap_"; then
+    bad "--check 不该下载归档（日志里有 bootstrap_ 请求）"
+  else
+    ok "--check 不下载归档"
+  fi
+
+  # 真更新：0.0.1-next → 0.0.2-next
+  code=0
+  out="$("$BINDIR/bs" self-update --yes 2>&1)" || code=$?
+  assert_eq "自更新退出码 0" "0" "$code"
+  assert_contains "自更新下载了归档" "$new_asset" "$(cat "$WORK/http-gh.log")"
+  out="$("$BINDIR/bs" version 2>&1)"
+  assert_contains "替换后的二进制是新版本" "$newver" "$out"
+  backup="$(ls "$BINDIR"/bs.bak-* 2>/dev/null | head -1 || true)"
+  assert_exists "旧二进制留了备份" "$backup"
+  if [ -n "$backup" ]; then
+    assert_contains "备份里是旧版本（能手工回滚）" "$VERSION" "$("$backup" version 2>&1)"
+  fi
+
+  # 失败路径 1：产物被篡改（校验和还是旧的）→ 必须中止，且当前二进制保持不动
+  before_sum="$(sha256_of_file "$BINDIR/bs")"
+  code=0
+  out="$("$BINDIR/bs" self-update --version v0.0.3-next --yes 2>&1)" || code=$?
+  if [ "$code" -ne 0 ]; then ok "被篡改的产物必须失败（退出码 $code）"; else bad "被篡改的产物居然装上了"; fi
+  # 错误消息是英文短句（AGENTS §5），面向用户的提示才是中文
+  assert_contains "失败原因指向校验" "checksum mismatch" "$out"
+  assert_eq "失败后当前二进制没被动过" "$before_sum" "$(sha256_of_file "$BINDIR/bs")"
+  assert_eq "失败的更新不会多留备份" "1" "$(ls "$BINDIR"/bs.bak-* 2>/dev/null | wc -l | tr -d ' ')"
+
+  # 失败路径 2：站点没有 checksums.txt → 按红线中止，绝不"跳过校验"
+  code=0
+  out="$("$BINDIR/bs" self-update --version v0.0.4-next --yes 2>&1)" || code=$?
+  if [ "$code" -ne 0 ]; then ok "缺 checksums.txt 时必须失败（退出码 $code）"; else bad "缺校验和居然装上了"; fi
+  assert_contains "失败原因指向缺校验和（绝不降级为不校验）" "no checksum available" "$out"
+  assert_eq "缺校验和时当前二进制不变" "$before_sum" "$(sha256_of_file "$BINDIR/bs")"
+
+  unset BS_GITHUB_API BS_GITHUB_ASSET_BASE HTTPS_PROXY HTTP_PROXY
+  stop_site
+}
+
+printf '\n\033[1m== 自更新（本地镜像前缀）\033[0m\n'
+selfupdate_section
+
+# ---------- 4. 失败路径 ----------
 printf '\n\033[1m== 失败路径（必须中止，且不留残留）\033[0m\n'
 stop_site
 

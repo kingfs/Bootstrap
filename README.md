@@ -31,6 +31,11 @@ sh scripts/install.sh --base-url https://mirror.example.com/bootstrap --version 
 BS_BASE_URL=https://mirror.example.com/bootstrap BS_VERSION=v0.1.0 sh scripts/install.sh
 ```
 
+`bs` 自己的网络路径（按清单装 release 工具、`bs self-update`）同样可以换镜像前缀：
+`BS_GITHUB_API`（API，默认 `https://api.github.com`）与 `BS_GITHUB_ASSET_BASE`
+（产物与校验和，默认 `https://github.com`）。注意校验和与产物来自同一个前缀，
+所以镜像必须完全可信——它有能力同时换掉两者。
+
 也可以直接下载归档，或从源码构建：
 
 ```sh

@@ -208,14 +208,22 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   见 design §6.5）。改"装完/卸完立刻可见"这类行为时，注意 `Step.Detection` 里可能还是
   **计划阶段**的结果，别直接 Merge。
 - **发布前跑 `make release-check`**（`scripts/release-check.sh`）：它不碰 GitHub，把 `dist/` 摆成
-  `<base>/<tag>/…` 用本地 HTTP 服务冒充下载站，让 `scripts/install.sh` 真装一遍，并验
-  "篡改归档 / 缺 checksums.txt / 版本不存在"三条失败路径必须中止且不留残留。
+  `<base>/<tag>/…` 用本地 HTTP 服务冒充下载站，让 `scripts/install.sh` 真装一遍；再用
+  `BS_GITHUB_API`/`BS_GITHUB_ASSET_BASE` 把**自更新**指向同一套本地站点（现场编译一个更高版本
+  发上去），验"更新成功 + 旧版本留备份"与"篡改归档 / 缺 checksums.txt / 版本不存在"三条失败路径
+  必须中止、且当前二进制一动不动、不多留备份。
+  产物比源码旧时脚本会 `warn`（改了代码忘了重打包会给出假结论）；`dist/` 里归档带的
+  `scripts/install.sh` 必须与仓库字节一致，否则直接判失败。
   改 `scripts/install.sh`、`.goreleaser.yaml`（产物名/归档内容）或安装目录策略后必须跑它。
   注意 `make snapshot` 会 `--clean` 整个 `dist/`，`make cross` 的产物随之消失
   （`make docker-matrix` 依赖 `cross`，会自动重建）。
 - 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（`make e2e`，需要网络，不进 `make smoke`）；
   它的离线替身是 `internal/install/artifacts_e2e_test.go`（httptest 冒充 GitHub +
   真 httpx + 真解压），改 release 路径时优先扩充这条测试。
+- GitHub 镜像前缀（`BS_GITHUB_API` / `BS_GITHUB_ASSET_BASE`，见 `internal/app/applyGitHubMirror`）
+  只认环境变量、不落配置，`app.New` 里统一应用一次；它们同时决定产物与 `checksums.txt` 的来源，
+  **等于把 GitHub 的信任转交给镜像**（design §16 第 7 条）。改动下载路径时别绕过
+  `pkg/ghrelease` 自己拼 github.com，否则镜像和彩排都会漏掉这条路径。
 - 代理注入的语义见 `internal/proxy.Service.NetworkEnv`：`override_existing=false` 时
   **同一组变量用 shell 里的值**，绝不能"这一组就不注入"——`httpx` 把注入的 env 当权威，
   缺键即等于直连。改动这块务必跑 `internal/proxy` 的单测与 `make e2e`。

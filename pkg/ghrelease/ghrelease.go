@@ -14,11 +14,43 @@ import (
 	"github.com/kingfs/Bootstrap/pkg/httpx"
 )
 
-// AssetBaseURL 是资产下载地址的公开前缀（便于测试替换）。
-var AssetBaseURL = "https://github.com"
+// 默认前缀。调用方（含测试）想还原时用这两个常量，别自己拼字符串。
+const (
+	// DefaultAssetBaseURL 是资产下载地址的默认前缀。
+	DefaultAssetBaseURL = "https://github.com"
+	// DefaultAPIBaseURL 是 GitHub API 的默认前缀。
+	DefaultAPIBaseURL = "https://api.github.com"
+)
+
+// AssetBaseURL 是资产下载地址的前缀（便于测试与镜像替换）。
+var AssetBaseURL = DefaultAssetBaseURL
 
 // APIBaseURL 是 GitHub API 前缀。
-var APIBaseURL = "https://api.github.com"
+var APIBaseURL = DefaultAPIBaseURL
+
+// SetBaseURLs 覆盖两个前缀；空串（或纯空白）表示**用回默认前缀**。
+//
+// "空串回到默认"而不是"空串保持不动"：这个函数是幂等的，反复调用（比如配置重载）
+// 不会把上一次的镜像残留下来——少了状态，也就少了"为什么这次还在走镜像"的排查。
+//
+// 存在的理由：GitHub 在很多网络环境下不可用或很慢，而"从 Release 装东西"这件事只认
+// GitHub。调用方可以把前缀指向镜像/加速站（本仓库是从 BS_GITHUB_API /
+// BS_GITHUB_ASSET_BASE 环境变量读进来，见 internal/app/applyGitHubMirror）。
+//
+// 注意信任边界：**校验和与产物都来自同一个前缀**，所以镜像的信任级别等于 GitHub 本身
+// （它完全可以同时伪造产物和 checksums.txt）。这一点写在 docs/design.md §16。
+// 本包不读环境变量——环境变量属于项目约定，不该出现在可复用的 pkg 里。
+func SetBaseURLs(api, assets string) {
+	APIBaseURL = normalizeBase(api, DefaultAPIBaseURL)
+	AssetBaseURL = normalizeBase(assets, DefaultAssetBaseURL)
+}
+
+func normalizeBase(v, def string) string {
+	if s := strings.TrimRight(strings.TrimSpace(v), "/"); s != "" {
+		return s
+	}
+	return def
+}
 
 // LatestTag 查询仓库最新 release 的 tag（如 `v0.3.0`）。
 //

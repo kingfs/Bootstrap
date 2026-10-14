@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/selfupdate"
+	"github.com/kingfs/Bootstrap/pkg/ghrelease"
 	"github.com/kingfs/Bootstrap/pkg/httpx"
 )
 
@@ -102,6 +103,29 @@ func (a *App) verifyBinary(ctx context.Context, path string) error {
 		return errNoVersionOutput
 	}
 	return nil
+}
+
+// applyGitHubMirror 把镜像环境变量应用到 GitHub 地址前缀上；两个都没设时完全不介入。
+//
+// 为什么需要它：bs 的两条网络路径（按清单下载 release、自更新）都只认 github.com 与
+// api.github.com，而这两个地址在很多网络环境下很慢甚至不通。于是提供两个逃生口：
+//
+//	BS_GITHUB_API          —— 覆盖 API 前缀（默认 https://api.github.com）
+//	BS_GITHUB_ASSET_BASE   —— 覆盖产物/校验和下载前缀（默认 https://github.com）
+//
+// 安全提醒：**校验和与产物来自同一个前缀**，所以镜像必须完全可信——它有能力同时换掉
+// 产物和 checksums.txt。这是"用镜像"这件事本身的代价，不是本实现的缺陷（见 design §16）。
+// 刻意只认环境变量、不落配置文件：换机器/进公司内网时临时给一下，比把镜像固化进配置更不容易忘。
+func applyGitHubMirror() {
+	api := strings.TrimSpace(os.Getenv("BS_GITHUB_API"))
+	assets := strings.TrimSpace(os.Getenv("BS_GITHUB_ASSET_BASE"))
+	if api == "" && assets == "" {
+		// 两个都不给＝完全不介入：默认地址怎么都不该被动过。
+		// 这条不只是洁癖——测试会把前缀指到假 GitHub 上，构造 App 时若"顺手还原默认"，
+		// 就会把注入的地址抹掉，测试转而真的去连 github.com（表现为一串超时假失败）。
+		return
+	}
+	ghrelease.SetBaseURLs(api, assets)
 }
 
 // SelfUpdateRepo 返回默认的发布仓库（`--repo` > `BS_REPO` > 内置默认）。

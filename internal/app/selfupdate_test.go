@@ -251,6 +251,65 @@ func TestSelfUpdateRepoEnv(t *testing.T) {
 	}
 }
 
+// TestGitHubMirrorFromEnv：镜像前缀只认环境变量，且"没设就保持默认"。
+//
+// 这条测试会改 ghrelease 的包级前缀，所以自己负责还原（同包其它测试也这么做）。
+func TestGitHubMirrorFromEnv(t *testing.T) {
+	restore := func() {
+		ghrelease.SetBaseURLs(ghrelease.DefaultAPIBaseURL, ghrelease.DefaultAssetBaseURL)
+	}
+	restore()
+	t.Cleanup(restore)
+
+	// 只给一个：另一个必须保持默认，不能出现"给了 API 就把下载也指过去"。
+	t.Setenv("BS_GITHUB_API", "https://mirror.example.com/api/")
+	t.Setenv("BS_GITHUB_ASSET_BASE", "")
+	applyGitHubMirror()
+	if ghrelease.APIBaseURL != "https://mirror.example.com/api" {
+		t.Errorf("API 前缀没有生效（末尾斜杠也该去掉）：%q", ghrelease.APIBaseURL)
+	}
+	if ghrelease.AssetBaseURL != ghrelease.DefaultAssetBaseURL {
+		t.Errorf("没给 ASSET_BASE 时不该改动下载前缀：%q", ghrelease.AssetBaseURL)
+	}
+
+	// 两个都给：资产地址要真的按新前缀拼出来。
+	t.Setenv("BS_GITHUB_API", "")
+	t.Setenv("BS_GITHUB_ASSET_BASE", "https://mirror.example.com/gh")
+	applyGitHubMirror()
+	want := "https://mirror.example.com/gh/kingfs/Bootstrap/releases/download/v1.2.3/bootstrap_1.2.3_linux_amd64.tar.gz"
+	if got := ghrelease.AssetURL("kingfs/Bootstrap", "v1.2.3", "bootstrap_1.2.3_linux_amd64.tar.gz"); got != want {
+		t.Errorf("资产地址 = %q，期望 %q", got, want)
+	}
+	if ghrelease.APIBaseURL != ghrelease.DefaultAPIBaseURL {
+		t.Errorf("没给 API 时不该改动 API 前缀：%q", ghrelease.APIBaseURL)
+	}
+
+	// 都不给（含纯空白）：不介入——别去动别人（测试）注入的前缀。
+	// 显式"用回默认"由 ghrelease.SetBaseURLs("", "") 负责（pkg 层有单测）。
+	ghrelease.SetBaseURLs("https://injected.example.com", "https://injected.example.com")
+	t.Setenv("BS_GITHUB_API", "  ")
+	t.Setenv("BS_GITHUB_ASSET_BASE", "")
+	applyGitHubMirror()
+	if ghrelease.APIBaseURL != "https://injected.example.com" {
+		t.Errorf("没设镜像变量时不该改动前缀：%q", ghrelease.APIBaseURL)
+	}
+}
+
+// TestNewAppliesGitHubMirror：镜像前缀要在构造 App 时就生效（命令层不必各自记得）。
+func TestNewAppliesGitHubMirror(t *testing.T) {
+	restore := func() {
+		ghrelease.SetBaseURLs(ghrelease.DefaultAPIBaseURL, ghrelease.DefaultAssetBaseURL)
+	}
+	restore()
+	t.Cleanup(restore)
+
+	t.Setenv("BS_GITHUB_ASSET_BASE", "https://mirror.example.com/gh")
+	newTestApp(t)
+	if ghrelease.AssetBaseURL != "https://mirror.example.com/gh" {
+		t.Errorf("App 构造后镜像前缀没生效：%q", ghrelease.AssetBaseURL)
+	}
+}
+
 // TestVerifyBinaryRunsVersion：自检确实执行了新二进制（而不是只看文件存在）。
 func TestVerifyBinaryRunsVersion(t *testing.T) {
 	if runtime.GOOS == "windows" {

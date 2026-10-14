@@ -25,7 +25,7 @@
 
 ### 环境变量
 
-只有下表列出的变量会被读取（`internal/config/load.go` 的 `envBindings`）；
+下表是**映射到配置字段**的变量（`internal/config/load.go` 的 `envBindings`）；
 之所以不用 viper 的 `AutomaticEnv`，是因为它在 `Unmarshal` 路径上行为不可靠，
 显式绑定让"支持哪些变量"一眼可查、可测试。
 
@@ -44,6 +44,18 @@
 | `BS_TOOL_PROFILE` | `tool.default_profile` | |
 | `BS_MANIFEST_BUILTIN` | `tool.manifest.builtin` | |
 | `BS_SHELL_SNIPPETS_DIR` | `shell.snippets_dir` | |
+
+此外还有几个**不落配置**的变量（都是"这一次运行"的临时覆盖，刻意不给配置文件对应项）：
+
+| 变量 | 作用 | 备注 |
+| --- | --- | --- |
+| `BS_TIMEOUT` / `BS_TIMEOUT_COMMAND` / `BS_TIMEOUT_DOWNLOAD` | 覆盖超时 | 见 §6 |
+| `BS_REPO` | 覆盖自更新/发布用的仓库（`owner/repo`） | 默认 `kingfs/Bootstrap`；fork 自测用 |
+| `BS_GITHUB_API` | 覆盖 GitHub API 前缀 | 默认 `https://api.github.com`；镜像/加速站 |
+| `BS_GITHUB_ASSET_BASE` | 覆盖产物与校验和的下载前缀 | 默认 `https://github.com`；镜像/加速站 |
+
+`BS_GITHUB_*` 作用于**所有**从 GitHub Release 下载的路径（按清单装 release 工具、`bs self-update`）。
+注意它们同时决定产物与 `checksums.txt` 的来源，因此镜像必须完全可信（见 design §16）。
 
 ## 2. 顶层字段
 

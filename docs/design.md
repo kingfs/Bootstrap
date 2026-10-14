@@ -1461,10 +1461,15 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
   所以有一个不碰 GitHub 的彩排：`make snapshot` 打出 6 个平台的产物后，
   `scripts/release-check.sh` 把它摆成 `<base>/<tag>/…` 的目录、用本地 HTTP 服务冒充下载站，
   再让 `scripts/install.sh` **真的去装一遍**。检查：产物齐全/命名/`checksums.txt` 逐条对得上、
-  归档里有 README+设计文档+两个安装脚本、本机那份二进制是静态链接且 `bs version` 带得出
-  快照版本号、覆盖安装不报错；以及三条**必须失败**的路径——归档被篡改（校验拦住）、
-  站点上没有 `checksums.txt`（按红线中止）、版本不存在（明确报下载失败）——
-  且失败后不能留下半个可执行文件。全程只用 `curl`+`tar`+`sha256sum`+`python3` 起本地服务。
+  归档里有 README+设计文档+两个安装脚本（且与仓库里的**字节一致**）、本机那份二进制是静态链接、
+  `bs version` 带得出快照版本号与本次提交、内置清单（go:embed）可用、覆盖安装不报错；
+  以及三条**必须失败**的路径——归档被篡改（校验拦住）、站点上没有 `checksums.txt`（按红线中止）、
+  版本不存在（明确报下载失败）——且失败后不能留下半个可执行文件。
+  接着用同一套办法覆盖**自更新**（最危险的一步：替换正在运行的二进制）：把站点摆成 GitHub 的
+  路径形状，用 `BS_GITHUB_API`/`BS_GITHUB_ASSET_BASE` 指过去，现场编译一个"更新的版本"发上去，
+  验证 `--check` 只查不下载、真更新后版本变了且旧二进制留了备份（备份里确实是旧版本），
+  以及"产物被篡改""站点没有 checksums.txt"两条路都必须中止、**当前二进制一动不动、也不多留备份**。
+  全程只用 `curl`+`tar`+`sha256sum`+`python3` 起本地服务，不碰 GitHub。
 - **引导安装**（鸡生蛋闭环）：
   - `scripts/install.sh`：`curl -fsSL .../install.sh | sh` —— 探测 OS/Arch、
     解析版本（`--version vX.Y.Z` 或 `BS_VERSION`，缺省跟随 `releases/latest`）、
@@ -1474,6 +1479,11 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
   - `scripts/install.ps1`：Windows 侧同款（下载 zip、校验、装到用户目录并写 PATH，
     `-BaseUrl`/`BS_BASE_URL` 同样可换镜像）；
   - 两个脚本都可重复执行（重跑即升级）。
+- **镜像/加速站**：GitHub 在很多网络环境下慢或不通，所以 `BS_GITHUB_API` 与
+  `BS_GITHUB_ASSET_BASE` 可以换掉 API 与下载前缀（作用于按清单装 release 工具与自更新两条路径），
+  `BS_REPO` 换发布仓库。三者都只认环境变量、不落配置文件：换机器/进内网时临时给一下，
+  比把镜像固化进配置更不容易忘；`scripts/release-check.sh` 也正是靠它们把自更新
+  指向本地站点来彩排。
 - **`bs self-update`**（ADR-0009：只校验 sha256）：解析目标版本（`--version` 或 latest）→
   取 `checksums.txt` 里的 sha256（**拿不到就中止**，不提供"跳过校验"开关）→ 下载校验 →
   解压出 `bs` → **跑一遍 `<新二进制> version` 自检** → 备份旧文件 → 原子替换 → 清理自己产生的
@@ -1509,6 +1519,11 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 5. rc 文件只允许通过 `bs shell install` 的**受管块**修改：块由固定标记包围、可幂等替换、可精确移除，块外字节级不动；写前自动备份。其余场景一律只**输出**片段，不写文件。
 6. **破坏性操作必须先拿到明确同意**（`confirmDestructive`）：交互终端默认拒绝，
    非交互环境绝不阻塞，没有 `--yes` 就以退出码 5 结束（`--dry-run` 不需要同意，因为它什么都不做）。
+7. **镜像前缀是"把信任转交出去"**：`BS_GITHUB_ASSET_BASE` 同时决定产物与 `checksums.txt`
+   的来源，所以镜像能换掉两者而校验依然"通过"——sha256 防的是传输损坏和单边篡改，
+   防不了"你自己指过去的那台服务器"。因此这两个变量只认环境变量、不落配置文件（不会
+   在换机器后悄悄生效），并且在 `bs self-update --help`、`docs/configuration.md` 与这里
+   三处都写明这层含义。默认值永远是官方地址，不设变量就等于没有镜像。
 
 ---
 

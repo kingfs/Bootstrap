@@ -66,6 +66,9 @@ type App struct {
 
 // New 构造 App。
 func New(paths config.Paths, cfg *config.Config, sources []string, platform hostinfo.Platform, log *slog.Logger, out, errw io.Writer) *App {
+	// 每个进程进来先应用一次 GitHub 镜像前缀（BS_GITHUB_API / BS_GITHUB_ASSET_BASE）：
+	// 命令层不该各自记得这件事，漏一个就会"有的命令走镜像、有的直连 GitHub"。
+	applyGitHubMirror()
 	store := state.NewStore(paths.StateFile())
 	a := &App{
 		Paths:          paths,

@@ -20,6 +20,32 @@ func TestAssetAndChecksumURL(t *testing.T) {
 	}
 }
 
+// TestSetBaseURLs：空值保持不动、末尾斜杠去掉、地址真的被拼出来。
+func TestSetBaseURLs(t *testing.T) {
+	oldAPI, oldAsset := APIBaseURL, AssetBaseURL
+	t.Cleanup(func() { APIBaseURL, AssetBaseURL = oldAPI, oldAsset })
+
+	APIBaseURL, AssetBaseURL = "https://stale.example.com", "https://stale.example.com"
+	SetBaseURLs("", "")
+	if APIBaseURL != DefaultAPIBaseURL || AssetBaseURL != DefaultAssetBaseURL {
+		t.Fatalf("空值应当用回默认前缀（不能留上次的镜像）：%q / %q", APIBaseURL, AssetBaseURL)
+	}
+
+	SetBaseURLs("https://mirror.example.com/api/", "  https://mirror.example.com/gh/  ")
+	if APIBaseURL != "https://mirror.example.com/api" {
+		t.Errorf("API 前缀 = %q", APIBaseURL)
+	}
+	if AssetBaseURL != "https://mirror.example.com/gh" {
+		t.Errorf("资产前缀 = %q", AssetBaseURL)
+	}
+	if got, want := AssetURL("o/r", "v1", "a.tar.gz"), "https://mirror.example.com/gh/o/r/releases/download/v1/a.tar.gz"; got != want {
+		t.Errorf("AssetURL = %q，期望 %q", got, want)
+	}
+	if got, want := ChecksumsURL("o/r", "v1"), "https://mirror.example.com/gh/o/r/releases/download/v1/checksums.txt"; got != want {
+		t.Errorf("ChecksumsURL = %q，期望 %q", got, want)
+	}
+}
+
 func TestChecksumFor(t *testing.T) {
 	text := `
 # comment

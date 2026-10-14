@@ -428,6 +428,20 @@ assert_contains "卸载走的是 uvpm" "uvpm" "$out"
 out="$(upenv "$BIN" tool list --installed)"
 assert_not_contains "卸完立刻就不再显示 ruff" "ruff" "$out"
 
+step "GitHub 镜像前缀（不联网，只验接线）"
+# 两个变量都要真的被用上：把前缀指到一个必然连不上的本地端口，
+# 报错里出现的是**镜像地址**而不是 api.github.com，说明接线通了（不产生外网请求）。
+code=0
+out="$(env BS_GITHUB_API="http://127.0.0.1:1/api" BS_GITHUB_ASSET_BASE="http://127.0.0.1:1/gh" \
+  "$BIN" self-update --check 2>&1)" || code=$?
+if [ "$code" -ne 0 ]; then ok "镜像不可用时明确失败（退出码 $code）"; else bad "镜像不可用却成功了"; fi
+assert_contains "自更新走的是 BS_GITHUB_API 指的前缀" "127.0.0.1:1" "$out"
+assert_not_contains "没有偷偷去连 api.github.com" "api.github.com" "$out"
+# 只给 ASSET_BASE：API 保持默认，不许"给了下载前缀就把 API 也指过去"
+code=0
+out="$(env BS_GITHUB_ASSET_BASE="http://127.0.0.1:1/gh" "$BIN" self-update --check 2>&1)" || code=$?
+assert_contains "没给 API 时仍用官方 API 前缀" "api.github.com" "$out"
+
 step "工具升级（--all）"
 # 造一台"装了旧版 go"的机器：verify.min_version 要求 1.22，假二进制报 1.20.1。
 # PATH 收敛成"假 bin + /usr/bin:/bin"，让候选集合稳定；探测全是本地命令，不发网络。

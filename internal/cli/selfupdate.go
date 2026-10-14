@@ -35,7 +35,14 @@ func (rt *Runtime) selfUpdateCmd() *cobra.Command {
   * --check    只查版本号，不下载、不替换；
   * --dry-run  把要下载的归档与校验和都查出来给你看，但不下载、不替换；
   * 非交互环境（管道/CI/--json）必须显式给 --yes，否则以退出码 5 结束；
-  * 旧版本留在 <bs 路径>.bak-<时间戳>，需要回滚时手工换回即可。`,
+  * 旧版本留在 <bs 路径>.bak-<时间戳>，需要回滚时手工换回即可。
+
+环境变量：
+  * BS_REPO              覆盖发布仓库（默认 kingfs/Bootstrap）
+  * BS_GITHUB_API        覆盖 GitHub API 前缀（默认 https://api.github.com）
+  * BS_GITHUB_ASSET_BASE 覆盖产物与校验和的下载前缀（默认 https://github.com）
+                        上面两个用于镜像/加速站；注意校验和与产物来自同一个前缀，
+                        镜像必须完全可信（它有能力同时换掉产物和 checksums.txt）。`,
 		Example: `  bs self-update --check          # 有没有新版本
   bs self-update                  # 交互确认后更新到最新
   bs self-update --yes            # 不问（脚本/CI）
