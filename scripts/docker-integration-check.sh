@@ -125,14 +125,30 @@ have_proxy() {
   return 1
 }
 
+# 这个脚本按 apt 家族（ubuntu/debian）写的：装 CA 证书与 git 都走 apt-get。
+# 换成别的发行版要改这两处，因此先明确拒绝，而不是让它以一堆看不懂的失败告终。
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "本脚本目前只支持 apt 家族镜像（ubuntu/debian），$IMAGE 不是" >&2
+  exit 2
+fi
+
+# 镜像有没有系统 CA 证书决定了"第一公里"那段能测什么：没有才谈得上 x509 失败，
+# 有就只验证 doctor 认得出来（同一份脚本要能跑在不同基线镜像上）。
+have_ca=0
+for p in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+  /etc/ssl/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+  [ -f "$p" ] && have_ca=1
+done
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -f "${SSL_CERT_FILE}" ]; then have_ca=1; fi
+
 echo "== 环境（$IMAGE）"
 echo "  $(uname -srm)，$(. /etc/os-release && echo "$PRETTY_NAME")"
 echo "  沙箱：HOME=$HOME_DIR"
 for probe in git curl unzip gcc; do
   if command -v "$probe" >/dev/null 2>&1; then echo "  已存在：$probe（干净系统前提被打破）"; fi
 done
-if [ -e /etc/ssl/certs/ca-certificates.crt ]; then
-  echo "  已存在：系统 CA 证书"
+if [ "$have_ca" -eq 1 ]; then
+  echo "  镜像自带系统 CA 证书（这一轮跳过"缺证书"那段的断言）"
 else
   echo "  确认：镜像里没有系统 CA 证书（这正是要测的第一公里）"
 fi
@@ -153,15 +169,23 @@ case "$RC" in
 esac
 assert_contains "doctor 报出平台" "platform" "$OUT"
 assert_contains "doctor 检查系统 CA 证书" "ca certs" "$OUT"
-assert_contains "缺 CA 证书时给出可执行命令" "ca-certificates" "$OUT"
+if [ "$have_ca" -eq 0 ]; then
+  assert_contains "缺 CA 证书时给出可执行命令" "ca-certificates" "$OUT"
+else
+  assert_not_contains "doctor 不误报缺 CA 证书" "未找到系统 CA 证书" "$OUT"
+fi
 
 echo
 echo "== 第一公里：没有 CA 证书时，HTTPS 失败必须说清原因"
-bsr tool install lazygit --yes
-if [ "$RC" -ne 0 ]; then ok "缺 CA 证书时下载失败（退出码 $RC）"; else bad "缺 CA 证书却装成功了"; fi
-assert_contains "错误里给出 x509 提示" "no usable system CA certificates" "$OUT"
-assert_contains "错误里保留原始原因" "certificate" "$OUT"
-assert_missing "失败后没有留下二进制" "$HOME_DIR/.local/bin/lazygit"
+if [ "$have_ca" -eq 0 ]; then
+  bsr tool install lazygit --yes
+  if [ "$RC" -ne 0 ]; then ok "缺 CA 证书时下载失败（退出码 $RC）"; else bad "缺 CA 证书却装成功了"; fi
+  assert_contains "错误里给出 x509 提示" "no usable system CA certificates" "$OUT"
+  assert_contains "错误里保留原始原因" "certificate" "$OUT"
+  assert_missing "失败后没有留下二进制" "$HOME_DIR/.local/bin/lazygit"
+else
+  skip "镜像自带 CA 证书，无法验证「缺证书时的 x509 提示」"
+fi
 
 echo
 echo "== 配置与 shell 集成（离线）"
@@ -199,13 +223,17 @@ assert_contains "拒绝时提示加 --yes" "--yes" "$OUT"
 
 echo
 echo "== 装系统 CA 证书（系统包管理器，不由 bs 代劳）"
-if apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null 2>&1; then
-  ok "apt 装好 ca-certificates"
+if [ "$have_ca" -eq 1 ]; then
+  skip "镜像自带 CA 证书，无需安装"
 else
-  bad "apt 装 ca-certificates 失败（后面依赖 HTTPS 的断言会连带失败）"
+  if apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null 2>&1; then
+    ok "apt 装好 ca-certificates"
+  else
+    bad "apt 装 ca-certificates 失败（后面依赖 HTTPS 的断言会连带失败）"
+  fi
+  bsr doctor
+  assert_not_contains "doctor 不再报缺 CA 证书" "未找到系统 CA 证书" "$OUT"
 fi
-bsr doctor
-assert_not_contains "doctor 不再报缺 CA 证书" "未找到系统 CA 证书" "$OUT"
 
 echo
 echo "== apt 路径：用 bs 装一个系统包（git）"
