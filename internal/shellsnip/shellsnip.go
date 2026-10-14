@@ -117,6 +117,40 @@ func Load(builtinFS fs.FS, family Family, userDir string) (*Set, error) {
 	return set, nil
 }
 
+// IsPathSnippet 报告片段是否为 PATH 装配片段。
+//
+// 约定：`20-path.*` 是唯一的 PATH 装配片段（AGENTS.md §6），
+// `shell.auto_path=false` 时由调用方跳过它。
+func IsPathSnippet(name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), "20-path")
+}
+
+// AutoProxyContent 返回"启动时自动应用活跃代理 profile"的片段内容。
+//
+// 默认不开（`shell.auto_proxy=false`）：它会让 bs 的状态决定每个新 shell 的代理变量，
+// 包括在 `bs proxy off` 之后把 shell 里已有的代理变量 unset 掉。开了就是明确选择这条语义。
+func AutoProxyContent(family Family) (string, error) {
+	switch family {
+	case FamilyPosix:
+		return "# 由 shell.auto_proxy=true 生成：启动时应用 bs 当前活跃的代理 profile\n" +
+			"if command -v bs >/dev/null 2>&1; then\n" +
+			"  eval \"$(command bs proxy env --apply --shell \"${BS_SHELL:-bash}\")\"\n" +
+			"fi\n", nil
+	case FamilyFish:
+		return "# 由 shell.auto_proxy=true 生成：启动时应用 bs 当前活跃的代理 profile\n" +
+			"if command -q bs\n" +
+			"    command bs proxy env --apply --shell fish | source\n" +
+			"end\n", nil
+	case FamilyPwsh:
+		return "# 由 shell.auto_proxy=true 生成：启动时应用 bs 当前活跃的代理 profile\n" +
+			"$autoProxyExe = (Get-Command bs -CommandType Application -ErrorAction SilentlyContinue).Source\n" +
+			"if ($autoProxyExe) {\n" +
+			"    (& $autoProxyExe proxy env --apply --shell pwsh | Out-String) | Invoke-Expression\n" +
+			"}\n", nil
+	}
+	return "", fmt.Errorf("unsupported shell family %q", family)
+}
+
 // Render 把片段拼接为可直接 eval 的文本；每段前加注释标明来源，便于排障。
 func (s *Set) Render() string {
 	var b strings.Builder

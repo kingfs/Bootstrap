@@ -259,6 +259,86 @@ func TestShellInitUsesBuiltinAndUserSnippets(t *testing.T) {
 	}
 }
 
+// TestShellInitHonorsAutoPathAndAutoProxy：shell.auto_path / shell.auto_proxy 必须真的起作用。
+//
+// 这两个开关不写进 rc（受管块只有一行 eval），而是在每次开 shell 时由
+// `bs shell init <shell>` 现算，因此改配置立刻生效、无需重写 rc 文件。
+func TestShellInitHonorsAutoPathAndAutoProxy(t *testing.T) {
+	a, _ := newTestApp(t)
+
+	// 默认：装配 PATH，不自动应用代理。
+	init, err := a.ShellInit("bash")
+	if err != nil {
+		t.Fatalf("ShellInit: %v", err)
+	}
+	if !hasSnippet(init.Content, "20-path") || !strings.Contains(init.Content, "bs env path") {
+		t.Error("默认应当包含 PATH 装配片段")
+	}
+	if strings.Contains(init.Content, "99-auto-proxy") {
+		t.Error("默认不该自动应用代理（会污染新 shell）")
+	}
+
+	// 关掉 PATH 装配、打开自动应用代理。
+	a.Cfg.Shell.AutoPath = false
+	a.Cfg.Shell.AutoProxy = true
+	init, err = a.ShellInit("bash")
+	if err != nil {
+		t.Fatalf("ShellInit: %v", err)
+	}
+	if hasSnippet(init.Content, "20-path") || strings.Contains(init.Content, "bs env path") {
+		t.Errorf("auto_path=false 时不该出现 PATH 装配片段：\n%s", init.Content)
+	}
+	if !strings.Contains(init.Content, "99-auto-proxy") ||
+		!strings.Contains(init.Content, "proxy env --apply") {
+		t.Errorf("auto_proxy=true 时应当追加上自动应用片段：\n%s", init.Content)
+	}
+	// 头部要说明为什么少了片段，否则会被当成 bug。
+	if !strings.Contains(init.Content, "shell.auto_path=false") {
+		t.Error("应当在头部说明省略了 PATH 装配片段")
+	}
+	for _, sn := range init.Snippets {
+		if strings.HasPrefix(sn.Name, "20-path") {
+			t.Errorf("片段清单里也不该有 20-path：%+v", init.Snippets)
+		}
+	}
+	// 用户自己覆盖的 PATH 片段同样按名字被过滤（避免"开关失效"的错觉）。
+	userDir := filepath.Join(a.Cfg.Shell.SnippetsDir, "posix")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "20-path.sh"), []byte("export PATH=my-way:$PATH\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	init, err = a.ShellInit("bash")
+	if err != nil {
+		t.Fatalf("ShellInit: %v", err)
+	}
+	if strings.Contains(init.Content, "my-way") {
+		t.Error("用户覆盖的 20-path 片段也该被 auto_path=false 过滤掉")
+	}
+
+	// fish / pwsh 的自动应用语法必须各自正确（不能把 posix 语法塞给 fish）。
+	a.Cfg.Shell.AutoPath = true
+	for _, tc := range []struct{ shell, want string }{
+		{"fish", "command bs proxy env --apply --shell fish | source"},
+		{"pwsh", "proxy env --apply --shell pwsh | Out-String | Invoke-Expression"},
+	} {
+		init, err := a.ShellInit(tc.shell)
+		if err != nil {
+			t.Fatalf("ShellInit(%s): %v", tc.shell, err)
+		}
+		if !strings.Contains(init.Content, tc.want) {
+			t.Errorf("%s 的自动应用语法不对，应当包含 %q：\n%s", tc.shell, tc.want, init.Content)
+		}
+	}
+}
+
+// hasSnippet 报告渲染结果里是否包含某个片段（按 Render 的标题行判断，
+// 避免"头部说明里提到过片段名"被误当成片段本身）。
+func hasSnippet(content, name string) bool {
+	return strings.Contains(content, "# ─── "+name)
+}
+
 // TestShellInstallIsIdempotentAndReversible 覆盖 rc 受管块的三条硬要求：
 // 幂等、可精确卸载、块外内容不变。
 func TestShellInstallIsIdempotentAndReversible(t *testing.T) {
