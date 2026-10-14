@@ -1365,7 +1365,12 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 幂等与安全 | 文件写入用 `pkg/fsx` 的 `AtomicWriteFile`（tmp+rename）与 `WriteFileIfChanged`（内容不变不碰 mtime）；改用户 rc 前先 `fsx.BackupFile`；下载必须校验 sha256（拿不到就中止） |
 
 **没有的东西**（设计稿里出现过，别照抄）：`cmdx.FakeExecEnv`（假实现统一放在各包的
-`*_test.go` 里）、`testdata/golden` 快照、`//go:build integration` 标签、Docker 集成测试矩阵。
+`*_test.go` 里）、`testdata/golden` 快照、`//go:build integration` 标签。
+
+**干净的机器上才暴露的问题**由 `make docker-matrix` 覆盖（`scripts/docker-check.sh`
+在 ubuntu/debian 最小镜像里以 `--network none` 跑新机器流程）：smoke 跑在开发机上，
+"缺 git/curl 会怎样""有没有偷偷依赖宿主环境"在那里永远测不出来。它不进 `make check`
+（要 Docker、要拉镜像、慢），沿用 e2e 的定位。
 
 ---
 ## 14. 构建与发布
@@ -1452,7 +1457,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、集成测试矩阵（Docker）、README/AGENTS/ADR 定稿 | 🔄 进行中 |
+| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、✅ Docker 集成矩阵（`make docker-matrix`：ubuntu/debian 裸镜像 + `--network none`）、README/AGENTS/ADR 定稿 | 🔄 进行中 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
 
 **M2 完成判据的自查**：

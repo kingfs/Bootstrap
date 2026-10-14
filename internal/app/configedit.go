@@ -195,7 +195,12 @@ func (a *App) ConfigEditPrepare() (path string, created bool, backup string, err
 // 这里**不走 pkg/cmdx**：编辑器必须继承真实终端（cmdx 会捕获输出、并在 dry-run 下不执行）。
 // 与 subshell.go 的取舍一致：交互式进程是这个规则唯一的例外。
 func (a *App) ConfigEdit(ctx context.Context, path string) error {
-	editor := firstNonEmpty(os.Getenv("VISUAL"), os.Getenv("EDITOR"), "vi")
+	// 默认编辑器按平台选：Windows 上 vi 通常不存在，notepad 是唯一保证有的。
+	fallback := "vi"
+	if a.Platform.OS == "windows" {
+		fallback = "notepad"
+	}
+	editor := firstNonEmpty(os.Getenv("VISUAL"), os.Getenv("EDITOR"), fallback)
 	parts := strings.Fields(editor)
 	if len(parts) == 0 {
 		return errors.New("empty $EDITOR")

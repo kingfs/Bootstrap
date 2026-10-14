@@ -286,6 +286,7 @@ make vuln         # 依赖已知漏洞扫描（需联网；改动依赖或发版
 make tools        # 安装上面两个目标的二进制（版本固定在 Makefile 里）
 make pty          # 在真 PTY 里验证交互式界面（勾选/取消/默认拒绝）
 make e2e          # 真实下载安装验证（**需要网络**，产物只落在 .cache/e2e）
+make docker-matrix # 在 ubuntu/debian 裸镜像里跑"新机器"流程（需 Docker；容器内 --network none）
 make cross        # 交叉编译 6 个平台
 ```
 

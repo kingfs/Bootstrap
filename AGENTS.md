@@ -8,7 +8,7 @@
 恢复代理与 shell 环境、按清单安装/更新工具链。
 M1–M3 已完成（`bs init` 一把梭 + 自更新），M4 打磨进行中（`--timeout`、`-i` 勾选、
 下载断点续传、`bs doctor --fix`、`config get|set|edit`、`tool upgrade --all`、
-`make lint`/`make vuln`）；尚未做的是 Windows 清单与 Docker 集成矩阵（见 §10）。
+`make lint`/`make vuln`、`make docker-matrix` 裸机矩阵）；尚未做的主要是 Windows 清单（见 §10）。
 
 - 语言：Go（版本见 `go.mod`），命令框架 cobra + 配置 viper
 - 支持平台：Linux / macOS / Windows；Linux 与 macOS 的 `amd64`、`arm64` 都必须可用
@@ -37,16 +37,18 @@ cmd/bs/main.go
 ## 3. 常用命令
 
 ```sh
-make build     # bin/bs
-make test      # 单元测试
-make race      # -race
-make smoke     # 无副作用端到端冒烟（关键回归保护）
-make pty       # 真 PTY 里验证交互式界面（勾选/取消/破坏性操作默认拒绝）
-make check     # gofmt + vet + test + race（提交前必跑）
-make lint      # golangci-lint 静态检查（需先 `make tools`；刻意不进 check）
-make vuln      # 依赖已知漏洞扫描（需联网查 vuln.go.dev；改动依赖后跑）
-make tools     # 安装上面两个目标需要的二进制（版本固定在 Makefile 里）
-make cross     # 交叉编译 6 个平台组合
+make build         # bin/bs
+make test          # 单元测试
+make race          # -race
+make smoke         # 无副作用端到端冒烟（关键回归保护）
+make pty           # 真 PTY 里验证交互式界面（勾选/取消/破坏性操作默认拒绝）
+make check         # gofmt + vet + test + race（提交前必跑）
+make lint          # golangci-lint 静态检查（需先 `make tools`；刻意不进 check）
+make vuln          # 依赖已知漏洞扫描（需联网查 vuln.go.dev；改动依赖后跑）
+make tools         # 安装上面两个目标需要的二进制（版本固定在 Makefile 里）
+make cross         # 交叉编译 6 个平台组合
+make e2e           # 真实下载安装（需要网络，不进 check）
+make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian 镜像跑（需 Docker + 拉镜像）
 ```
 
 `make lint` / `make vuln` **不进 `make check`**：前者比 `go vet` 慢一个量级且要额外的二进制，
@@ -73,6 +75,9 @@ make cross     # 交叉编译 6 个平台组合
    `pkg/cmdx/cmdx_test.go`）。
 3. 幂等操作要断言"第二次执行不修改文件"（比较 mtime），参考 `internal/state/state_test.go`、
    `pkg/fsx/fsx_test.go`。
+   另有一条**只有干净系统才暴露**的测试轴：`scripts/docker-check.sh` 在 ubuntu/debian 最小镜像里
+   以 `--network none` 跑一遍新机器流程（没有 git/curl/go，PATH 与环境变量全清）。
+   改动"缺命令时怎么办""是否偷偷依赖宿主环境"这类逻辑后跑 `make docker-matrix`。
 4. 涉及删改用户文件的逻辑，必须有一条"用户文件内容未被破坏"的测试。
 5. 提交前跑 `make check` 与 `make smoke`；两者都绿才算完成。
    动了 `go.mod` / 依赖，或准备发版时，再跑一遍 `make vuln`（需联网）。
@@ -192,3 +197,6 @@ make cross     # 交叉编译 6 个平台组合
 - `make e2e` 走网络，**默认依赖 `build`**（脚本自己不做构建）；它会在沙箱里真下载
   release 归档并校验 sha256，因此既能验证网络路径，也最容易暴露清单里的
   `strip_components`/asset 名写错。
+- `make docker-matrix` **依赖 `cross` 而不是 `build`**：本地 build 是动态链接的，
+  容器里可能因 libc 版本而失败，而发布产物正是 cross 那一份（`CGO_ENABLED=0`）。
+  容器内 `--network none`：所以"在裸机上能跑"这件事不是靠网络蒙混的。

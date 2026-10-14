@@ -42,6 +42,7 @@ help:
 	@echo "  make vuln       依赖已知漏洞扫描（需网络访问 vuln.go.dev）"
 	@echo "  make tools      安装 lint/vuln 需要的二进制（需网络）"
 	@echo "  make cross      交叉编译到 6 个平台组合（dist/）"
+	@echo "  make docker-matrix  在 ubuntu/debian 裸镜像里跑新机器流程（需 Docker，不进 check）"
 	@echo "  make snapshot   goreleaser 本地打包快照"
 	@echo "  make clean      清理 bin/ dist/ .cache/"
 
@@ -132,6 +133,14 @@ pty: build
 .PHONY: e2e
 e2e: build
 	$(ROOT)/scripts/e2e-install.sh
+
+# Docker 集成矩阵：把 `make cross` 的**静态**二进制丢进干净镜像里跑新机器流程。
+# 依赖 cross 而不是 build：本地 build 是动态链接的，容器里可能因 libc 版本而失败，
+# 而发布产物正是 cross 这一份（CGO_ENABLED=0）。
+# 需要 Docker 与网络（仅用于拉镜像）——刻意不进 check。
+.PHONY: docker-matrix
+docker-matrix: cross
+	$(ROOT)/scripts/docker-matrix.sh
 
 .PHONY: check
 check: fmt-check vet test race
