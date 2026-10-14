@@ -1171,7 +1171,7 @@ bs [--config FILE] [--repo-root DIR] [--dry-run] [--yes] [--json] [--no-color]
    [--interactive|--non-interactive] [--plain-ui] [--timeout DURATION] [-v|-vv] [--log-level LEVEL] <command>
 
 version              版本信息（--json：version/commit/date/go_version/os/arch）
-doctor               环境自检（只读）：平台、必需命令、包管理器、配置、清单、代理、PATH、rc 受管块、仓库根
+doctor [--fix]       环境自检（只读）；--fix 顺手修"结论明确、修法唯一"的问题（缺配置/仓库根/受管块）
 
 init                 新机器一把梭：环境概览 → 选工具 → plan → apply（可选 shell install）
                      [--profile P] [--tools a,b] [--missing-only] [--with-shell|--no-shell]
@@ -1410,7 +1410,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、`tool install -i` 交互勾选、`bs doctor --fix`、下载断点续传、`golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、shell completion 覆盖、README/AGENTS/ADR 定稿 | 🔄 进行中 |
+| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、下载断点续传、`golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、shell completion 覆盖、README/AGENTS/ADR 定稿 | 🔄 进行中 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
 
 **M2 完成判据的自查**：
@@ -1471,9 +1471,9 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 系统代理自动跟随 | 读取 macOS `scutil --proxy` / Windows 注册表 / Linux gsettings，让 `bs proxy` 支持 `--follow-system` | M4 |
 | `mise` 作为统一兜底 | 管理器表里已注册 `mise`（`mise install/use -g`），清单里 `golang` 也已有 `has: [mise]` 的等价路径；要不要让它接管更多语言再看 | 补清单时按需 |
 | Windows 工具清单与 `repo.root` | 首批不含（ADR-0014）：`tools/windows.yaml` 目前是占位文件，只保证能加载不报错；`D:/src` 约定与 scoop/winget 清单待单独设计 | M5+ |
-| `bs doctor --fix` | 是否让 doctor 自动修复（补 PATH、重建受管块、清理缓存），还是只诊断 | M4 |
+| ~~`bs doctor --fix`~~ | ✅ 已实现：只修"结论明确、修法唯一"的问题（生成配置、建仓库根、装受管块）；补 PATH、清缓存这类仍然只提示——它们要么有副作用、要么该由安装动作顺带完成 | 已完成 |
 | 跨工具并行安装 | `bs tool install` 目前严格串行（依赖顺序优先）；同层无依赖的工具并行需要先解决日志与确认交互的交错问题 | 安装变慢时 |
-| 全局 `--timeout` | 现在超时是写在四处的常量（命令 10min / 探测 5s / 元数据 60s / 通用 GET 60s / 下载 15min / 单连接 10s），需要一个统一的 flag 时才加 | M4 |
+| ~~全局 `--timeout`~~ | ✅ 已实现：`--timeout` 给整条命令设总时限，`timeouts.*` 覆盖各环节（命令/探测/元数据/下载）；取消时杀整棵进程组 | 已完成 |
 | `bs tool list` 的探测成本 | 目前每个条目都真起一次 `--version`（并发 8、TTL 10 分钟）；清单长到几百条时需要"只探测相关的"或懒惰探测 | 清单规模上来后 |
 
 ### 18.4 缺陷修复记录

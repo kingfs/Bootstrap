@@ -46,6 +46,7 @@ bs init --missing-only --yes    # 只补当前缺的
 bs config init                  # 生成默认配置（含本地/公司代理 profile 示例）
 bs shell install                # 在 rc 里装受管块：代理立即生效 + PATH 装配
 bs doctor                       # 看看环境还缺什么
+bs doctor --fix                 # 缺什么顺手补上（配置 / 仓库根 / 受管块；--dry-run 可先看）
 
 bs proxy use local              # 启用代理（当前 shell 立即生效）
 bs repo get kingfs/Bootstrap    # 克隆或更新到 ~/src/github.com/kingfs/Bootstrap
@@ -214,6 +215,7 @@ bs tool manifest validate --os darwin
 | `bs config validate` | 校验配置（一次性列出全部问题） |
 | `bs config init [--force]` | 生成默认配置（已存在不覆盖） |
 | `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |
+| `bs doctor --fix` | 顺手修掉能安全自动修的问题：生成配置、建仓库根、装 shell 受管块（写前备份；先给计划再问一句） |
 | `bs version` | 版本信息（`--json` 可脚本消费） |
 
 全局参数里有两个和"等多久"有关：`--timeout 30s` 给整条命令设总时限（到点连子进程一起停掉），

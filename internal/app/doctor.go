@@ -57,11 +57,18 @@ func (a *App) Doctor(ctx context.Context) []Check {
 	add(Check{Name: "bs", Status: StatusOK, Detail: ver.Version + " (" + ver.GoVersion + ")"})
 
 	// 2. 配置
+	// 配置：优先报"实际读了哪几份"。修复过（或刚生成）之后 ConfigSources 还是旧的，
+	// 因此再补一条"磁盘上确实有用户级配置吗"的实况判断——否则 `--fix` 修好了、
+	// 紧接着的复查却还说"没找到配置"，看起来像没修成功。
 	cfgStatus := StatusWarn
 	cfgDetail := "未找到配置文件，正在使用内置默认值"
-	if len(a.ConfigSources) > 0 {
+	switch {
+	case len(a.ConfigSources) > 0:
 		cfgStatus = StatusOK
 		cfgDetail = strings.Join(a.ConfigSources, ", ")
+	case fsx.IsFile(a.Paths.ConfigFile()):
+		cfgStatus = StatusOK
+		cfgDetail = a.Paths.ConfigFile() + "（重启后生效）"
 	}
 	add(Check{Name: "config", Status: cfgStatus, Detail: cfgDetail,
 		Hint: hintIf(cfgStatus == StatusWarn, "运行 `bs config init` 生成默认配置")})

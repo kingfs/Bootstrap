@@ -278,6 +278,39 @@ assert_contains "doctor 输出平台信息" "platform" "$out"
 assert_contains "doctor 检查 git" "git" "$out"
 if [ "$code" -eq 0 ] || [ "$code" -eq 4 ]; then ok "doctor 退出码合理（$code）"; else bad "doctor 退出码异常：$code"; fi
 
+step "体检修复（bs doctor --fix）"
+# 用一个全新的沙箱 HOME：doctor --fix 会建配置/仓库根/rc 受管块，必须与前面的断言互不干扰。
+FIXHOME="$WORK/fixhome"
+mkdir -p "$FIXHOME"
+printf '# 我自己的 rc\n' > "$FIXHOME/.bashrc"
+fixenv() {
+  env HOME="$FIXHOME" BS_CONFIG_HOME="$FIXHOME/.config/bootstrap" \
+      BS_STATE_HOME="$FIXHOME/.local/state/bootstrap" BS_CACHE_HOME="$FIXHOME/.cache/bootstrap" \
+      NO_COLOR=1 "$@"
+}
+# 没同意：退出码 5，且一个文件都不许建
+code=0; out="$(fixenv "$BIN" doctor --fix 2>&1)" || code=$?
+assert_eq "doctor --fix 缺 --yes 退出码 5" "5" "$code"
+assert_missing "没同意不生成配置" "$FIXHOME/.config/bootstrap/config.yaml"
+assert_missing "没同意不建仓库根" "$FIXHOME/src"
+assert_eq "没同意不改 rc 内容" "# 我自己的 rc" "$(cat "$FIXHOME/.bashrc")"
+
+# 干跑：列计划、不动手
+out="$(fixenv "$BIN" doctor --fix --dry-run 2>&1)"
+assert_contains "doctor --fix 干跑列出计划" "可自动修复" "$out"
+assert_contains "doctor --fix 干跑标注不执行" "不会被执行" "$out"
+assert_missing "doctor --fix 干跑不生成配置" "$FIXHOME/.config/bootstrap/config.yaml"
+
+# 真修：配置 + 仓库根 + rc 受管块，且原有 rc 内容保留、留下备份
+code=0; out="$(fixenv "$BIN" doctor --fix --yes 2>&1)" || code=$?
+assert_eq "doctor --fix --yes 退出码 0" "0" "$code"
+assert_exists "doctor --fix 生成配置" "$FIXHOME/.config/bootstrap/config.yaml"
+assert_exists "doctor --fix 建仓库根" "$FIXHOME/src"
+assert_contains "doctor --fix 保留原有 rc" "# 我自己的 rc" "$(cat "$FIXHOME/.bashrc")"
+assert_contains "doctor --fix 写入受管块" ">>> bootstrap" "$(cat "$FIXHOME/.bashrc")"
+if ls "$FIXHOME"/.bashrc.bs-backup.* >/dev/null 2>&1; then ok "doctor --fix 留下 rc 备份"; else bad "doctor --fix 没有备份 rc"; fi
+assert_contains "doctor --fix 复查受管块为 ok" "已安装且为最新" "$out"
+
 step "新机器一把梭（bs init）"
 # 干跑必须是只读的：计划要看得到，但一个文件都不能落。
 out="$("$BIN" init --dry-run --yes --tools ripgrep 2>&1)"

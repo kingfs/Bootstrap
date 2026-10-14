@@ -120,7 +120,9 @@ make cross     # 交叉编译 6 个平台组合
 1. **绝不删除或覆盖用户已有内容**：目标目录非空且不是 git 仓库时，`bs repo get` 只 `skip` 并提示。
 2. 修改用户文件（rc、配置文件）之前先备份（`fsx.BackupFile`），并优先用 `AtomicWriteFile`。
 3. 下载内容必须校验 sha256；校验文件拿不到就中止（见 `scripts/install.sh`）。
-4. `bs doctor` 是**只读**的：不创建目录、不写配置、不发网络请求；网络检查只放在 `bs proxy test`。
+4. `bs doctor` **默认只读**：不创建目录、不写配置、不发网络请求；`--fix` 才动手，而且只修
+   "结论明确、修法唯一"的问题（生成配置、建仓库根、装 shell 受管块），走 `confirmDestructive`
+   那套同意规则并支持 `--dry-run`。**只读**那部分的细则：网络检查只放在 `bs proxy test`。
    唯一的写动作是"目录可写性探测"——在最近的已存在祖先目录里创建并立刻删除一个临时文件。
    另外它**不执行** `go version`：Go 工具链会借此往 `~/.config/go/telemetry` 写计数文件
    （`GOTELEMETRY=off` / `GOTELEMETRYDIR` 都拦不住），这与"只读"冲突。

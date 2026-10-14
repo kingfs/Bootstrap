@@ -618,3 +618,124 @@ timeouts:
 		t.Errorf("报错应当提到 flag 给的 300ms：\n%s", stderr)
 	}
 }
+
+// TestDoctorFixRequiresConsentAndWritesNothing：`--fix` 也是破坏性操作：
+// 非交互环境没有 --yes 就退出码 5，而且**一个文件都不能创建**。
+func TestDoctorFixRequiresConsentAndWritesNothing(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+
+	code, stdout, stderr := run(t, rt, "doctor", "--fix")
+	if code != ExitNeedsInteraction {
+		t.Fatalf("exit = %d，期望 %d\nstdout=%s\nstderr=%s", code, ExitNeedsInteraction, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "--yes") {
+		t.Errorf("应当提示加 --yes：\n%s", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err == nil {
+		t.Error("没同意就生成了配置文件")
+	}
+	if _, err := os.Stat(filepath.Join(root, "home", "src")); err == nil {
+		t.Error("没同意就创建了仓库根目录")
+	}
+	if _, err := os.Stat(filepath.Join(root, "home", ".bashrc")); err == nil {
+		t.Error("没同意就写了 rc")
+	}
+}
+
+// TestDoctorFixDryRunPlansOnly：--dry-run 只说会修什么，不动手。
+func TestDoctorFixDryRunPlansOnly(t *testing.T) {
+	rt, stdout, _, root := sandbox(t)
+	code, out, _ := run(t, rt, "doctor", "--fix", "--dry-run")
+	if code != ExitOK && code != ExitPrecondition {
+		t.Fatalf("exit = %d\n%s%s", code, out, stdout)
+	}
+	if !strings.Contains(out, "可自动修复") || !strings.Contains(out, "不会被执行") {
+		t.Errorf("应当列出计划并标注干跑：\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err == nil {
+		t.Error("干跑不该生成配置")
+	}
+}
+
+// TestDoctorFixAppliesAndRechecks：--yes 时真的修，并且复查结果要反映修复后的状态。
+func TestDoctorFixAppliesAndRechecks(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	rc := filepath.Join(root, "home", ".bashrc")
+	if err := os.MkdirAll(filepath.Dir(rc), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(rc, []byte("# 我自己的 rc\n"), 0o644); err != nil {
+		t.Fatalf("write rc: %v", err)
+	}
+
+	code, out, stderr := run(t, rt, "doctor", "--fix", "--yes")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, out, stderr)
+	}
+	if !strings.Contains(out, "修复结果") {
+		t.Errorf("应当打印修复结果：\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err != nil {
+		t.Errorf("配置没有被生成：%v", err)
+	}
+	data, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatalf("read rc: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "# 我自己的 rc\n") {
+		t.Errorf("rc 原有内容被改动：\n%s", data)
+	}
+	if !strings.Contains(string(data), ">>> bootstrap") {
+		t.Errorf("受管块没有写进 rc：\n%s", data)
+	}
+	// 复查：只看"修复结果"之后的第二张表（第一张是修复前的状态，理应还带着 warn）。
+	idx := strings.Index(out, "修复结果")
+	if idx < 0 {
+		t.Fatalf("找不到修复结果段：\n%s", out)
+	}
+	tail := out[idx:]
+	// 表格行形如 "  ok   shell rc          /home/…/.bashrc 已安装且为最新"。
+	statusOf := func(name string) (string, bool) {
+		for _, line := range strings.Split(tail, "\n") {
+			for _, glyph := range []string{"  ok ", "warn ", "FAIL ", "skip "} {
+				if strings.HasPrefix(line, glyph) && strings.Contains(line, name+" ") {
+					return strings.TrimSpace(glyph), true
+				}
+			}
+		}
+		return "", false
+	}
+	for _, name := range []string{"shell rc", "config", "repo root"} {
+		status, found := statusOf(name)
+		if !found {
+			t.Errorf("复查表里缺少 %s：\n%s", name, tail)
+			continue
+		}
+		if status != "ok" {
+			t.Errorf("复查里 %s = %s，期望 ok：\n%s", name, status, tail)
+		}
+	}
+}
+
+// TestDoctorFixJSONShape：--json 下体检、修复、复查一起给，形状要稳定。
+func TestDoctorFixJSONShape(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+	code, out, stderr := run(t, rt, "doctor", "--fix", "--dry-run", "--json")
+	if code != ExitOK && code != ExitPrecondition {
+		t.Fatalf("exit = %d\nstderr=%s", code, stderr)
+	}
+	var payload struct {
+		Checks  []map[string]any `json:"checks"`
+		Summary map[string]int   `json:"summary"`
+		Fixes   []map[string]any `json:"fixes"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if len(payload.Checks) == 0 || len(payload.Fixes) == 0 {
+		t.Errorf("JSON 里应当同时有 checks 与 fixes：%s", out)
+	}
+	if payload.Summary["ok"] == 0 {
+		t.Errorf("summary 缺失：%s", out)
+	}
+}
