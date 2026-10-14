@@ -45,6 +45,7 @@ archives:
       - goos: windows
         formats: [zip]
     files:
+      - LICENSE
       - README.md
       - docs/design.md
       - scripts/install.sh

@@ -306,3 +306,8 @@ make cross        # 交叉编译 6 个平台
 ```
 
 架构与协作约定见 [AGENTS.md](AGENTS.md)，设计文档见 [docs/design.md](docs/design.md)。
+
+## 许可证
+
+[MIT](LICENSE)。
+
