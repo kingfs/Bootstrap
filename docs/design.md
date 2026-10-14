@@ -1426,6 +1426,16 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 "缺 git/curl 会怎样""有没有偷偷依赖宿主环境"在那里永远测不出来。它不进 `make check`
 （要 Docker、要拉镜像、慢），沿用 e2e 的定位。
 
+**干净机器 + 真网络**才暴露的问题由 `make docker-integration` 覆盖
+（`scripts/docker-integration.sh` → 容器内 `scripts/docker-integration-check.sh`，
+默认 `ubuntu:24.04`）：apt 系统包路径、GitHub Release 下载 + sha256、`params.url`
+直链、装/卸闭环与探测缓存，以及**代理全链路**。代理那段的证据是反向对照——把代理指向
+黑洞（`http://127.0.0.1:9`）后下载**必须**失败且错误里出现该地址，切回真代理后同一件事
+**必须**成功；"下载成功"本身不作为"代理生效"的证据。它同样不进 `make check`
+（要 Docker、要外网、会真下几十 MB）；代理地址用 `BS_PROXY_URL` 覆盖，给空串则跳过
+代理阶段。第一次跑就抓到两个问题：`ubuntu:24.04` 镜像没有系统 CA 证书导致所有 HTTPS
+失败而错误里毫无指向；`via: release` 装的工具根本卸不掉。两者都已修（§18.3）。
+
 ---
 ## 14. 构建与发布
 
@@ -1537,7 +1547,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、✅ Docker 集成矩阵（`make docker-matrix`：ubuntu/debian 裸镜像 + `--network none`）、✅ README/AGENTS/design/configuration 定稿（判据见下） | ✅ 完成 |
+| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、✅ Docker 集成矩阵（`make docker-matrix`：ubuntu/debian 裸镜像 + `--network none`）、✅ README/AGENTS/design/configuration 定稿（判据见下）、✅ 干净镜像真网络集成测试（`make docker-integration`，含代理全链路反向对照） | ✅ 完成 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② ✅ 按 stack 补齐 java/cpp/containers/rust/agent（2026-10-14：+27 条，含 `release` 类资产的归档结构与校验和实测）；③ ✅ 直链类工具（kubectl/helm/gradle）——`release` 已支持 `params.url`；④ ✅ 发布流程彩排 `make release-check`（本地站点真装 + 自更新整条链路，不碰 GitHub）；⑤ ✅ GitHub 镜像前缀 `BS_GITHUB_API`/`BS_GITHUB_ASSET_BASE`（按清单装 release 工具与自更新同一条路径） | 🔄 进行中 |
 
 **M2 完成判据的自查**：
@@ -1575,7 +1585,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | `bs doctor --fix` | 默认只读（有"零写入"断言）；`--fix` 只修"生成配置 / 建目录 / 装 shell 受管块"这三类结论唯一的问题；`--dry-run` 预览不落盘；非交互无 `--yes` → 退出码 5；`internal/app/doctorfix_test.go` 逐步断言写入内容 | ✅ |
 | `make lint` / `make vuln` | 两者都**不在** `make check` 里（一个慢一个要联网）；工具版本钉在 Makefile，缺失时给出"先跑 make tools"的提示；`make lint` 0 issues、`make vuln` 无已知漏洞 | ✅ |
 | 文档定稿 | README（安装/镜像/进度）、AGENTS（施工图 + 已知未完成项）、design（本文）、configuration（环境变量表）、tool-schema（清单字段）与实现逐条对齐；M2/M3/M4 三份判据自查各自留档 | ✅ |
-| 无副作用总验收 | `make check`、`make smoke`（193 条断言）、`make pty`、`make cross`（6 个平台组合）、`make docker-matrix`（ubuntu/debian 裸镜像 + `--network none`）、`make e2e`（真实下载）、`make release-check`（61 条断言）全绿 | ✅ |
+| 无副作用总验收 | `make check`、`make smoke`（193 条断言）、`make pty`、`make cross`（6 个平台组合）、`make docker-matrix`（ubuntu/debian 裸镜像 + `--network none`）、`make docker-integration`（ubuntu:24.04 + 真网络 + 代理，64 条断言）、`make e2e`（真实下载）、`make release-check`（61 条断言）全绿 | ✅ |
 
 ---
 
@@ -1618,6 +1628,8 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ~~全局 `--timeout`~~ | ✅ 已实现：`--timeout` 给整条命令设总时限，`timeouts.*` 覆盖各环节（命令/探测/元数据/下载）；取消时杀整棵进程组 | 已完成 |
 | ~~`config get\|set\|edit`~~ | ✅ 已实现（§5.3）：只改用户级配置的那一行，写前备份、写后校验、失败还原；`upgrade --all` 一并补上（§7.6） | 已完成 |
 | `upgrade --all` 与"管理器还没装" | `upgrade --all` 的候选是**已安装**的工具：`golang` 装了但管理器 `g` 没装时，它的 `manager` 方式不可用（回退到 apt 又被 §7.6 挡住）→ 列为跳过。要不要在批量升级里先"补装它声明的管理器"，等真机上再遇到时定 | 有人在真机上遇到时 |
+| `via: release` 的卸载只覆盖「单文件 + 软链」 | ✅ 已实现（2026-10-14，Docker 集成测试发现）：删除 `dest/binary` 与清单里声明的软链；`params.extract: true`（整包解压型，如 uv/gradle）与含 `{{version}}` 的路径**明确报不支持**并给出要手工删的目录。根治办法是安装时把「写了哪些文件」记进 state（卸载即精确回滚），当前先不引入这份记录 | 有整包解压型工具需要卸载时 |
+| 系统 CA 证书检查 | ✅ 已实现：`pkg/hostinfo` 探测系统证书库（含 `SSL_CERT_FILE`/`SSL_CERT_DIR`），`bs doctor` 新增 `ca certs` 一项并按包管理器给出安装命令；`httpx` 在 x509 错误上补英文 hint。起因：ubuntu:24.04 最小镜像没有 `/etc/ssl/certs/ca-certificates.crt`，所有 HTTPS 下载都失败，而错误里没有任何指向 | 已完成 |
 | `bs tool list` 的探测成本 | 目前每个条目都真起一次 `--version`（并发 8、TTL 10 分钟）；清单长到几百条时需要"只探测相关的"或懒惰探测 | 清单规模上来后 |
 
 ### 18.4 缺陷修复记录

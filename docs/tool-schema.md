@@ -265,6 +265,11 @@ params:
 - `asset` 支持模板；`symlink`/`symlinks` 里的 `from`/`to` **同样支持模板**
   （gradle 要写 `~/.local/share/gradle/gradle-{{version}}/bin/gradle`）。
 - 没写 `binary` 时：`repo` 模式取仓库名，直链模式取产物名去掉归档后缀。
+- **卸载**（`bs tool uninstall <工具>`）删的是 bs 当初写出去的东西：`dest/binary`
+  与清单里声明的软链。`params.dest`/`binary`/软链**含 `{{...}}` 模板**，或写了
+  `extract: true`（整包解压型）时会明确报"不支持"并告诉你手工删哪里——这两类都无法
+  在不知道"已安装版本/都写了哪些文件"的前提下安全删除，宁可拒绝也不猜路径。
+  URL 里有模板不影响卸载（kubectl 就是这样）：产物名从 URL 的**文件名**推出来，照样确定。
 
 #### 直链模式（`params.url`）
 

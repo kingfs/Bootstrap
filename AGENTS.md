@@ -50,6 +50,7 @@ make tools         # 安装 lint/vuln 需要的二进制，以及 goreleaser（�
 make cross         # 交叉编译 6 个平台组合
 make e2e           # 真实下载安装（需要网络，不进 check）
 make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian 镜像跑（需 Docker + 拉镜像）
+make docker-integration # 干净镜像 + 真网络：apt 路径、Release 下载+sha256、直链、代理全链路（需 Docker + 外网）
 make snapshot      # goreleaser 本地打包快照（产物在 dist/）
 make release-check # 发布流程彩排：打包后用 install.sh 从本地站点真装一遍（不碰 GitHub）
 ```
@@ -84,6 +85,12 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
    另有一条**只有干净系统才暴露**的测试轴：`scripts/docker-check.sh` 在 ubuntu/debian 最小镜像里
    以 `--network none` 跑一遍新机器流程（没有 git/curl/go，PATH 与环境变量全清）。
    改动"缺命令时怎么办""是否偷偷依赖宿主环境"这类逻辑后跑 `make docker-matrix`。
+   另一条只有**真网络**才暴露的测试轴是 `scripts/docker-integration.sh`（`make docker-integration`）：
+   在干净镜像里真装（apt 系统包、GitHub Release + sha256、`params.url` 直链）并验证**代理全链路**——
+   用"把代理指向黑洞（`http://127.0.0.1:9`）必须失败"做反向对照，证明 bs 自己发起的下载真的走了代理，
+   而不是拿"下载成功"当证据。容器里 github.com 直连不通，所以走代理的下载都排在代理配置之后。
+   它慢、要外网、会真下几十 MB，因此**不进 `make check`**；代理地址用 `BS_PROXY_URL` 覆盖
+   （默认 `http://proxy.in.chaitin.net:8123`，给空串则跳过代理阶段）。
 4. 涉及删改用户文件的逻辑，必须有一条"用户文件内容未被破坏"的测试。
 5. 提交前跑 `make check` 与 `make smoke`；两者都绿才算完成。
    动了 `go.mod` / 依赖，或准备发版时，再跑一遍 `make vuln`（需联网）。
@@ -200,6 +207,13 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 - Windows 的 `repo.root` 默认值仍待细化（设计文档 §18.3）。
 - 内置清单未覆盖 `fd`/`bat`：Ubuntu 上二进制名是 `fdfind`/`batcat`，与其它平台不一致，
   等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。
+- `via: release` 的卸载只覆盖"单个可执行文件 + 清单里的软链"：`params.extract: true`（整包解压型，
+  如 uv/gradle）与含 `{{version}}` 的 dest/binary/软链路径会明确报「不支持」并给出要手工删的目录。
+  根治要记录"安装时写了哪些文件"（design §18.3）；在那之前**不要**为了让某条清单能卸载而递归删目录。
+- 全新最小镜像（`ubuntu:24.04` docker 镜像）**没有系统 CA 证书**：所有 HTTPS 都会失败在 x509 上。
+  `bs doctor` 因此有一条 `ca certs`（`pkg/hostinfo` 探测，含 `SSL_CERT_FILE`/`SSL_CERT_DIR`），
+  `httpx` 也会在 x509 错误上补一句英文 hint；但**装系统包不是 bs 的事**（doctor 只给命令）。
+  改动下载错误处理时别把这层提示弄丢。
 - 交互式取消只认 **Ctrl-C**：huh 的 ESC 在可过滤列表里用于"退出过滤/清空输入"，
   不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
 - 交互式界面的按键行为**无法在单测里验证**（需要真 PTY，见 §4 第 0 条），

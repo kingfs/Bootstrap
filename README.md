@@ -190,7 +190,7 @@ eval "$(bs shell init bash)"
 | `bs tool install -i [...]` | 先探测再用交互界面勾选要处理的工具（`-i` 对 `upgrade`/`uninstall` 同样有效） |
 | `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
 | `bs tool upgrade --all` | 把清单里所有已安装的工具过一遍升级（系统包管理器按设计不动，列为"跳过"；没有可做的也不算失败） |
-| `bs tool uninstall [...]` | 卸载（交给各自的包管理器/官方方式；清单可单独写 `uninstall:` 链） |
+| `bs tool uninstall [...]` | 卸载（包管理器走自己的卸载命令，`via: release` 删掉 bs 装出去的文件与软链；整包解压型会明确报「不支持」并给出要手工删的目录） |
 | `bs tool manifest path\|validate\|show\|diff` | 清单来自哪里、是否写错、合并后长什么样 |
 
 选择方式（`plan`/`install`/`upgrade`/`uninstall` 通用）：`--profile`、`--stack`、`--kind`、`--tag`、`--missing`，
