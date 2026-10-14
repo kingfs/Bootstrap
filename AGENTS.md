@@ -102,6 +102,14 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 - 错误要带上下文，返回时用 `fmt.Errorf("...: %w", err)`；退出码映射集中在 `internal/cli/exit.go`。
 - 平台相关分支尽量收敛到 `pkg/hostinfo`（探测）或 `internal/config/paths.go`（目录策略），
   不要在业务代码里散落 `runtime.GOOS` 判断。
+- **显式接收 `goos` 的函数，路径拼接必须用 `fsx.JoinFor(goos, …)`**，不能用 `filepath.Join`：
+  后者按**当前宿主**选分隔符，于是"算 Windows 的 rc 文件"在 Linux 上会得到 `\home\k\.bashrc`
+  这种只在维护者机器上"看起来对"的结果（CI 第一次跑就抓住了一批）。同理，
+  判断归档条目/远端路径是否绝对要用 `path.IsAbs` 而不是 `filepath.IsAbs`
+  （Windows 上 `filepath.IsAbs("/abs/x")` 是 false，恶意压缩包会被放行）。
+- 测试里断言路径、权限位、假命令时，先问一句"这条断言在另一个平台上还成立吗"：
+  宿主语义（`ExpandPath`、权限位）按宿主算，目标平台语义（配置目录、rc 文件）按目标算，
+  只有 POSIX 才有前提的（符号链接需特权、无可执行位的文件不算命令）就 `t.Skip` 并写清理由。
 - 新增外部依赖前先看有没有标准库/已有依赖能覆盖；引入后跑 `go mod tidy` 并确认 `// indirect` 标记正确。
 
 ## 6. 新增能力的落点
@@ -222,6 +230,17 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   都要刷新缓存（install/upgrade 用刚探测到的结果 Merge，uninstall 无条件按 id 失效，
   见 design §6.5）。改"装完/卸完立刻可见"这类行为时，注意 `Step.Detection` 里可能还是
   **计划阶段**的结果，别直接 Merge。
+- **Windows 的覆盖边界**（CI 的 windows-latest 已跑通单测与 `scripts/smoke.ps1`，但仍有洞）：
+  - `internal/cli` 里需要"假管理器把新命令装出来并 chmod +x"的那组 `bs init` 用例在 Windows 上
+    `t.Skip`（假管理器是 POSIX 脚本）——真机上的 `bs init` 行为还没被验证过。
+  - `internal/detect` 的目录 provides 回退在 Windows 上只补 `.exe`，npm 那种 `.cmd` shim
+    识别不了（可能把已装的工具报成 missing）。
+  - 假命令在 Windows 上只能写成 `.cmd`（`writeFakeCmd` / `pkg/cmdx` 的测试已这么做）；
+    但"裸命令名 + 设置了 `cmd.Dir`"时 Go 的解析路径与 PATH 查找不同，
+    需要真机调试，别在本地靠猜改这部分断言。
+  - `scripts/smoke.ps1` 的断言数远少于 `smoke.sh`（Windows 清单本身也没写，见上）。
+- **macOS 的 `/bin/bash` 是 3.2**：脚本里变量展开必须写 `${var}`，不能 `$var` 紧跟非 ASCII 字符
+  （`$code）` 会被当成变量名，报 `unbound variable`）。CI 的 ubuntu 用 bash 5 看不出来。
 - **发布前跑 `make release-check`**（`scripts/release-check.sh`）：它不碰 GitHub，把 `dist/` 摆成
   `<base>/<tag>/…` 用本地 HTTP 服务冒充下载站，让 `scripts/install.sh` 真装一遍；再用
   `BS_GITHUB_API`/`BS_GITHUB_ASSET_BASE` 把**自更新**指向同一套本地站点（现场编译一个更高版本
