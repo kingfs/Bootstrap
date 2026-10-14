@@ -45,6 +45,7 @@ help:
 	@echo "  make tools      安装 lint/vuln 需要的二进制（需网络）"
 	@echo "  make cross      交叉编译到 6 个平台组合（dist/）"
 	@echo "  make docker-matrix  在 ubuntu/debian 裸镜像里跑新机器流程（需 Docker，不进 check）"
+	@echo "  make docker-integration  在干净镜像里跑真网络集成测试（含代理全链路；需 Docker+外网）"
 	@echo "  make snapshot   goreleaser 本地打包快照"
 	@echo "  make release-check  发布流程彩排：打包后用 install.sh 从本地站点真装一遍"
 	@echo "  make clean      清理 bin/ dist/ .cache/"
@@ -145,6 +146,10 @@ e2e: build
 .PHONY: docker-matrix
 docker-matrix: cross
 	$(ROOT)/scripts/docker-matrix.sh
+
+.PHONY: docker-integration
+docker-integration: cross
+	$(ROOT)/scripts/docker-integration.sh
 
 .PHONY: check
 check: fmt-check vet test race
