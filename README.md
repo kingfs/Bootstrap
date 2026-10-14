@@ -191,8 +191,9 @@ bs tool install uv --via brew           # 只对 uv 强制用 brew
 bs tool plan --tag monitor --json       # 计划也能机读
 ```
 
-常用 profile：`base`（日常 CLI）、`golang`、`nodejs`、`python`、`rust`、`cpp`、`containers`、`infra`、`agent`、`full`、
-`managers`（只装全部版本管理器）。用 `bs tool manifest show` 查看当前平台实际有哪些。
+常用 profile：`base`（日常 CLI）、`golang`、`nodejs`、`python`、`rust`、`rust-dev`、`java`、`cpp`、
+`containers`、`infra`、`agent`、`full`、`managers`（只装全部版本管理器）。
+用 `bs tool manifest show` 查看当前平台实际有哪些。
 
 清单来源（后者覆盖前者，同名 id 按字段合并）：
 

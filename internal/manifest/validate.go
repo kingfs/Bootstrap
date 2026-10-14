@@ -32,7 +32,7 @@ type ValidateOptions struct {
 	// Managers 是 stack → 版本管理器名 的映射，用于给出更准确的提示。
 	Managers map[string]string
 	// RequireManagerForRuntime 为 true 时，runtime 条目必须有一条 via: manager 路径
-	// （除非声明 manager_optional: true）。见 docs/design.md §6.4。
+	// （除非声明 manager_optional: true）。见 docs/design.md §6.5。
 	RequireManagerForRuntime bool
 	// Versions 是配置 tool.versions；模板校验时用它渲染 {{versions.*}}，
 	// 否则清单里写 {{versions.rust}} 会被误判成"没定义"。
@@ -48,7 +48,7 @@ var (
 	errProfileCycle   = errors.New("profile cycle")
 )
 
-// Validate 按 §6.4 校验合并后的清单，并一次性返回全部问题。
+// Validate 按 §6.5 校验合并后的清单，并一次性返回全部问题。
 func Validate(l *Loaded, opts ValidateOptions) error {
 	p := &Problems{}
 	known := map[string]bool{}

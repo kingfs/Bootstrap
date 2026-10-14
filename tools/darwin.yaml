@@ -99,7 +99,10 @@ profiles:
   # macOS 独有的成套定义（cpp 少了 gcc/gdb：那两个是 Linux 侧的发行版包）。
   cpp:
     description: 编译工具（编译器来自 Xcode Command Line Tools）
-    tools: [cmake, ninja, pkg-config, lldb]
+    tools: [cmake, ninja, pkg-config, lldb, ccache, clang-format, clangd, meson, mold, conan]
+  containers:
+    description: 容器运行时与镜像工具（brew）
+    tools: [docker, podman, skopeo, dive, lazydocker, hadolint]
   full:
     description: 这台机器上"该有都有"（macOS）
-    extends: [base, golang, nodejs, python, rust, cpp, agent]
+    extends: [base, golang, nodejs, python, rust, rust-dev, java, cpp, containers, infra, agent]

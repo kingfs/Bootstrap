@@ -761,3 +761,589 @@ tools:
       - via: npm
         when: {has: [npm]}
         params: {package: "@openai/codex", global: true}
+
+  # ═══════════════════════ M5 按 stack 补齐（2026-10-14） ═══════════════════════
+  #
+  # 下面这批条目都遵循同一条纪律：**每个方式都实测过名字**（apt/Arch/Fedora 的包名、
+  # brew formula、npm/crates/PyPI 的包名、GitHub Release 的资产名与校验和文件）。
+  # release 类条目还实测了归档结构，`strip_components` 只在该归档确实有外层目录时才写
+  # ——k9s/lazygit/g 那次"把二进制剥没"的教训（design §18.4 #11）。
+
+  # ─────────────────────────── Java 工具链 ───────────────────────────
+
+  - id: openjdk
+    name: OpenJDK 21
+    stack: java
+    kind: devdep
+    description: Java 开发工具包（发行版包，需要 sudo）
+    homepage: https://openjdk.org
+    when: {os: [linux, darwin]}
+    # `java -version` 把版本打到 **stderr** 且退出码为 0：探测会把 stdout+stderr 合并，
+    # 因此这里不能用"只看 stdout"的写法（仓里为此有专门的单测）。
+    verify: {command: java, version_args: [-version], version_regex: 'openjdk version "(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: openjdk@21}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [openjdk-21-jdk]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [java-21-openjdk-devel]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [jdk21-openjdk]}
+
+  - id: maven
+    name: Maven
+    stack: java
+    kind: devdep
+    description: Java 构建与依赖管理（发行版版本偏旧，但足够日常用）
+    homepage: https://maven.apache.org
+    when: {os: [linux, darwin]}
+    verify: {command: mvn, version_args: [-version], version_regex: 'Apache Maven (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: maven}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [maven]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [maven]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [maven]}
+
+  # ─────────────────────────── C/C++ 补充 ───────────────────────────
+
+  - id: ccache
+    name: ccache
+    stack: cpp
+    kind: devdep
+    description: 编译缓存（重复编译提速，C/C++/Rust 都能用）
+    homepage: https://ccache.dev
+    when: {os: [linux, darwin]}
+    verify: {command: ccache, version_args: [--version], version_regex: 'ccache version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: ccache}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [ccache]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [ccache]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [ccache]}
+
+  - id: clang-format
+    name: clang-format
+    stack: cpp
+    kind: devdep
+    description: C/C++ 代码格式化（.clang-format 驱动）
+    homepage: https://clang.llvm.org/docs/ClangFormat.html
+    when: {os: [linux, darwin]}
+    verify: {command: clang-format, version_args: [--version], version_regex: 'clang-format version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: clang-format}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [clang-format]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [clang-tools-extra]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [clang]}
+
+  - id: clangd
+    name: clangd
+    stack: cpp
+    kind: devdep
+    description: C/C++ 语言服务器（编辑器补全/跳转/重构）
+    homepage: https://clangd.llvm.org
+    when: {os: [linux, darwin]}
+    # Homebrew 的 llvm 是 keg-only，clangd 不在默认 PATH 里：不写这两行，
+    # 装完立刻会被判成 missing（"PATH 里有它、但探测看不到"那类灵异现象）。
+    path_dirs: ["/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin"]
+    verify: {command: clangd, version_args: [--version], version_regex: 'clangd version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: llvm}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [clangd]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [clang-tools-extra]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [clang]}
+
+  - id: meson
+    name: Meson
+    stack: cpp
+    kind: devdep
+    description: 构建系统（配 ninja 使用，见 `bs tool install ninja`）
+    homepage: https://mesonbuild.com
+    when: {os: [linux, darwin]}
+    verify: {command: meson, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: meson}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [meson]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [meson]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [meson]}
+
+  - id: mold
+    name: mold
+    stack: cpp
+    kind: devdep
+    description: 极快的链接器（GNU ld 的替代品）
+    homepage: https://github.com/rui314/mold
+    when: {os: [linux, darwin]}
+    verify: {command: mold, version_args: [--version], version_regex: 'mold (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: mold}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [mold]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [mold]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [mold]}
+
+  - id: conan
+    name: Conan
+    stack: cpp
+    kind: devdep
+    description: C/C++ 包管理器（走 uv/pipx 装在用户态）
+    homepage: https://conan.io
+    when: {os: [linux, darwin]}
+    verify: {command: conan, version_args: [--version], version_regex: 'Conan version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: conan}
+      - via: uvpm
+        when: {has: [uv]}
+        params: {package: conan}
+      - via: pipx
+        when: {has: [pipx]}
+        params: {package: conan}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [conan]}
+
+  # ─────────────────────── 容器：运行时与镜像工具 ───────────────────────
+
+  - id: podman
+    name: Podman
+    stack: containers
+    kind: service
+    description: 无守护进程的容器引擎（rootless）
+    homepage: https://podman.io
+    when: {os: [linux, darwin]}
+    verify: {command: podman, version_args: [--version], version_regex: 'podman version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: podman}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [podman]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [podman]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [podman]}
+
+  - id: skopeo
+    name: skopeo
+    stack: containers
+    kind: cli
+    description: 不落地地搬运/检查镜像（copy、inspect）
+    homepage: https://github.com/containers/skopeo
+    when: {os: [linux, darwin]}
+    verify: {command: skopeo, version_args: [--version], version_regex: 'skopeo version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: skopeo}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [skopeo]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [skopeo]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [skopeo]}
+
+  - id: dive
+    name: dive
+    stack: containers
+    kind: cli
+    description: 逐层查看镜像内容（找"镜像为什么这么大"）
+    homepage: https://github.com/wagoodman/dive
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: dive, version_args: [--version], version_regex: 'dive v?(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: dive}
+      # 实测：归档根下就是 CHANGELOG/LICENSE/README/dive，没有外层目录。
+      # 校验和文件名带版本号（dive_0.13.1_checksums.txt），因此必须显式给 checksum_file。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: wagoodman/dive
+          asset: "dive_{{version}}_{{os}}_{{arch}}.tar.gz"
+          checksum_file: "dive_{{version}}_checksums.txt"
+          binary: dive
+          dest: "~/.local/bin"
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [dive]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [dive]}
+
+  - id: lazydocker
+    name: lazydocker
+    stack: containers
+    kind: cli
+    description: 容器与镜像的 TUI 管理界面
+    homepage: https://github.com/jesseduffield/lazydocker
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: lazydocker, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: lazydocker}
+      # 实测：归档根下直接是二进制（LICENSE/README.md/lazydocker），**不能**写 strip_components。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: jesseduffield/lazydocker
+          asset: "lazydocker_{{version}}_{{os|osmap:linux=Linux,darwin=Darwin}}_{{arch|archmap:amd64=x86_64,arm64=arm64}}.tar.gz"
+          binary: lazydocker
+          dest: "~/.local/bin"
+
+  - id: hadolint
+    name: hadolint
+    stack: containers
+    kind: devdep
+    description: Dockerfile 静态检查
+    homepage: https://github.com/hadolint/hadolint
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: hadolint, version_args: [--version], version_regex: 'Linter (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: hadolint}
+      # 发布物是**裸二进制**（不是归档），校验和在 checksums.sha256 里（行格式是
+      # `<hash> *hadolint-linux-arm64`，解析器认那个 `*`）。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: hadolint/hadolint
+          asset: "hadolint-{{os|osmap:linux=linux,darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=arm64}}"
+          binary: hadolint
+          dest: "~/.local/bin"
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [hadolint]}
+
+  # ─────────────────────── Kubernetes / 集群 ───────────────────────
+
+  - id: kind
+    name: kind
+    stack: infra
+    kind: cli
+    description: 用容器跑本地 Kubernetes 集群（测试用）
+    homepage: https://kind.sigs.k8s.io
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: kind, version_args: [version], version_regex: 'kind v?(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: kind}
+      # 裸二进制 + 每个产物一个 `<资产>.sha256sum`（内容带文件名，因此给 checksum_file 就行）。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: kubernetes-sigs/kind
+          asset: "kind-{{os}}-{{arch}}"
+          checksum_file: "kind-{{os}}-{{arch}}.sha256sum"
+          binary: kind
+          dest: "~/.local/bin"
+
+  - id: stern
+    name: stern
+    stack: infra
+    kind: cli
+    description: 多 Pod 日志聚合（按正则选 Pod）
+    homepage: https://github.com/stern/stern
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: stern, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: stern}
+      # 实测：归档根下是 LICENSE/stern，没有外层目录（不写 strip_components）。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: stern/stern
+          asset: "stern_{{version}}_{{os}}_{{arch}}.tar.gz"
+          binary: stern
+          dest: "~/.local/bin"
+
+  # ─────────────────────────── Rust 开发工具 ───────────────────────────
+
+  - id: rust-analyzer
+    name: rust-analyzer
+    stack: rust
+    kind: devdep
+    description: Rust 语言服务器（Ubuntu/Debian 暂无可校验的安装方式，见注释）
+    homepage: https://rust-analyzer.github.io
+    when: {os: [linux, darwin]}
+    # 官方 Release **不发布任何校验和文件**（只有 .gz 归档），按纪律不能用 via: release；
+    # Ubuntu/Debian 上也没有包，因此那边先用 `rustup component add rust-analyzer`。
+    # 版本号是日期（rust-analyzer 2026-10-12），正则按日期写。
+    verify: {command: rust-analyzer, version_args: [--version], version_regex: 'rust-analyzer (?P<v>[0-9]{4}-[0-9]{2}-[0-9]{2})'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: rust-analyzer}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [rust-analyzer]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [rust-analyzer]}
+
+  - id: sccache
+    name: sccache
+    stack: rust
+    kind: devdep
+    description: 编译缓存（C/C++ 也能用，可当作 ccache 替代）
+    homepage: https://github.com/mozilla/sccache
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: sccache, version_args: [--version], version_regex: 'sccache (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: sccache}
+      # 实测：归档有外层目录（sccache-v0.18.0-<triple>/sccache），故 strip_components: 1；
+      # 校验和是每个产物配一个 `<资产>.sha256`（内容是裸哈希）。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: mozilla/sccache
+          asset: "sccache-v{{version}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}-{{os|osmap:linux=unknown-linux-musl,darwin=apple-darwin}}.tar.gz"
+          strip_components: 1
+          binary: sccache
+          dest: "~/.local/bin"
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: sccache}
+
+  - id: cargo-nextest
+    name: cargo-nextest
+    stack: rust
+    kind: devdep
+    description: 更快的 Rust 测试运行器（cargo nextest）
+    homepage: https://nexte.st
+    when: {os: [linux, darwin]}
+    verify: {command: cargo-nextest, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: cargo-nextest}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: cargo-nextest}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [cargo-nextest]}
+
+  - id: cargo-audit
+    name: cargo-audit
+    stack: rust
+    kind: devdep
+    description: 依赖漏洞扫描（RustSec 数据库）
+    homepage: https://rustsec.org
+    when: {os: [linux, darwin]}
+    verify: {command: cargo-audit, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: cargo-audit}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: cargo-audit}
+
+  - id: cargo-deny
+    name: cargo-deny
+    stack: rust
+    kind: devdep
+    description: 依赖许可/来源/重复版本检查
+    homepage: https://embarkstudios.github.io/cargo-deny/
+    when: {os: [linux, darwin]}
+    verify: {command: cargo-deny, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: cargo-deny}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: cargo-deny}
+
+  # ─────────────────────── AI Agent CLI（补充） ───────────────────────
+  #
+  # 这些 CLI 都通过 npm 系安装（它们自更新很勤，版本判断只当参考）。
+
+  - id: gemini-cli
+    name: Gemini CLI
+    stack: agent
+    kind: agent
+    description: Google 官方 CLI
+    homepage: https://github.com/google-gemini/gemini-cli
+    when: {os: [linux, darwin]}
+    verify: {command: gemini, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: "@google/gemini-cli", global: true}
+      - via: pnpm
+        when: {has: [pnpm]}
+        params: {package: "@google/gemini-cli", global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: "@google/gemini-cli", global: true}
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: gemini-cli}
+
+  - id: qwen-code
+    name: Qwen Code
+    stack: agent
+    kind: agent
+    description: 通义千问命令行编码助手
+    homepage: https://github.com/QwenLM/qwen-code
+    when: {os: [linux, darwin]}
+    verify: {command: qwen, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: "@qwen-code/qwen-code", global: true}
+      - via: pnpm
+        when: {has: [pnpm]}
+        params: {package: "@qwen-code/qwen-code", global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: "@qwen-code/qwen-code", global: true}
+
+  - id: opencode
+    name: OpenCode
+    stack: agent
+    kind: agent
+    description: 开源终端编码代理
+    homepage: https://opencode.ai
+    when: {os: [linux, darwin]}
+    verify: {command: opencode, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: opencode-ai, global: true}
+      - via: pnpm
+        when: {has: [pnpm]}
+        params: {package: opencode-ai, global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: opencode-ai, global: true}
+
+  - id: crush
+    name: Crush
+    stack: agent
+    kind: agent
+    description: Charm 出品的终端编码代理
+    homepage: https://github.com/charmbracelet/crush
+    when: {os: [linux, darwin]}
+    verify: {command: crush, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: "@charmland/crush", global: true}
+      - via: pnpm
+        when: {has: [pnpm]}
+        params: {package: "@charmland/crush", global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: "@charmland/crush", global: true}
+
+  - id: copilot-cli
+    name: GitHub Copilot CLI
+    stack: agent
+    kind: agent
+    description: GitHub 官方命令行助手
+    homepage: https://github.com/github/copilot-cli
+    when: {os: [linux, darwin]}
+    verify: {command: copilot, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: bun
+        when: {has: [bun]}
+        params: {package: "@github/copilot", global: true}
+      - via: pnpm
+        when: {has: [pnpm]}
+        params: {package: "@github/copilot", global: true}
+      - via: npm
+        when: {has: [npm]}
+        params: {package: "@github/copilot", global: true}
+
+  - id: aider
+    name: aider
+    stack: agent
+    kind: agent
+    description: 终端里的 AI 结对编程（Python，走 uv/pipx）
+    homepage: https://aider.chat
+    when: {os: [linux, darwin]}
+    verify: {command: aider, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: aider}
+      - via: uvpm
+        when: {has: [uv]}
+        params: {package: aider-chat}
+      - via: pipx
+        when: {has: [pipx]}
+        params: {package: aider-chat}

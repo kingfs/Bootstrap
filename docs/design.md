@@ -162,7 +162,7 @@ Bootstrap/
 │   ├── embed.go                   # //go:embed 清单与 snippets
 │   ├── common.yaml                # 跨平台公共工具（38 条）
 │   ├── linux.yaml  darwin.yaml  windows.yaml   # 平台专属工具与平台专属 profile（windows 目前是占位）
-│   ├── profiles.yaml              # base/golang/nodejs/python/rust/editor/infra/agent/managers
+│   ├── profiles.yaml              # base/golang/nodejs/python/rust/rust-dev/java/editor/infra/agent/managers
 │   └── snippets/{posix,fish,pwsh}/…# 10-proxy.* / 20-path.* / 90-aliases.sh
 ├── docs/design.md  tool-schema.md  configuration.md   # 决策记录（ADR）以 §18 的形式包含在 design.md 里
 ├── scripts/                       # devenv.sh smoke.sh smoke.ps1 install.sh install.ps1 e2e-install.sh
@@ -357,7 +357,7 @@ ui:
   | `devdep` | 系统开发依赖（编译头文件等） | build-essential, python3-dev, libssl-dev |
   | `service` | 本地服务/守护进程 | docker, postgres, redis |
   | `gui` | 带界面的开发辅助 | vscode, wezterm |
-  | `agent` | AI Agent / 编码助手 | codex, claude-code, dsh, opencode |
+  | `agent` | AI Agent / 编码助手 | codex, claude-code, opencode, gemini-cli, qwen-code, crush, aider, copilot-cli |
 
 以此支持：`bs tool list --stack golang`、`bs tool install --kind devdep`、`bs tool install --profile golang`。
 
@@ -599,8 +599,8 @@ tools:
 - `bs tool list` 默认只显示当前平台**可见**的条目（`when` 匹配且未 `disabled`）；
   `--all` 显示全部并标注"不适用于当前平台"/"已禁用"。
 
-`profiles.yaml` 只放**跨平台**套装（`base`/`golang`/`nodejs`/`python`/`rust`/`editor`/`infra`/
-`agent`/`managers`）；带平台差异的套装（`cpp`/`containers`/`full`）写在 `tools/<os>.yaml` 里——
+`profiles.yaml` 只放**跨平台**套装（`base`/`golang`/`nodejs`/`python`/`rust`/`rust-dev`/`java`/
+`editor`/`infra`/`agent`/`managers`）；带平台差异的套装（`cpp`/`containers`/`full`）写在 `tools/<os>.yaml` 里——
 "cpp 要装哪些包"在 Linux 与 macOS 上不同，用 `when` 硬凑会把清单写成一团浆糊。
 profile 可以写成纯列表简写，也可以是完整形式：
 
@@ -613,7 +613,41 @@ profiles:
     tools: [g, golang, gopls, dlv, staticcheck]
 ```
 
-### 6.4 校验（`bs tool manifest validate`，CI 中必跑）
+### 6.4 M5 按 stack 补齐的条目（2026-10-14）
+
+`common.yaml` 一次补进 27 条：java（`openjdk`/`maven`）、cpp（`ccache`/`clang-format`/`clangd`/
+`meson`/`mold`/`conan`）、containers（`podman`/`skopeo`/`dive`/`lazydocker`/`hadolint`）、
+infra（`kind`/`stern`）、rust（`rust-analyzer`/`sccache`/`cargo-nextest`/`cargo-audit`/`cargo-deny`）、
+agent（`gemini-cli`/`qwen-code`/`opencode`/`crush`/`copilot-cli`/`aider`），并新增
+`java`/`rust-dev` profile、给 `cpp`/`containers`/`agent`/`python` 补条目。
+
+**每个方式的名字都实测过**（这是清单纪律 §9 的落地，不靠"看起来对"）：
+apt 名字用 Ubuntu 24.04 的 `apt-cache policy`；Fedora 名字在 `fedora:41` 容器里
+`dnf repoquery`；Arch 名字查 archlinux.org 的包 API；brew 查 formulae.brew.sh；
+npm/crates/PyPI 查各自 registry；`release` 类查 GitHub Release 的**资产名与校验和文件**
+（并且**下载归档看目录结构**，`strip_components` 只在该归档确实有外层目录时才写）。
+
+`release` 类的实测结论（每一类都真装过一遍：`bs tool install kind lazydocker hadolint stern sccache --yes` 全绿）：
+
+| 工具 | 资产形态 | 校验和 | strip |
+|---|---|---|---|
+| `kind` | 裸二进制 `kind-<os>-<arch>` | `<资产>.sha256sum`（带文件名） | — |
+| `hadolint` | 裸二进制 `hadolint-<os>-<arch>` | `checksums.sha256`（行是 `<hash> *<名字>`） | — |
+| `lazydocker` | `lazydocker_<v>_<Os>_<arch>.tar.gz` | `checksums.txt` | 无（根下就是二进制） |
+| `stern` | `stern_<v>_<os>_<arch>.tar.gz` | `checksums.txt` | 无 |
+| `sccache` | `sccache-v<v>-<triple>.tar.gz` | `<资产>.sha256`（裸哈希） | 1（有外层目录） |
+| `dive` | `dive_<v>_<os>_<arch>.tar.gz` | `dive_<v>_checksums.txt`（名字带版本 → 显式 `checksum_file`） | 无 |
+
+两个**已知缺口**（写在这里免得有人以为漏了）：
+
+1. `rust-analyzer` 的官方 Release 不发布任何校验和文件（只有 `.gz`），按硬纪律不能用
+   `via: release`；Ubuntu/Debian 也没有包，那边先用 `rustup component add rust-analyzer`。
+2. `kubectl`（dl.k8s.io）、`helm`（get.helm.sh，GitHub Release 里只有 `.asc` 签名）、
+   `gradle`（services.gradle.org）都不在 GitHub Release 上，或没有可解析的校验和文件；
+   `via: release` 目前只认 `repo`+`asset`。要给它们一条**可校验**的安装路径，
+   得让 `release` 支持直链（`params.url` + `<url>.sha256`/`.sha256sum`），留作下一步。
+
+### 6.5 校验（`bs tool manifest validate`，CI 中必跑）
 
 校验的目的是**一次把错找全**（`manifest.Problems` 聚合，逐条列出），而不是让作者改一个跑一次。
 `--os linux|darwin|windows` 可以按指定系统交叉校验（`bs tool manifest validate --os windows`）。
@@ -1458,7 +1492,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
 | **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、✅ Docker 集成矩阵（`make docker-matrix`：ubuntu/debian 裸镜像 + `--network none`）、README/AGENTS/ADR 定稿 | 🔄 进行中 |
-| **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
+| **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② ✅ 按 stack 补齐 java/cpp/containers/rust/agent（2026-10-14：+27 条，含 `release` 类资产的归档结构与校验和实测）；③ 直链类工具（kubectl/helm/gradle）等 `release` 支持 `params.url` 后再补 | 🔄 进行中 |
 
 **M2 完成判据的自查**：
 

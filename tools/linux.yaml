@@ -183,11 +183,12 @@ tools:
 profiles:
   # Linux 独有的成套定义：跨平台的 base/golang/... 在 profiles.yaml 里。
   cpp:
-    description: C/C++ 工具链（发行版包）
-    tools: [gcc, cmake, ninja, pkg-config, autoconf, clang, gdb, lldb]
+    description: C/C++ 工具链（发行版包 + 构建缓存/格式化/语言服务器/包管理）
+    tools: [gcc, cmake, ninja, pkg-config, autoconf, clang, gdb, lldb,
+            ccache, clang-format, clangd, meson, mold, conan]
   containers:
-    description: 容器运行时
-    tools: [docker]
+    description: 容器运行时与镜像工具
+    tools: [docker, podman, skopeo, dive, lazydocker, hadolint]
   full:
     description: 这台机器上"该有都有"（Linux）
-    extends: [base, golang, nodejs, python, rust, cpp, containers, infra, agent]
+    extends: [base, golang, nodejs, python, rust, rust-dev, java, cpp, containers, infra, agent]

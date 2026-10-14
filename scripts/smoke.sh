@@ -355,6 +355,35 @@ code=0; out="$(env HOME="$EDITORHOME" BS_CONFIG_HOME="$EDITORHOME/.config/bootst
 assert_eq "config edit 非交互退出码 5" "5" "$code"
 assert_missing "被拒绝的 config edit 不生成配置" "$EDITORHOME/.config/bootstrap/config.yaml"
 
+step "清单：M5 按 stack 补齐的条目"
+out="$("$BIN" tool list --stack java)"
+assert_contains "java 栈有 JDK" "openjdk" "$out"
+assert_contains "java 栈有 Maven" "maven" "$out"
+out="$("$BIN" tool list --stack cpp)"
+for t in ccache clang-format clangd meson mold; do
+  assert_contains "cpp 栈有 $t" "$t" "$out"
+done
+out="$("$BIN" tool list --stack containers)"
+for t in podman skopeo dive lazydocker hadolint; do
+  assert_contains "containers 栈有 $t" "$t" "$out"
+done
+out="$("$BIN" tool list --stack agent)"
+for t in gemini-cli qwen-code opencode crush aider; do
+  assert_contains "agent 栈有 $t" "$t" "$out"
+done
+# profile 引用必须闭合（清单校验会一次性报出缺失的 id / extends / stack 拼写）
+out="$("$BIN" tool manifest validate --os linux)"
+assert_contains "新增条目后 linux 清单仍合法" "清单校验通过" "$out"
+out="$("$BIN" tool manifest validate --os darwin)"
+assert_contains "新增条目后 darwin 清单仍合法" "清单校验通过" "$out"
+# 离线预览要能看到新 profile 的解析结果（不发网络、不执行）
+out="$("$BIN" tool plan --profile java 2>&1)"
+assert_contains "java profile 能预览" "maven" "$out"
+out="$("$BIN" tool plan --profile rust-dev 2>&1)"
+assert_contains "rust-dev profile 能预览" "cargo-nextest" "$out"
+out="$("$BIN" tool plan --profile containers 2>&1)"
+assert_contains "containers profile 里的 release 条目能预览" "lazydocker" "$out"
+
 step "工具升级（--all）"
 # 造一台"装了旧版 go"的机器：verify.min_version 要求 1.22，假二进制报 1.20.1。
 # PATH 收敛成"假 bin + /usr/bin:/bin"，让候选集合稳定；探测全是本地命令，不发网络。
@@ -362,7 +391,13 @@ UPHOME="$WORK/uphome"
 FAKEBIN="$WORK/fakebin"
 mkdir -p "$UPHOME" "$FAKEBIN"
 printf '#!/bin/sh\necho "go version go1.20.1 linux/amd64"\n' > "$FAKEBIN/go"
-chmod +x "$FAKEBIN/go"
+# 版本管理器 g 也要在 PATH 里：否则 golang 的 manager 方式不可用，只剩 apt，
+# 而 apt 的"升级"按设计是 unsupported（§7.6）——那样这条断言测的就不是升级计划了。
+printf '#!/bin/sh\necho "1.8.0"\n' > "$FAKEBIN/g"
+# 一个 release 方式的可升级工具（Linux 上它的首选就是 release）：验证批量升级
+# 会把 release 类工具真的排进计划，而不是只在列表里显示 outdated。
+printf '#!/bin/sh\necho "Version: 0.1.0"\n' > "$FAKEBIN/lazydocker"
+chmod +x "$FAKEBIN/go" "$FAKEBIN/g" "$FAKEBIN/lazydocker"
 upenv() {
   env HOME="$UPHOME" BS_CONFIG_HOME="$UPHOME/.config/bootstrap" \
       BS_STATE_HOME="$UPHOME/.local/state/bootstrap" BS_CACHE_HOME="$UPHOME/.cache/bootstrap" \
@@ -373,7 +408,9 @@ assert_contains "--outdated 挑出版本落后的工具" "golang" "$out"
 assert_contains "--outdated 说明差距" "1.20.1" "$out"
 # --all 走的是"已安装"集合（含 outdated，也含本来就新的），做的是升级计划
 out="$(upenv "$BIN" tool upgrade --all --dry-run 2>&1)"
-assert_contains "upgrade --all 生成升级计划" "golang" "$out"
+# 两个代表：golang 走版本管理器（manager:g），lazydocker 走 release。
+assert_contains "upgrade --all 把 manager 类工具排进计划" "golang" "$out"
+assert_contains "upgrade --all 把 release 类工具排进计划" "lazydocker" "$out"
 assert_contains "upgrade --all 标注干跑" "dry-run" "$out"
 assert_contains "upgrade --all 说明跳过的部分" "跳过" "$out"
 # 系统包管理器管理的那些（apt/dnf…）按设计不升级：列为跳过，不算失败

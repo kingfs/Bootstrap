@@ -44,23 +44,32 @@ profiles:
   python:
     description: Python 工具链
     extends: [base]
-    tools: [uv, python, pipx, ruff]
+    tools: [uv, python, pipx, ruff, conan]
 
   rust:
     description: Rust 工具链
     tools: [rustup, rust]
+
+  rust-dev:
+    description: Rust 开发工具（语言服务器、测试运行器、依赖检查、编译缓存）
+    extends: [rust]
+    tools: [rust-analyzer, cargo-nextest, sccache, cargo-audit, cargo-deny]
+
+  java:
+    description: Java 工具链（JDK + Maven；gradle/kubectl 等直链类工具见 design §18.3）
+    tools: [openjdk, maven]
 
   editor:
     description: 编辑器
     tools: [neovim]
 
   infra:
-    description: 集群/基础设施工具
-    tools: [k9s]
+    description: 集群/基础设施工具（Kubernetes 日常）
+    tools: [k9s, kind, stern]
 
   agent:
     description: AI 编码 CLI
-    tools: [claude-code, codex]
+    tools: [claude-code, codex, gemini-cli, qwen-code, opencode, crush, copilot-cli, aider]
 
   # 单独一个"版本管理器全套"：想改 managers.<stack> 配置的人先用它把
   # 所有管理器都装上，再按配置切换（§6.2 的"清单无需分叉"）。

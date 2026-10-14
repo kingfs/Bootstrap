@@ -181,6 +181,13 @@ make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian �
 ## 10. 已知未完成项
 
 - **Windows 工具清单尚未编写**（`tools/windows.yaml` 为空，ADR-0014）：只保证能加载、不报错。
+- `tools/common.yaml` 里两个**故意留着的缺口**（别当成漏写，见 design §6.4）：
+  `rust-analyzer` 在 Ubuntu/Debian 上暂无方式（官方 Release 不发布校验和，也不能用
+  `via: release`；那边先用 `rustup component add rust-analyzer`）；`kubectl`/`helm`/`gradle`
+  的官方产物不在 GitHub Release 上（或只有 `.asc` 签名），要等 `release` 支持 `params.url` 直链。
+- 新增/修改清单条目时，**包名与资产名必须实测**（apt/Arch/Fedora 的包名、brew formula、
+  npm/crates/PyPI 包名、GitHub Release 资产名与校验和文件、归档有没有外层目录），
+  不要照抄记忆里的名字——design §6.4 记了这一轮用到的查询手段。
 - Windows 的 `repo.root` 默认值仍待细化（设计文档 §18.3）。
 - 内置清单未覆盖 `fd`/`bat`：Ubuntu 上二进制名是 `fdfind`/`batcat`，与其它平台不一致，
   等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。
