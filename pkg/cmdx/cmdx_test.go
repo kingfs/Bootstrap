@@ -88,7 +88,13 @@ func TestRunEnvOverlay(t *testing.T) {
 func TestRunDir(t *testing.T) {
 	dir := t.TempDir()
 	r := &Runner{DefaultTimeout: time.Minute}
-	res, err := r.Run(context.Background(), Command{Name: "pwd", Dir: dir})
+	// 打印当前工作目录：Windows 没有 pwd，用 cmd 内建的 cd。
+	// 断言的是"Dir 真的被设成了 RunDir"，不依赖任何 POSIX 命令。
+	name, args := "pwd", []string(nil)
+	if runtime.GOOS == "windows" {
+		name, args = "cmd", []string{"/c", "cd"}
+	}
+	res, err := r.Run(context.Background(), Command{Name: name, Args: args, Dir: dir})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -136,12 +142,43 @@ func TestRedact(t *testing.T) {
 func TestCommandStringQuoting(t *testing.T) {
 	c := Command{Name: "git", Args: []string{"clone", "https://x/y.git", "/data/src/a b"}}
 	got := c.String()
-	if !strings.Contains(got, "'/data/src/a b'") {
-		t.Errorf("String() = %q, want quoted path", got)
+	// 含空格的参数必须被引用；引号风格随宿主 shell 走：Windows 不认 POSIX 单引号。
+	want := "'/data/src/a b'"
+	if runtime.GOOS == "windows" {
+		want = `"/data/src/a b"`
+	}
+	if !strings.Contains(got, want) {
+		t.Errorf("String() = %q, want it to contain %q", got, want)
 	}
 	plain := Command{Name: "ls", Args: []string{"-la"}}
 	if got := plain.String(); got != "ls -la" {
 		t.Errorf("String() = %q, want %q", got, "ls -la")
+	}
+}
+
+// TestShellQuotePerPlatform 用显式 goos 覆盖两套引用规则。
+//
+// 本机跑不了 Windows 二进制，如果只靠 runtime.GOOS 分支，Windows 那半边
+// 在 Linux CI 上永远不会被执行；这里直接把 goos 传进去验证。
+func TestShellQuotePerPlatform(t *testing.T) {
+	tests := []struct {
+		goos, in, want string
+	}{
+		{"linux", "/usr/local/bin/tool", "/usr/local/bin/tool"},
+		{"darwin", "/home/a b/nvm.sh", `'/home/a b/nvm.sh'`},
+		{"linux", "/it's/here", `'/it'\''s/here'`},
+		{"linux", "", "''"},
+		// Windows：路径里的反斜杠是分隔符，不能用 POSIX 单引号，改用双引号。
+		{"windows", `C:\Users\me\.npm-global`, `"C:\Users\me\.npm-global"`},
+		{"windows", `C:\Program Files\tool.exe`, `"C:\Program Files\tool.exe"`},
+		{"windows", "", `""`},
+		// 参数内部的双引号在 cmd.exe 里用 "" 表示，反斜杠不参与转义。
+		{"windows", `C:\a "b"\c`, `"C:\a ""b""\c"`},
+	}
+	for _, tc := range tests {
+		if got := shellQuoteFor(tc.goos, tc.in); got != tc.want {
+			t.Errorf("shellQuoteFor(%q, %q) = %q, want %q", tc.goos, tc.in, got, tc.want)
+		}
 	}
 }
 

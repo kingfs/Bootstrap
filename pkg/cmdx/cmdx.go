@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -284,12 +285,30 @@ func mergeEnv(base []string, overlays ...map[string]string) []string {
 	return out
 }
 
-func shellQuote(s string) string {
+// shellQuote 把一个参数放进"可直接复制到终端执行"的命令行。
+func shellQuote(s string) string { return shellQuoteFor(runtime.GOOS, s) }
+
+// shellQuoteFor 是 shellQuote 的平台无关实现：goos 显式传入，
+// 这样 Windows 的引用规则也能在跑不了 Windows 二进制的机器上用单测覆盖。
+//
+// 引用规则随目标 shell 走：POSIX shell 用单引号；Windows 的 cmd.exe 不认单引号
+// （会原样把引号当参数内容传给程序），PowerShell 里单引号虽合法但双引号同样可用，
+// 所以 Windows 统一用双引号，并且反斜杠是路径分隔符而不是转义符。
+func shellQuoteFor(goos, s string) string {
 	if s == "" {
+		if goos == "windows" {
+			return `""`
+		}
 		return "''"
 	}
+	// 需要引用的信号：空白 + 各 shell 的元字符。反斜杠在 Windows 路径里必然出现，
+	// 这里同样视为需要引用（用双引号包住，语义不变），避免为两套字符集分别维护逻辑。
 	if !strings.ContainsAny(s, " \t\n\"'\\$`|&;<>()*?[]{}!#~") {
 		return s
+	}
+	if goos == "windows" {
+		// cmd.exe 里参数内部的双引号用 "" 表示；反斜杠保持原样。
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

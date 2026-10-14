@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -509,7 +510,16 @@ tools:
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	mustContain(t, a2.Commands[0].String(), "--prefix "+filepath.Join(env.home, ".npm-global"))
+	// --prefix 必须拿到展开后的 home 路径。期望的渲染按平台分支：
+	// Windows 上路径是 C:\... 形状，且 cmd.exe/PowerShell 不认 POSIX 单引号，
+	// 因此 Command.String() 用双引号（见 pkg/cmdx 的 shellQuote）；
+	// 类 Unix 上 t.TempDir() 的路径不含特殊字符，保持裸路径。
+	prefix := filepath.Join(env.home, ".npm-global")
+	wantPrefix := "--prefix " + prefix
+	if runtime.GOOS == "windows" {
+		wantPrefix = "--prefix " + `"` + prefix + `"`
+	}
+	mustContain(t, a2.Commands[0].String(), wantPrefix)
 
 	inBun, _ := reg.Get("bun")
 	a3, err := inBun.Plan(context.Background(), env, tool, tool.Install[2], OpInstall)

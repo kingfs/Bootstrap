@@ -388,7 +388,11 @@ out="$("$BIN" tool plan --profile infra 2>&1)"
 assert_contains "infra profile 含 kubectl（直链）" "kubectl" "$out"
 out="$("$BIN" tool plan --profile java 2>&1)"
 assert_contains "java profile 含 gradle（直链整包）" "gradle" "$out"
-out="$("$BIN" tool plan kubectl --dry-run 2>&1)"
+# PATH 必须清空：CI 的 runner（ubuntu/macOS 都是）预装了 kubectl，
+# 那样计划会显示"已安装/跳过"，占位版本压根不出现——这条断言测的是"不联网解析版本"，
+# 不该被宿主装了什么左右。
+mkdir -p "$WORK/empty-path"
+out="$(env PATH="$WORK/empty-path" "$BIN" tool plan kubectl --dry-run 2>&1)"
 assert_contains "直链干跑显示占位版本（不联网解析）" "<latest>" "$out"
 
 step "装完立刻可见（探测缓存要跟着更新）"

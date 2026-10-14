@@ -235,7 +235,8 @@ func TestProxyCommandsAndShellRendering(t *testing.T) {
 	if code != ExitOK || !strings.Contains(out, "停用") {
 		t.Fatalf("off: exit = %d, out = %s", code, out)
 	}
-	code, out, _ = run(t, rt, "proxy", "env", "--apply")
+	// 同上：断言 POSIX 的取消形式（`unset …`）就给 --shell bash。
+	code, out, _ = run(t, rt, "proxy", "env", "--apply", "--shell", "bash")
 	if code != ExitOK || !strings.HasPrefix(out, "unset ") {
 		t.Fatalf("off env: exit = %d, out = %s", code, out)
 	}
@@ -615,7 +616,16 @@ timeouts:
 	if code != ExitFail {
 		t.Fatalf("exit = %d，期望 %d\nstderr=%s", code, ExitFail, stderr)
 	}
-	if elapsed > 2*time.Second {
+	// 阈值要算上 cmdx 的 WaitDelay（3s）：取消后如果有子孙进程仍抱着管道，
+	// `cmd.Wait` 会再等最多 3 秒才放弃读取（见 pkg/cmdx Run 的注释）。Windows 上
+	// 假命令是 `.cmd`，被杀的 `cmd.exe` 底下还留着一个 ping，正好走这条兜底路径
+	// （CI 实测 3.4s）。判断"flag 有没有覆盖配置"仍然成立：配置里的 5s 若生效，
+	// 耗时会 ≥5s（再加 WaitDelay），远超过这里的两档阈值。
+	limit := 2 * time.Second
+	if runtime.GOOS == "windows" {
+		limit = 4 * time.Second
+	}
+	if elapsed > limit {
 		t.Errorf("%v 才返回：flag 没有覆盖配置里的 5s", elapsed)
 	}
 	if !strings.Contains(stderr, "300ms") {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -277,6 +278,16 @@ func TestProbeProvidesFallback(t *testing.T) {
 	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	// provides 指向目录时会按 executableName(command) 找文件：Windows 上加 .exe
+	// （release 装出来的就是 .exe），因此再建一个同名文件。它不会被真正执行——
+	// 命中 provides 后的状态就是 Unknown（版本未知），内容无关紧要。
+	dirTarget := target
+	if runtime.GOOS == "windows" {
+		dirTarget = filepath.Join(binDir, "g.exe")
+		if err := os.WriteFile(dirTarget, []byte("placeholder\n"), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
 	d := testDetector(newFakeExec(), fakePath{}, home)
 
 	// provides 指向具体文件
@@ -286,15 +297,21 @@ func TestProbeProvidesFallback(t *testing.T) {
 	}
 	// provides 指向目录
 	res = d.Probe(context.Background(), compile(t, tool("g", manifest.Verify{Command: "g"}, "~/.local/bin")))
-	if res.Status != StatusUnknown || res.Command != target {
+	if res.Status != StatusUnknown || res.Command != dirTarget {
 		t.Fatalf("dir provides: %+v", res)
 	}
-	// 不可执行的文件不算"已安装"
 	ro := filepath.Join(binDir, "ro")
 	if err := os.WriteFile(ro, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := d.Probe(context.Background(), compile(t, tool("ro", manifest.Verify{Command: "ro"}, "~/.local/bin/ro"))); got.Status != StatusMissing {
+	got := d.Probe(context.Background(), compile(t, tool("ro", manifest.Verify{Command: "ro"}, "~/.local/bin/ro")))
+	if runtime.GOOS == "windows" {
+		// Windows 没有可执行位：普通文件即视为可执行（见 fsx.IsExecutable），
+		// 所以 ro 会被当成"装上了但版本未知"，而不是 Missing。
+		if got.Status != StatusUnknown {
+			t.Errorf("on windows a plain file is executable, want Unknown: %+v", got)
+		}
+	} else if got.Status != StatusMissing {
 		t.Errorf("non-executable file must not count as installed: %+v", got)
 	}
 }

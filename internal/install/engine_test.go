@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -420,6 +421,27 @@ tools:
 
 // ── release 安装器的真实落地测试（在 t.TempDir 里完成，无副作用）──
 
+// requireExecBit 断言路径带 POSIX 可执行位。
+//
+// Windows 没有权限位，普通文件即可执行（产品判定见 fsx.IsExecutable），
+// 所以这里只在类 Unix 上断言。刻意不用 t.Skip：那会连同本用例后面的
+// 软链、干跑等断言一起跳过，掩盖真正的问题（文件没装出来/内容不对）。
+func requireExecBit(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Windows 上"是否可执行"由扩展名/文件关联决定，权限位恒为 0666 或 0444，
+		// 断言 0o111 必然失败，且失败也不说明产品有问题。
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("installed binary must be executable: %s mode=%v", path, info.Mode())
+	}
+}
+
 func TestReleaseInstallerExecute(t *testing.T) {
 	env := newFakeEnv(t)
 	env.tags["owner/tool"] = "v2.0.0"
@@ -466,10 +488,8 @@ tools:
 	if !strings.Contains(string(body), "echo hi") {
 		t.Errorf("content = %q", body)
 	}
-	info, _ := os.Stat(target)
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Error("installed binary must be executable")
-	}
+	// 可执行位只在类 Unix 上有意义（Windows 上文件存在即可执行）。
+	requireExecBit(t, target)
 	link := filepath.Join(env.home, ".local", "bin", "tt")
 	if _, err := os.Lstat(link); err != nil {
 		t.Fatalf("symlink missing: %v", err)
@@ -576,6 +596,14 @@ func TestRecorderIdempotent(t *testing.T) {
 }
 
 func TestOSEnvLookPathAndDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 本用例的核心前提是"没有可执行位的文件不该被当成命令"：
+		// 它注入 GOOS=linux 走 executableName 的 POSIX 分支，但 fsx.IsExecutable
+		// 用的是宿主 GOOS——Windows 上没有可执行位（普通文件即可执行），
+		// 而且 os/exec.LookPath 还认 PATHEXT。该前提在 Windows 上不成立，
+		// 整条跳过；放宽成"Windows 也认"会把这条 Linux 语义断言废掉。
+		t.Skip("Windows 无可执行位语义且 LookPath 按 PATHEXT 查找，本用例的 POSIX 前提不成立")
+	}
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "extra")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
