@@ -18,6 +18,9 @@ const defaultHeader = `# Bootstrap (bs) 配置文件
 # 查看生效值：bs config show
 `
 
+// DefaultHeader 是默认配置文件的说明头（`config set` 新建文件时也要带上）。
+func DefaultHeader() []byte { return []byte(defaultHeader) }
+
 // Marshal 把配置序列化为 YAML（带说明头）。
 func Marshal(c *Config) ([]byte, error) {
 	body, err := yaml.Marshal(c)
@@ -42,7 +45,7 @@ func WriteDefault(paths Paths, force bool) (path string, created bool, err error
 		}
 	}
 	cfg := Defaults()
-	applyDerived(&cfg, paths)
+	ApplyDerived(&cfg, paths)
 	data, err := Marshal(&cfg)
 	if err != nil {
 		return path, false, err

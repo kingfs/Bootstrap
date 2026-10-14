@@ -7,8 +7,8 @@
 `bs`（仓库名 Bootstrap）是维护者个人的开发环境重建工具：新机器上用它拉回仓库、
 恢复代理与 shell 环境、按清单安装/更新工具链。
 M1–M3 已完成（`bs init` 一把梭 + 自更新），M4 打磨进行中（`--timeout`、`-i` 勾选、
-下载断点续传、`bs doctor --fix`、`make lint`/`make vuln`）；尚未做的是 Windows 清单、
-Docker 集成矩阵与 `config get|set|edit` 这类长尾命令（见 §10 与 design §18.3）。
+下载断点续传、`bs doctor --fix`、`config get|set|edit`、`tool upgrade --all`、
+`make lint`/`make vuln`）；尚未做的是 Windows 清单与 Docker 集成矩阵（见 §10）。
 
 - 语言：Go（版本见 `go.mod`），命令框架 cobra + 配置 viper
 - 支持平台：Linux / macOS / Windows；Linux 与 macOS 的 `amd64`、`arm64` 都必须可用
@@ -91,6 +91,7 @@ make cross     # 交叉编译 6 个平台组合
 | 要加的东西 | 放哪里 |
 | --- | --- |
 | 新的 CLI 子命令 | `internal/cli/<域>.go` + `internal/app/<域>.go` |
+| 配置文件的"按行修改"（get/set 一类） | `internal/config/edit.go` 的 `yaml.Node` 路径操作 + `internal/app/configedit.go` 的用例（写前备份、写后校验、失败还原） |
 | 新的纯算法（解析/比较/渲染） | `pkg/<名字>`，附表驱动测试 |
 | 新的外部工具调用 | 通过 `pkg/cmdx`；只读探测走 `LookPath`/`RunCapture` |
 | 新的持久化状态字段 | `internal/state`，并保证内容不变时不写盘 |

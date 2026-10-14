@@ -274,6 +274,120 @@ assert_missing "tool plan 不创建下载缓存" "$WORK/cache/downloads"
 out="$("$BIN" tool plan --profile base --dry-run 2>&1 || true)"
 assert_missing "tool plan --dry-run 不创建下载缓存" "$WORK/cache/downloads"
 
+step "配置读写（bs config get|set|keys）"
+# 单独一个沙箱：这一节会改配置，不能影响后面各节的断言。
+CFGHOME="$WORK/cfghome"
+mkdir -p "$CFGHOME"
+cfgenv() {
+  env HOME="$CFGHOME" BS_CONFIG_HOME="$CFGHOME/.config/bootstrap" \
+      BS_STATE_HOME="$CFGHOME/.local/state/bootstrap" BS_CACHE_HOME="$CFGHOME/.cache/bootstrap" \
+      NO_COLOR=1 "$@"
+}
+out="$(cfgenv "$BIN" config init)"
+assert_contains "配置节：先生成默认配置" "已生成" "$out"
+out="$(cfgenv "$BIN" config get ui.confirm)"
+assert_eq "config get 标量" "true" "$out"
+out="$(cfgenv "$BIN" config get repo.root)"
+assert_contains "config get 显示运行时自动检测的仓库根" "$CFGHOME/src" "$out"
+out="$(cfgenv "$BIN" config get repo.hosts)"
+assert_contains "config get 列表输出 YAML" "- github.com" "$out"
+out="$(cfgenv "$BIN" config keys)"
+assert_contains "config keys 列出可写键" "timeouts.download" "$out"
+
+# 拼错的键要给出候选，而不是只说"不认识"
+code=0; out="$(cfgenv "$BIN" config get ui.confrim 2>&1)" || code=$?
+if [ "$code" -ne 0 ]; then ok "未知键退出码非 0（$code）"; else bad "未知键返回了 0"; fi
+assert_contains "未知键给出候选" "ui.confirm" "$out"
+
+# 类型由默认配置推断：写错类型必须**在写入前**被拦住
+CFGFILE="$CFGHOME/.config/bootstrap/config.yaml"
+before="$(cat "$CFGFILE")"
+code=0; out="$(cfgenv "$BIN" config set repo.clone.depth deep 2>&1)" || code=$?
+if [ "$code" -ne 0 ]; then ok "非法值退出码非 0（$code）"; else bad "非法值返回了 0"; fi
+assert_contains "非法值说明期望类型" "期望整数" "$out"
+assert_eq "非法值不改动配置文件" "$before" "$(cat "$CFGFILE")"
+
+# 正常写入：注释与顺序都保留
+out="$(cfgenv "$BIN" config set log.level debug)"
+assert_contains "写入回显键与值" "已写入 log.level = debug" "$out"
+assert_contains "写入留下备份" "备份：" "$out"
+assert_contains "配置文件仍带说明头" "Bootstrap (bs) 配置文件" "$(cat "$CFGFILE")"
+assert_eq "写入后生效" "debug" "$(cfgenv "$BIN" config get log.level)"
+out="$(cfgenv "$BIN" config set ui.confirm false)"
+out="$(cfgenv "$BIN" config get ui.confirm)"
+assert_eq "写入布尔值" "false" "$out"
+
+# 干跑零写入
+before="$(cat "$CFGFILE")"
+out="$(cfgenv "$BIN" config set log.level warn --dry-run)"
+assert_contains "set 干跑标注" "[dry-run]" "$out"
+assert_eq "set 干跑不写文件" "$before" "$(cat "$CFGFILE")"
+
+# unset 回到默认值
+out="$(cfgenv "$BIN" config set ui.confirm --unset)"
+assert_contains "unset 报告删除" "已删除 ui.confirm" "$out"
+assert_eq "unset 后回到默认值" "true" "$(cfgenv "$BIN" config get ui.confirm)"
+
+# 用假编辑器验证 edit 的正反两条路：合法修改通过校验，写坏了报错但**不回滚**用户的手改
+cat > "$WORK/editor-ok.sh" <<'SH'
+#!/bin/sh
+printf 'version: 1\nlog:\n  level: warn\n' > "$1"
+SH
+cat > "$WORK/editor-bad.sh" <<'SH'
+#!/bin/sh
+printf 'version: 1\nlog:\n  level: bogus\n' > "$1"
+SH
+chmod +x "$WORK/editor-ok.sh" "$WORK/editor-bad.sh"
+out="$(cfgenv env EDITOR="$WORK/editor-ok.sh" "$BIN" --interactive config edit 2>&1)"
+assert_contains "config edit 合法修改通过校验" "配置合法" "$out"
+assert_contains "config edit 之前留了备份" "改前备份" "$out"
+code=0; out="$(cfgenv env EDITOR="$WORK/editor-bad.sh" "$BIN" --interactive config edit 2>&1)" || code=$?
+assert_eq "config edit 校验失败退出码 4" "4" "$code"
+assert_contains "config edit 指明配置问题" "log.level" "$out"
+assert_contains "config edit 不回滚用户的手改" "level: bogus" "$(cat "$CFGFILE")"
+
+# 没有终端时拒绝跑编辑器，而且不留下任何痕迹
+EDITORHOME="$WORK/editorhome"
+mkdir -p "$EDITORHOME"
+code=0; out="$(env HOME="$EDITORHOME" BS_CONFIG_HOME="$EDITORHOME/.config/bootstrap" \
+    BS_STATE_HOME="$EDITORHOME/.local/state/bootstrap" BS_CACHE_HOME="$EDITORHOME/.cache/bootstrap" \
+    NO_COLOR=1 "$BIN" config edit 2>&1)" || code=$?
+assert_eq "config edit 非交互退出码 5" "5" "$code"
+assert_missing "被拒绝的 config edit 不生成配置" "$EDITORHOME/.config/bootstrap/config.yaml"
+
+step "工具升级（--all）"
+# 造一台"装了旧版 go"的机器：verify.min_version 要求 1.22，假二进制报 1.20.1。
+# PATH 收敛成"假 bin + /usr/bin:/bin"，让候选集合稳定；探测全是本地命令，不发网络。
+UPHOME="$WORK/uphome"
+FAKEBIN="$WORK/fakebin"
+mkdir -p "$UPHOME" "$FAKEBIN"
+printf '#!/bin/sh\necho "go version go1.20.1 linux/amd64"\n' > "$FAKEBIN/go"
+chmod +x "$FAKEBIN/go"
+upenv() {
+  env HOME="$UPHOME" BS_CONFIG_HOME="$UPHOME/.config/bootstrap" \
+      BS_STATE_HOME="$UPHOME/.local/state/bootstrap" BS_CACHE_HOME="$UPHOME/.cache/bootstrap" \
+      PATH="$FAKEBIN:/usr/bin:/bin" NO_COLOR=1 "$@"
+}
+out="$(upenv "$BIN" tool list --outdated)"
+assert_contains "--outdated 挑出版本落后的工具" "golang" "$out"
+assert_contains "--outdated 说明差距" "1.20.1" "$out"
+# --all 走的是"已安装"集合（含 outdated，也含本来就新的），做的是升级计划
+out="$(upenv "$BIN" tool upgrade --all --dry-run 2>&1)"
+assert_contains "upgrade --all 生成升级计划" "golang" "$out"
+assert_contains "upgrade --all 标注干跑" "dry-run" "$out"
+assert_contains "upgrade --all 说明跳过的部分" "跳过" "$out"
+# 系统包管理器管理的那些（apt/dnf…）按设计不升级：列为跳过，不算失败
+UPHOME_EMPTY="$WORK/upempty"
+mkdir -p "$UPHOME_EMPTY" "$WORK/empty-path"
+code=0
+out="$(env HOME="$UPHOME_EMPTY" BS_CONFIG_HOME="$UPHOME_EMPTY/.config/bootstrap" \
+    BS_STATE_HOME="$UPHOME_EMPTY/.local/state/bootstrap" BS_CACHE_HOME="$UPHOME_EMPTY/.cache/bootstrap" \
+    PATH="$WORK/empty-path" NO_COLOR=1 "$BIN" tool upgrade --all 2>&1)" || code=$?
+assert_eq "没装任何工具时 upgrade --all 退出码 0" "0" "$code"
+assert_contains "没装任何工具时说明原因" "没有已安装的工具" "$out"
+code=0; out="$(upenv "$BIN" tool upgrade --all golang 2>&1)" || code=$?
+assert_eq "upgrade --all 与工具名冲突退出码 2" "2" "$code"
+
 step "体检"
 set +e
 out="$("$BIN" doctor)"

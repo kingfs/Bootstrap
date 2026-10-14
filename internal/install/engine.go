@@ -93,11 +93,14 @@ const (
 
 // Step 是一个工具的计划（或执行结果）。
 type Step struct {
-	ToolID    string         `json:"tool_id"`
-	Name      string         `json:"name,omitempty"`
-	Stack     string         `json:"stack,omitempty"`
-	Kind      string         `json:"kind,omitempty"`
-	Status    StepStatus     `json:"status"`
+	ToolID string     `json:"tool_id"`
+	Name   string     `json:"name,omitempty"`
+	Stack  string     `json:"stack,omitempty"`
+	Kind   string     `json:"kind,omitempty"`
+	Status StepStatus `json:"status"`
+	// NoMethod 表示"这台机器上没有任何可用的方式"（例如清单要求 uv/brew，而它们都没装）。
+	// 它不是代码级错误：`upgrade --all` 据此把它列成"跳过"，点名单个工具时照旧报错。
+	NoMethod  bool           `json:"no_method,omitempty"`
 	Via       string         `json:"via,omitempty"`
 	Manager   string         `json:"manager,omitempty"`
 	Summary   string         `json:"summary,omitempty"`
@@ -274,6 +277,8 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 			return Plan{}, cerr
 		}
 		if cerr != nil {
+			var noMethod *ErrNoMethod
+			step.NoMethod = errors.As(cerr, &noMethod)
 			step.Status = StepFailed
 			step.Error = cerr.Error()
 			plan.Steps = append(plan.Steps, step)

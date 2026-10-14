@@ -252,11 +252,35 @@ timeouts:
   download: 30m
 ```
 
-## 4. 常见问题
+## 4. 用命令行改配置
+
+不必手改 YAML——`bs config` 有一组"只动该动的地方"的子命令（详见设计文档 §5.3）：
+
+```sh
+bs config keys                  # 列出全部可用键路径（get/set 的拼写参考）
+bs config get repo.root -v      # 读**生效值**，并说明它来自哪个文件
+bs config get repo.hosts        # 列表/映射按 YAML 输出
+bs config set log.level debug   # 只改这一行：注释、键顺序、其它内容都保留
+bs config set repo.hosts '["github.com", "gitlab.com"]'   # 列表写 YAML/JSON
+bs config set ui.confirm --unset    # 删掉该键 → 回到"由默认值/上层配置决定"
+bs config edit                  # 用 $EDITOR 打开（退出后立刻校验；需要终端）
+```
+
+几条定死的规矩：
+
+- **只写用户级配置文件**（`<config>/config.yaml`）。系统级要 root、项目级属于某个仓库、
+  环境变量是临时覆盖——在那些地方"帮忙"写值，只会制造下次找不到原因的状态。
+- **类型由内置默认配置推断**：`ui.confirm` 只收 true/false、`repo.clone.depth` 只收整数，
+  写错在落盘**之前**就报错。
+- **写前备份、写后校验**：不合法会把原内容放回去（错误里写明"已还原"），
+  绝不会出现"改完 `bs` 起不来"。备份路径会打印出来（`<文件>.bs-backup.<时间戳>`）。
+- `--dry-run` 仍然零写入，连"顺手生成一份默认配置"都不做。
+
+## 5. 常见问题
 
 **改了配置但 `bs` 没生效？**
 `bs config show` 看合并结果，`bs config path` 看实际读了哪些文件（项目级 `.bootstrap.yaml`
-经常是"意外覆盖"的来源）。
+经常是"意外覆盖"的来源）；`bs config get <键> -v` 能直接指出某个值来自哪个文件。
 
 **缓存目录里有什么？能删吗？**
 `<cache>/downloads/` 是下载缓存：归档/安装脚本落在这里，断线时留着 `.<名字>.<指纹>.part`

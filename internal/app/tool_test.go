@@ -528,3 +528,60 @@ func TestTimeoutsFallBackToBuiltinDefaults(t *testing.T) {
 		t.Errorf("withDefault(3s, 7s) = %v", got)
 	}
 }
+
+// TestToolRowsOutdatedFilter：`upgrade --all` 的候选是"已安装"，
+// 而 `tool list --outdated` 看的是"装了但落后于清单要求"——两者必须分得清。
+func TestToolRowsOutdatedFilter(t *testing.T) {
+	a, bin := toolSandboxApp(t, `
+version: 1
+tools:
+  - id: fake-old
+    stack: base
+    kind: cli
+    verify:
+      command: fake-old
+      version_args: [--version]
+      version_regex: 'v(?P<v>\d+\.\d+\.\d+)'
+      min_version: "2.0.0"
+    install:
+      - via: brew
+        params: {formula: fake-old}
+  - id: fake-new
+    stack: base
+    kind: cli
+    verify:
+      command: fake-new
+      version_args: [--version]
+      version_regex: 'v(?P<v>\d+\.\d+\.\d+)'
+      min_version: "2.0.0"
+    install:
+      - via: brew
+        params: {formula: fake-new}
+  - id: fake-gone
+    stack: base
+    kind: cli
+    verify: {command: fake-gone}
+    install:
+      - via: brew
+        params: {formula: fake-gone}
+`)
+	addFakeBin(t, bin, "fake-old", "#!/bin/sh\necho v1.0.0\n")
+	addFakeBin(t, bin, "fake-new", "#!/bin/sh\necho v2.1.0\n")
+
+	ctx := context.Background()
+	outdated, err := a.ToolRows(ctx, ToolListOptions{Outdated: true})
+	if err != nil {
+		t.Fatalf("ToolRows: %v", err)
+	}
+	if !equalStrings(rowIDs(outdated), []string{"fake-old"}) {
+		t.Errorf("outdated = %v，期望只有 fake-old", rowIDs(outdated))
+	}
+
+	installed, err := a.ToolRows(ctx, ToolListOptions{Installed: true})
+	if err != nil {
+		t.Fatalf("ToolRows: %v", err)
+	}
+	if !equalStrings(rowIDs(installed), []string{"fake-old", "fake-new"}) {
+		t.Errorf("installed = %v，期望两个假命令", rowIDs(installed))
+	}
+}

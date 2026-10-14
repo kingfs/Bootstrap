@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -54,6 +55,7 @@ type toolFilterFlags struct {
 	tags      []string
 	installed bool
 	missing   bool
+	outdated  bool
 	all       bool
 	refresh   bool
 	noProbe   bool
@@ -67,6 +69,7 @@ func (f *toolFilterFlags) bind(cmd *cobra.Command) {
 	fl.StringSliceVar(&f.tags, "tag", nil, "按标签过滤（可重复，需全部命中）")
 	fl.BoolVar(&f.installed, "installed", false, "只看已安装的")
 	fl.BoolVar(&f.missing, "missing", false, "只看未安装的")
+	fl.BoolVar(&f.outdated, "outdated", false, "只看已安装但落后于清单版本的")
 	fl.BoolVar(&f.all, "all", false, "包含 disabled 与本机不适用的条目")
 	fl.BoolVar(&f.refresh, "refresh", false, "忽略探测缓存，强制重新探测")
 	fl.BoolVar(&f.noProbe, "no-probe", false, "不探测安装状态（只列清单，更快）")
@@ -75,7 +78,7 @@ func (f *toolFilterFlags) bind(cmd *cobra.Command) {
 func (f *toolFilterFlags) options() app.ToolListOptions {
 	return app.ToolListOptions{
 		Profile: f.profile, Stack: f.stack, Kind: f.kind, Tags: f.tags,
-		Installed: f.installed, Missing: f.missing, All: f.all,
+		Installed: f.installed, Missing: f.missing, Outdated: f.outdated, All: f.all,
 		Refresh: f.refresh, NoProbe: f.noProbe,
 	}
 }
@@ -158,6 +161,7 @@ type toolSelectFlags struct {
 	tags       []string
 	missing    bool
 	select_    bool
+	upgradeAll bool
 	via        string
 	fallback   bool
 	noFallback bool
@@ -245,11 +249,24 @@ func (rt *Runtime) toolUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade [工具...]",
 		Short: "更新工具（交给各自的包管理器/版本管理器）",
+		Long: `更新工具：把工作交给工具自己的包管理器/版本管理器。
+
+--all 把清单里**所有已安装**的工具过一遍（能升级的按各自方式升级，已经是新的由管理器
+自行跳过），不需要一个个点名。
+
+系统包管理器（apt/dnf/pacman…）按设计**不升级系统包**（设计文档 §7.6），这些工具在
+--all 下会被列为"跳过（无可用升级方式）"而不是失败；真正的问题（缺校验和、via 写错）
+仍然整体报错。一个都升级不了、也没有已安装工具时，退出码是 0——脚本里可以放心用。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if f.upgradeAll && len(args) > 0 {
+				return usageErrf("--all 不能与显式工具名同时使用：用 --profile/--stack/--kind/--tag 缩小范围")
+			}
 			return rt.runToolOp(cmd, f, args, install.OpUpgrade)
 		},
 	}
 	f.bind(cmd)
+	cmd.Flags().BoolVar(&f.upgradeAll, "all", false,
+		"升级所有已安装但落后于清单版本的（没有需要升级的就正常结束）")
 	return cmd
 }
 
@@ -268,6 +285,72 @@ func (rt *Runtime) toolUninstallCmd() *cobra.Command {
 	}
 	f.bind(cmd)
 	return cmd
+}
+
+// errNothingToUpgrade 表示"该做的都做完了"：候选集合为空，不是错误。
+var errNothingToUpgrade = errors.New("nothing to upgrade")
+
+// withoutUnsupported 把"设计上就不做"的步骤（系统包管理器升级）从计划里摘出来。
+//
+// 只对 `upgrade --all` 用：批量命令必须能跑完能跑的部分，而点名单个工具时
+// 应当照旧明确报错——"升级 htop 不支持"本身就是用户要的答案。
+func withoutUnsupported(plan install.Plan) (install.Plan, []install.Step) {
+	kept := make([]install.Step, 0, len(plan.Steps))
+	var skipped []install.Step
+	for _, s := range plan.Steps {
+		if s.Status == install.StepUnsupported || s.NoMethod {
+			skipped = append(skipped, s)
+			continue
+		}
+		kept = append(kept, s)
+	}
+	if len(skipped) == 0 {
+		return plan, nil
+	}
+	plan.Steps = kept
+	order := make([]string, 0, len(plan.Order))
+	for _, id := range plan.Order {
+		if !hasStep(skipped, id) {
+			order = append(order, id)
+		}
+	}
+	plan.Order = order
+	return plan, skipped
+}
+
+func hasStep(steps []install.Step, id string) bool {
+	for _, s := range steps {
+		if s.ToolID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// renderSkipped 打印"被跳过的工具"（--all 专属），最多列 8 个。
+//
+// JSON 模式下写到 stderr：`--json` 的 stdout 必须是一份完整可解析的文档，
+// 而"谁被跳过了"是给人看的提示。
+func (rt *Runtime) renderSkipped(skipped []install.Step) {
+	if len(skipped) == 0 {
+		return
+	}
+	out := rt.out()
+	if rt.Opts.JSON {
+		out = rt.errOut()
+	}
+	names := make([]string, 0, len(skipped))
+	for _, s := range skipped {
+		names = append(names, s.ToolID)
+	}
+	sort.Strings(names)
+	more := ""
+	if len(names) > 8 {
+		more = fmt.Sprintf(" 等 %d 个", len(names))
+		names = names[:8]
+	}
+	fmt.Fprintf(out, "跳过 %d 个（无可用升级方式，例如系统包管理器管理的）：%s%s\n",
+		len(skipped), strings.Join(names, "、"), more)
 }
 
 // planFor 计算计划：-i 时先勾选；显式给了工具名就用它们；否则用手写的选择条件。
@@ -338,20 +421,23 @@ func selectionLabel(f toolSelectFlags) string {
 	return strings.Join(parts, " ")
 }
 
-// selectIDs 把 --stack/--kind/--tag/--missing/--profile 变成一组工具 id。
+// selectIDs 把 --stack/--kind/--tag/--missing/--profile/--all 变成一组工具 id。
 func (rt *Runtime) selectIDs(cmd *cobra.Command, f toolSelectFlags) ([]string, error) {
-	if f.stack == "" && f.kind == "" && len(f.tags) == 0 && !f.missing && f.profile == "" {
-		return nil, usageErrf("请给出工具名，或使用 --profile/--stack/--kind/--missing 选择")
+	if f.stack == "" && f.kind == "" && len(f.tags) == 0 && !f.missing && f.profile == "" && !f.upgradeAll {
+		return nil, usageErrf("请给出工具名，或使用 --profile/--stack/--kind/--missing/--all 选择")
 	}
 	opt := app.ToolListOptions{
 		Profile: f.profile, Stack: f.stack, Kind: f.kind, Tags: f.tags,
-		Missing: f.missing, Refresh: true,
+		Missing: f.missing, Installed: f.upgradeAll, Refresh: true,
 	}
 	rows, err := rt.app().ToolRows(cmd.Context(), opt)
 	if err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
+		if f.upgradeAll {
+			return nil, errNothingToUpgrade
+		}
 		return nil, preconditionErrf("没有匹配的工具（检查 --stack/--kind/--tag 是否写对）")
 	}
 	ids := make([]string, 0, len(rows))
@@ -366,18 +452,46 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 		return err
 	}
 	plan, err := rt.planFor(cmd, f, args, op)
+	if errors.Is(err, errNothingToUpgrade) {
+		// "机器上本来就没有已安装的工具"是成功，不是失败：脚本里不该因此中断。
+		if rt.Opts.JSON {
+			return rt.emit(install.Plan{Steps: []install.Step{}, Order: []string{}})
+		}
+		fmt.Fprintln(rt.out(), "没有已安装的工具，无需升级（先跑 `bs init` 或 `bs tool install`）。")
+		return nil
+	}
 	if err != nil {
 		return toolErr(err)
 	}
+	// --all 是批量操作：设计上"不做"的那些（系统包管理器升级，§7.6）应当被跳过并列出，
+	// 而不是让整条命令以"前置条件不满足"收场——否则 `upgrade --all` 在 Ubuntu 上
+	// 几乎必然什么都不做。真正的问题（缺校验和、via 写错）仍然照旧整体失败。
+	var skipped []install.Step
+	if f.upgradeAll {
+		plan, skipped = withoutUnsupported(plan)
+	}
 	if rt.Opts.DryRun {
 		// 干跑到这里就结束：一行命令、一个字节都不会写（安全红线 §8）。
-		return rt.renderPlan(plan, "（dry-run：以下操作都不会被执行）")
+		if rt.Opts.JSON {
+			// JSON 的 stdout 只允许一份完整文档：跳过项走 stderr，别把 stdout 拼成两个 JSON。
+			rt.renderSkipped(skipped)
+			return rt.emit(plan)
+		}
+		if err := rt.renderPlan(plan, "（dry-run：以下操作都不会被执行）"); err != nil {
+			return err
+		}
+		rt.renderSkipped(skipped)
+		return nil
 	}
 	if !rt.Opts.JSON {
 		// 先让人看清"要做什么、按什么顺序、用哪种方式"，再动手。
 		if err := rt.renderPlan(plan, ""); err != nil {
 			return err
 		}
+		rt.renderSkipped(skipped)
+	} else {
+		// --json 下也要能看到"谁被跳过了"，否则脚本无从得知少了哪些工具。
+		rt.renderSkipped(skipped)
 	}
 	// 计划期就失败（所有候选方式都不可用、缺校验和等）时不能返回 0：
 	// 那会让脚本以为"装好了"。这里的失败属于前置条件不满足（退出码 4）。
@@ -385,6 +499,10 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 		return preconditionErrf("%s失败：%s", install.OpLabel(op), strings.Join(failed, "；"))
 	}
 	if !planHasWork(plan) {
+		if len(skipped) > 0 && !rt.Opts.JSON {
+			fmt.Fprintln(rt.out(), "没有可升级的工具（下面这些没有可用的升级方式）。")
+		}
+		rt.renderSkipped(skipped)
 		return nil
 	}
 	// 真会动系统之前先要一句明确同意（安装/升级/卸载都算破坏性操作）。

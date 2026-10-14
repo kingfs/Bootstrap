@@ -168,13 +168,14 @@ eval "$(bs shell init bash)"
 
 | 命令 | 说明 |
 | --- | --- |
-| `bs tool list` | 列出工具及状态（`installed`/`outdated`/`missing`/`unknown`） |
+| `bs tool list` | 列出工具及状态（`installed`/`outdated`/`missing`/`unknown`；`--outdated` 只看落后的） |
 | `bs tool search <关键词>` | 按名字/描述/标签搜索 |
 | `bs tool info <工具>` | 单个工具的详情、方式链（哪个可用、哪个会选中）与依赖 |
 | `bs tool plan [...]` | 只打印将要执行的步骤，不做任何修改（离线预览，不解析"最新版本"） |
 | `bs tool install [...]` | 安装（幂等：已装的跳过；含依赖，按拓扑序） |
 | `bs tool install -i [...]` | 先探测再用交互界面勾选要处理的工具（`-i` 对 `upgrade`/`uninstall` 同样有效） |
 | `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
+| `bs tool upgrade --all` | 把清单里所有已安装的工具过一遍升级（系统包管理器按设计不动，列为"跳过"；没有可做的也不算失败） |
 | `bs tool uninstall [...]` | 卸载（交给各自的包管理器/官方方式；清单可单独写 `uninstall:` 链） |
 | `bs tool manifest path\|validate\|show\|diff` | 清单来自哪里、是否写错、合并后长什么样 |
 
@@ -216,6 +217,10 @@ bs tool manifest validate --os darwin
 | `bs config show` | 合并后的生效配置 |
 | `bs config validate` | 校验配置（一次性列出全部问题） |
 | `bs config init [--force]` | 生成默认配置（已存在不覆盖） |
+| `bs config get <键>` | 打印某个键的**生效值**（`-v` 还会说明它来自哪个文件；列表/映射输出 YAML） |
+| `bs config set <键> <值>` | 改用户级配置里的一个键：只改那一行（注释与顺序保留）、写前备份、写后校验，不合法自动还原；`--unset` 删除 |
+| `bs config keys` | 列出可用的键路径（`get`/`set` 的拼写参考） |
+| `bs config edit` | 用 `$EDITOR` 打开用户级配置，退出后立刻校验（需要终端） |
 | `bs doctor` | 只读体检：平台、配置、目录权限、git/curl、包管理器、代理、PATH、仓库根、工具清单、受管块 |
 | `bs doctor --fix` | 顺手修掉能安全自动修的问题：生成配置、建仓库根、装 shell 受管块（写前备份；先给计划再问一句） |
 | `bs version` | 版本信息（`--json` 可脚本消费） |

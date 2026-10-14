@@ -344,6 +344,41 @@ tools:
 		t.Fatalf("steps = %+v", plan.Steps[0])
 	}
 	mustContain(t, plan.Steps[0].Error, "no usable install method")
+	// 这一条同时要被标记成"这台机器上没方式可用"：`upgrade --all` 靠它区分
+	// "清单要求的工具都没装"（可以跳过）与"少了校验和/模板写错"（必须报错）。
+	if !plan.Steps[0].NoMethod {
+		t.Errorf("NoMethod = false，期望 true：%+v", plan.Steps[0])
+	}
+}
+
+// TestPlanToolsUnsupportedIsNotNoMethod：系统包管理器拒绝升级属于"设计上不做"，
+// 与"没有可用方式"是两回事——前者是 unsupported，后者才带 NoMethod。
+func TestPlanToolsUnsupportedIsNotNoMethod(t *testing.T) {
+	env := newFakeEnv(t)
+	env.bins["apt-get"] = "/usr/bin/apt-get"
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: htop
+    stack: base
+    kind: cli
+    verify: {command: htop}
+    install:
+      - via: apt
+        params: {packages: [htop]}
+`)
+	eng := newEngine(t, env, loaded, newFakeDetector(map[string]detect.Status{}), EngineOptions{})
+	plan, err := eng.PlanTools(context.Background(), []string{"htop"}, OpUpgrade)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	step := plan.Steps[0]
+	if step.Status != StepUnsupported {
+		t.Fatalf("status = %v，期望 unsupported", step.Status)
+	}
+	if step.NoMethod {
+		t.Errorf("NoMethod = true，但这是 unsupported（设计上不升级系统包）")
+	}
 }
 
 func TestPlanToolsDisabledAndWhen(t *testing.T) {

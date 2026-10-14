@@ -104,7 +104,7 @@ func Load(opts LoadOptions) (*LoadResult, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
-	applyDerived(&cfg, opts.Paths)
+	ApplyDerived(&cfg, opts.Paths)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -128,8 +128,11 @@ func bindEnv(v *viper.Viper, getenv EnvFunc) {
 	}
 }
 
-// applyDerived 填充依赖其它字段才能确定的默认值，并展开 ~。
-func applyDerived(cfg *Config, paths Paths) {
+// ApplyDerived 填充依赖其它字段才能确定的默认值，并展开 ~。
+//
+// 导出给 app 用：`bs config set` 需要"内置默认值 + 派生字段"作为类型模板与
+// "这个值其实是默认值"的比较基准，自己抄一遍必然走样。
+func ApplyDerived(cfg *Config, paths Paths) {
 	home := paths.HomeDir
 
 	if len(cfg.Tool.Manifest.UserDirs) == 0 {

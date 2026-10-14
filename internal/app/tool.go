@@ -32,9 +32,11 @@ type ToolListOptions struct {
 	Kind    string
 	Tags    []string
 	Search  string
-	// Installed / Missing 二选一，用于只看某种状态。
+	// Installed / Missing / Outdated 用于只看某种状态（三者互斥，按声明顺序生效）。
 	Installed bool
 	Missing   bool
+	// Outdated 只看"装了但落后于清单版本"的（`tool upgrade --all` 靠它选候选）。
+	Outdated bool
 	// All 为真时包含 disabled / when 不匹配本机的工具。
 	All bool
 	// Refresh 为真时忽略探测缓存。
@@ -45,12 +47,16 @@ type ToolListOptions struct {
 
 // ToolRow 是列表里的一行。
 type ToolRow struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name,omitempty"`
-	Stack       string   `json:"stack"`
-	Kind        string   `json:"kind"`
-	Tags        []string `json:"tags,omitempty"`
-	Status      string   `json:"status"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name,omitempty"`
+	Stack  string   `json:"stack"`
+	Kind   string   `json:"kind"`
+	Tags   []string `json:"tags,omitempty"`
+	Status string   `json:"status"`
+	// Present 表示"这台机器上确实有这个工具"：installed / outdated / unknown 都算
+	// （unknown 是"存在但版本判断不了"）。`--installed` 与 `upgrade --all` 都按它筛选——
+	// 用 Status == "installed" 会把 outdated 的工具漏掉，那正是最该升级的一批。
+	Present     bool     `json:"present"`
 	Version     string   `json:"version,omitempty"`
 	Detail      string   `json:"detail,omitempty"`
 	ViaDisplay  string   `json:"via,omitempty"`
@@ -184,6 +190,7 @@ func (a *App) ToolRows(ctx context.Context, opt ToolListOptions) ([]ToolRow, err
 			for i := range rows {
 				if r, ok := results[rows[i].ID]; ok {
 					rows[i].Status = string(r.Status)
+					rows[i].Present = r.Present()
 					rows[i].Version = r.Version
 					if rows[i].Detail == "" {
 						rows[i].Detail = r.Detail
@@ -211,9 +218,11 @@ func (a *App) ToolRows(ctx context.Context, opt ToolListOptions) ([]ToolRow, err
 			continue
 		}
 		switch {
-		case opt.Installed && row.Status != string(detect.StatusInstalled):
+		case opt.Installed && !row.Present:
 			continue
 		case opt.Missing && row.Status != string(detect.StatusMissing):
+			continue
+		case opt.Outdated && row.Status != string(detect.StatusOutdated):
 			continue
 		}
 		out = append(out, row)

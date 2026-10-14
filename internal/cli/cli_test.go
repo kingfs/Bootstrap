@@ -739,3 +739,175 @@ func TestDoctorFixJSONShape(t *testing.T) {
 		t.Errorf("summary 缺失：%s", out)
 	}
 }
+
+// TestConfigGetSetRoundTrip：set 只改那一行（注释与顺序都留着），get 读的是生效值。
+func TestConfigGetSetRoundTrip(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, `# 我自己的配置（这行注释必须留着）
+version: 1
+repo:
+  root: ~/src   # 仓库根
+ui:
+  confirm: true
+`)
+	cfgPath := filepath.Join(root, "config", "config.yaml")
+
+	code, out, errOut := run(t, rt, "config", "get", "ui.confirm")
+	if code != ExitOK || strings.TrimSpace(out) != "true" {
+		t.Fatalf("exit = %d, out = %q, err = %s", code, out, errOut)
+	}
+
+	code, out, errOut = run(t, rt, "config", "set", "ui.confirm", "false")
+	if code != ExitOK {
+		t.Fatalf("set: exit = %d, err = %s", code, errOut)
+	}
+	if !strings.Contains(out, "已写入 ui.confirm = false") || !strings.Contains(out, "备份：") {
+		t.Errorf("set 输出缺少要点：%s", out)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for _, want := range []string{"# 我自己的配置（这行注释必须留着）", "# 仓库根", "confirm: false"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("配置文件里缺少 %q：\n%s", want, data)
+		}
+	}
+
+	// 生效值跟着变（新进程会重新读盘，这里直接用第二个 Runtime 模拟）
+	rt2, _, _, _ := sandboxReuse(t, root)
+	code, out, _ = run(t, rt2, "config", "get", "ui.confirm")
+	if code != ExitOK || strings.TrimSpace(out) != "false" {
+		t.Errorf("重启后 get: exit = %d, out = %q", code, out)
+	}
+}
+
+// TestConfigSetRejectsBadValueAndKeepsFile：类型写错必须在写入前拦住，
+// 文件内容一个字节都不能动。
+func TestConfigSetRejectsBadValueAndKeepsFile(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, "version: 1\nui:\n  confirm: true\n")
+	cfgPath := filepath.Join(root, "config", "config.yaml")
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	code, out, errOut := run(t, rt, "config", "set", "repo.clone.depth", "deep")
+	if code == ExitOK {
+		t.Fatalf("非法值不该成功：%s%s", out, errOut)
+	}
+	if !strings.Contains(errOut, "期望整数") {
+		t.Errorf("应当说明期望类型：%s", errOut)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("非法值改动或破坏了配置文件：\n%s", after)
+	}
+}
+
+// TestConfigSetUnknownKeySuggests：拼错的键要给出候选，并保持用法类退出码。
+func TestConfigSetUnknownKeySuggests(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+	code, _, errOut := run(t, rt, "config", "get", "ui.confrim")
+	if code == ExitOK {
+		t.Fatal("未知键不该成功")
+	}
+	if !strings.Contains(errOut, "ui.confirm") {
+		t.Errorf("应当给出候选键：%s", errOut)
+	}
+}
+
+// TestConfigSetDryRunWritesNothing：--dry-run 是"零写入"，连配置文件都不该被创建。
+func TestConfigSetDryRunWritesNothing(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	// 注意：dry-run 必须作为参数传进来——newRootCmd 会按 flag 默认值重写 rt.Opts。
+	code, out, errOut := run(t, rt, "config", "set", "log.level", "debug", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, err = %s", code, errOut)
+	}
+	if !strings.Contains(out, "[dry-run]") {
+		t.Errorf("应当标注干跑：%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err == nil {
+		t.Error("干跑不该创建配置文件")
+	}
+}
+
+// TestConfigSetUnsetAndKeys：unset 回到默认值；keys 列出可用的键。
+func TestConfigSetUnsetAndKeys(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, "version: 1\nui:\n  confirm: false\n")
+	code, _, errOut := run(t, rt, "config", "set", "ui.confirm", "--unset")
+	if code != ExitOK {
+		t.Fatalf("unset: exit = %d, err = %s", code, errOut)
+	}
+	code, out, _ := run(t, rt, "config", "get", "ui.confirm")
+	if code != ExitOK || strings.TrimSpace(out) != "true" {
+		t.Errorf("unset 后应回到默认值 true：exit = %d, out = %q", code, out)
+	}
+	code, out, errOut = run(t, rt, "config", "keys")
+	if code != ExitOK {
+		t.Fatalf("keys: exit = %d, err = %s", code, errOut)
+	}
+	if !strings.Contains(out, "repo.root") || !strings.Contains(out, "timeouts.download") {
+		t.Errorf("keys 输出不完整：%s", out)
+	}
+}
+
+// TestConfigEditNeedsTerminalAndDryRun：非交互环境拒绝跑编辑器（退出码 5），
+// 但 --dry-run 只打印计划。
+func TestConfigEditNeedsTerminal(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	code, out, errOut := run(t, rt, "config", "edit")
+	if code != ExitNeedsInteraction {
+		t.Fatalf("exit = %d, out = %s, err = %s", code, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(root, "config", "config.yaml")); err == nil {
+		t.Error("拒绝执行时不该顺手创建配置")
+	}
+}
+
+// sandboxReuse 复用已有沙箱目录再建一个 Runtime（模拟"重新运行 bs 读盘"）。
+func sandboxReuse(t *testing.T, root string) (*Runtime, *bytes.Buffer, *bytes.Buffer, string) {
+	t.Helper()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
+	t.Setenv("BS_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("BS_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("BS_CACHE_HOME", filepath.Join(root, "cache"))
+	t.Setenv("NO_COLOR", "1")
+	out, errBuf := &bytes.Buffer{}, &bytes.Buffer{}
+	return &Runtime{Opts: &Options{Out: out, Err: errBuf}}, out, errBuf, root
+}
+
+// TestToolUpgradeAllSelection：--all 是"所有已安装的工具"；
+// 一台什么都没装的机器上它是**成功且无事可做**（脚本里不该因为"本来就是干净的"而中断）。
+func TestToolUpgradeAllSelection(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	// 空的 PATH：探测结果只可能是 missing，与宿主机装了什么无关。
+	empty := filepath.Join(root, "emptybin")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("PATH", empty)
+
+	code, out, errOut := run(t, rt, "tool", "upgrade", "--all", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, out = %s, err = %s", code, out, errOut)
+	}
+	if !strings.Contains(out, "没有已安装的工具") {
+		t.Errorf("应当明确说明无事可做：%s", out)
+	}
+
+	// 与显式工具名同时给是用法错误（和 -i 一样，避免"我点名的被忽略"）。
+	code, _, errOut = run(t, rt, "tool", "upgrade", "--all", "git")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, err = %s", code, errOut)
+	}
+	if !strings.Contains(errOut, "不能与显式工具名同时使用") {
+		t.Errorf("应当说明冲突：%s", errOut)
+	}
+}

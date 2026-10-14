@@ -240,7 +240,27 @@ Bootstrap/
 一眼可查、可测试（`config.ResolvePathsWith` + 注入的 `EnvFunc`）。变量清单见
 [configuration.md](./configuration.md) §1。
 
-### 5.3 配置示例
+### 5.3 命令行改配置（`config get|set|unset|edit|keys`）
+
+目标：日常调参不必"打开编辑器 + 猜键名 + 担心写坏"。几条定死的规矩：
+
+- **只改用户级配置文件**。系统级要 root、项目级属于某个仓库、环境变量是临时覆盖——
+  在这三个地方"帮忙"写值，等于制造一份下次找不到原因的状态。
+- **只改那一行**。用 `yaml.Node` 原地改而不是"反序列化成 map 再序列化"：后者会把用户的
+  注释、键顺序、空行全丢掉；用命令改一个值却重写整份配置，是最容易被抱怨的行为。
+- **类型由内置默认配置推断**。`ui.confirm` 只收 true/false、`repo.clone.depth` 只收整数；
+  写错类型在**落盘之前**就报错。模板里没有的键（用户自建的 `proxy.profiles.<名字>`）
+  按 YAML 标量规则自动判断，列表/映射则要求写 YAML/JSON。
+- **不留下坏配置**。写前 `fsx.BackupFile`，写后立刻用**真实装载路径**（含派生字段与
+  `Validate()`）复核一遍；不合法就把原内容放回去并报错。绝不能出现"改完 bs 起不来"。
+- **`get` 读生效值**，`-v` 时说明"这个值来自哪个文件"；没有配置文件提供时回落到内置默认值。
+  少数键的生效值是运行时算出来的（`repo.root` 会在留空时按平台约定自动挑一个），
+  `get` 会把它标成 derived 而不是显示一个空串。
+- **`edit` 需要真终端**（退出码 5），退出编辑器后立刻校验：**不回滚**用户手改的内容（那是
+  用户自己的决定），只把问题全列出来，并把改前备份路径打给他。
+- `--dry-run` 依然零写入：连"顺手生成一份默认配置"都不做。
+
+### 5.4 配置示例
 
 ```yaml
 # ~/.config/bootstrap/config.yaml
@@ -934,6 +954,16 @@ argv 与退出码，实时）与文件日志 `<state>/logs/<时间>-<工具>.log
   `g upgrade`、`rustup update`…）。`tool.update` 没写就复用 `install` 链，installer 按 `op`
   换成对应的升级命令；`release` 的"升级"就是重新取最新 release 并覆盖。
 - **系统包管理器的升级一律 `unsupported`**（"不需要及时升级"的定位），要用系统工具自己升。
+- **`upgrade --all` 是批量入口**：候选=清单里**所有已安装**的工具（`installed` / `outdated` /
+  `unknown` 都算"已安装"——用 `installed` 当判据会把最该升级的 outdated 漏掉）。
+  批量命令必须能跑完能跑的部分，所以它有两条与点名单个工具不同的规则：
+  1. `unsupported`（系统包管理器升级）与"没有任何可用方式"（`Step.NoMethod`）的步骤
+     被摘出来列为**跳过**，不计失败；点名单个工具时这些仍然照旧报错/提示——
+     "`bs tool upgrade htop` 不支持"本身就是用户要的答案。
+  2. 一个可升级的都没有（乃至一台机器什么都没装）时**退出码 0**：
+     "本来就是干净的/最新的"不是错误，脚本里 `bs tool upgrade --all` 不该因此中断。
+  真正的问题（缺校验和、`--via` 写错）依然整体失败。
+- `--all` 与 `-i` 一样不能和显式工具名同时给（退出码 2）：否则"我点名的那个被忽略"很难查。
 - **uninstall 只对"用户态装法"提供**：`bun/npm/pnpm/pipx/uvpm/cargo/manager/brew` 可以；
   `goinstall`/`release`/`script`/`source` 与 `pacman`/`winget` 返回 `unsupported`，
   提示交给原生包管理器。`unsupported` 只是"这条不做"，不算失败（不影响退出码）。
@@ -1188,6 +1218,11 @@ config path          打印各配置/状态/缓存目录的实际路径及来源
 config show          打印合并后的生效配置
 config validate      校验配置文件合法性
 config init          生成默认配置文件（已存在时不覆盖）
+config get <键>      打印某个键的生效值（点分路径；-v 说明来源；列表/映射输出 YAML）
+config set <键> <值> 只改用户级配置里的那一行（注释与顺序保留，写前备份、写后校验、不合法还原）
+                     [--unset]   删除该键（回到由默认值/上层配置决定）
+config keys          列出可用键路径（get/set 的拼写参考）
+config edit          用 $EDITOR 打开用户级配置（需要终端；退出后立刻校验）
 
 proxy  list | status | on | use [名字] | off
 proxy  env [--apply|--off] [--profile 名字] [--shell bash|zsh|fish|pwsh|cmd|dotenv|json]
@@ -1199,14 +1234,14 @@ repo   get <url...> [--root DIR] [--ref R] [--depth N] [--protocol https|ssh] [-
 repo   list | root
 repo   sync [--root DIR] [-j/--jobs N] [--autostash]
 
-tool   list  [--stack S] [--kind K] [--profile P] [--tag T]... [--installed|--missing] [--all]
+tool   list  [--stack S] [--kind K] [--profile P] [--tag T]... [--installed|--missing|--outdated] [--all]
              [--refresh] [--no-probe]
 tool   search <关键词>      （别名 find；与 list 同一套过滤参数）
 tool   info <工具> [--refresh]
 tool   plan  [工具...] [--profile P] [--stack S] [--kind K] [--tag T]... [--missing]
              [--via V] [--fallback|--no-fallback]      # 离线预览：不联网解析版本、不写缓存
 tool   install   [同上] [-i/--interactive]     # -i：先探测，再在交互界面里勾选要处理的工具
-tool   upgrade   [同上] [-i/--interactive]
+tool   upgrade   [同上] [-i/--interactive] [--all]   # --all：升级所有已安装的（系统包管理器按 §7.6 列为跳过）
 tool   uninstall [同上] [-i/--interactive]
 tool   manifest path | validate [--os linux|darwin|windows] | show [工具...] | diff <文件>
 
@@ -1241,7 +1276,7 @@ help [命令]          由 cobra 提供
 在交互终端会问一句（默认拒绝），拒绝后打印"已取消，未做任何修改。"并以 0 结束。
 
 **尚未实现**（设计意图，不在当前二进制里；写在这里以免误读）：
-`config get|set|edit`、`tool upgrade --all`、`tool uninstall --allow-system`、`proxy remove`、`repo info`、
+`tool uninstall --allow-system`、`proxy remove`、`repo info`、
 `shell snippet edit|show|remove`、`shell update`、
 跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、
 Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
@@ -1417,7 +1452,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、集成测试矩阵（Docker）、shell completion 覆盖、README/AGENTS/ADR 定稿 | 🔄 进行中 |
+| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、集成测试矩阵（Docker）、README/AGENTS/ADR 定稿 | 🔄 进行中 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
 
 **M2 完成判据的自查**：
