@@ -28,7 +28,7 @@
 | 3 | 初始化时列出"已安装 / 未安装"，可交互勾选安装 | `bs init`：环境概览 + huh 多选（缺失项默认勾选）+ plan → apply（`bs tool list --installed/--missing` + `bs tool install` 仍是脚本化的等价入口） |
 | 4 | 纯 CLI（无 GUI、无常驻服务） | 全局约束 |
 | 5 | 执行下载 / clone 等网络操作时自动识别并注入代理 | `proxy` + `pkg/cmdx`/`httpx` |
-| 6 | 集成 startproxy / chaitinproxy 能力，按平台生成可生效的代理环境变量 | `proxy` + `bs proxy` + `bs shell init` |
+| 6 | 一键切换代理 profile 并在当前 shell 立即生效（原来靠自己写的一堆 shell 函数） | `proxy` + `bs proxy` + `bs shell init` |
 | 7 | 工具按**技术栈**（golang/python/node/rust/c/cpp…）与**功能类型**（包管理器/运行时/基础 CLI/系统开发依赖）分类组织 | `manifest` 分类模型 |
 | 8 | 同一工具支持多种安装方式并有序降级：第三方包管理器（bun/npm/uv/cargo…）→ 官方脚本（curl \| bash）→ 系统包管理器（apt/brew/winget）→ 源码编译 | `install` 方法链 |
 | 9 | 各 OS 的工具集合与安装方式独立可配，同时保留跨平台公共集合 | `manifest` 分层文件 |
@@ -294,11 +294,11 @@ proxy:
     local:
       http_proxy:  http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
-      no_proxy: "127.0.0.1,localhost,10.2.0.0/16,192.168.0.0/16,chaitin.net,chaitin.cn,.chaitin.net,.chaitin.cn,.baizhi.cloud"
-    chaitin:
-      http_proxy:  http://proxy.in.chaitin.net:8123
-      https_proxy: http://proxy.in.chaitin.net:8123
-      no_proxy: "127.0.0.1,localhost,10.2.0.0/16,192.168.0.0/16,chaitin.net,chaitin.cn,.chaitin.net,.chaitin.cn,.baizhi.cloud"
+      no_proxy: "127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,example.com,example.cn,.example.com,.example.cn"
+    corp:
+      http_proxy:  http://proxy.example.com:8123
+      https_proxy: http://proxy.example.com:8123
+      no_proxy: "127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,example.com,example.cn,.example.com,.example.cn"
 
 tool:
   manifest:
@@ -1051,10 +1051,10 @@ bs() {                                   # 与二进制同名的包装函数（�
     *) command bs "$@" ;;                 # 其余命令直通
   esac
 }
-# 你原来的手感原样保留：
-startproxy()   { command bs proxy use local   ; eval "$(command bs proxy env --apply)"; }
-chaitinproxy() { command bs proxy use chaitin ; eval "$(command bs proxy env --apply)"; }
-stopproxy()    { command bs proxy off         ; eval "$(command bs proxy env --apply)"; }
+# 手感保留：`startproxy [profile]`（不给就用 default_profile）与 `stopproxy`。
+# 个人/公司专属的别名请放用户片段（<config>/shell/posix/10-proxy.sh 同名整体覆盖本文件）：
+startproxy() { command bs proxy on "$@" ; eval "$(command bs proxy env --apply)"; }
+stopproxy()  { command bs proxy off      ; eval "$(command bs proxy env --apply)"; }
 ```
 
 于是：**改代理站点 = 改配置里的 profile**，不用再动系统里那份脚本；换电脑 = `bs shell install` 一条命令。
@@ -1066,7 +1066,7 @@ bs proxy list                      # 列出所有 profile 及默认者
 bs proxy show [profile]            # 展示将导出的具体变量
 bs proxy on [profile]              # 设为活跃 profile（写 state）；有包装函数时当前 shell 立即生效
 bs proxy off                       # 清空活跃 profile（当前 shell 立即 unset）
-bs proxy use <profile>             # on 的别名（贴近你原有 startproxy 的语义）
+bs proxy use <profile>             # on 的别名（必须给 profile，脚本里更好读）
 bs proxy status                    # 活跃 profile + 当前 shell 实际 env + 来源 + 可达性
 bs proxy env [profile]             # 输出可 eval 的环境变量族（按 --shell 渲染）
       --shell bash|zsh|fish|pwsh|cmd|dotenv|json

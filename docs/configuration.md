@@ -228,11 +228,11 @@ proxy:
     local:
       http_proxy: http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
-      no_proxy: 127.0.0.1,localhost,10.2.0.0/16,192.168.0.0/16,.chaitin.net,.chaitin.cn,.baizhi.cloud
-    chaitin:
-      http_proxy: http://proxy.in.chaitin.net:8123
-      https_proxy: http://proxy.in.chaitin.net:8123
-      no_proxy: 127.0.0.1,localhost,10.2.0.0/16,192.168.0.0/16,.chaitin.net,.chaitin.cn,.baizhi.cloud
+      no_proxy: 127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,.example.com,.example.cn
+    corp:
+      http_proxy: http://proxy.example.com:8123
+      https_proxy: http://proxy.example.com:8123
+      no_proxy: 127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,.example.com,.example.cn
 
 tool:
   default_profile: base

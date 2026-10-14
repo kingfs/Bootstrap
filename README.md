@@ -138,11 +138,11 @@ proxy:
     local:
       http_proxy: http://127.0.0.1:7890
       https_proxy: http://127.0.0.1:7890
-      no_proxy: 127.0.0.1,localhost,10.2.0.0/16,.chaitin.net
-    chaitin:
-      http_proxy: http://proxy.in.chaitin.net:8123
-      https_proxy: http://proxy.in.chaitin.net:8123
-      no_proxy: 127.0.0.1,localhost,.chaitin.net,.chaitin.cn
+      no_proxy: 127.0.0.1,localhost,10.0.0.0/8,.example.com
+    corp:                           # 公司/内网代理：按自己的地址改
+      http_proxy: http://proxy.example.com:8123
+      https_proxy: http://proxy.example.com:8123
+      no_proxy: 127.0.0.1,localhost,.example.com,.example.cn
 ```
 
 > 子进程无法修改父 shell 的环境变量，所以"当前 shell 立即生效"依赖 `bs shell install`
