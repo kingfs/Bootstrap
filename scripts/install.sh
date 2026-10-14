@@ -14,6 +14,9 @@ set -eu
 REPO="${BS_REPO:-kingfs/Bootstrap}"
 VERSION="${BS_VERSION:-latest}"
 INSTALL_DIR="${BS_INSTALL_DIR:-}"
+# BS_BASE_URL 覆盖下载前缀：公司镜像、`ghproxy` 之类的加速站，以及本地发布彩排
+# （`scripts/release-check.sh` 就是这么用的）。留空时走 GitHub Release 的公开地址。
+BASE_URL="${BS_BASE_URL:-}"
 ASSUME_YES=0
 
 usage() {
@@ -23,10 +26,11 @@ usage() {
   --version <vX.Y.Z>   安装指定版本（默认：latest）
   --dir <目录>         安装目录（默认：~/.local/bin，失败则试 /usr/local/bin）
   --repo <owner/repo>  覆盖仓库（默认 kingfs/Bootstrap）
+  --base-url <URL>     覆盖下载前缀（镜像/加速站/本地彩排）
   -y, --yes            不做任何确认
   -h, --help           显示帮助
 
-环境变量：BS_VERSION / BS_INSTALL_DIR / BS_REPO / HTTPS_PROXY（下载时自动使用）
+环境变量：BS_VERSION / BS_INSTALL_DIR / BS_REPO / BS_BASE_URL / HTTPS_PROXY（下载时自动使用）
 EOF
 }
 
@@ -35,6 +39,7 @@ while [ $# -gt 0 ]; do
     --version) VERSION="${2:?missing value}"; shift 2 ;;
     --dir) INSTALL_DIR="${2:?missing value}"; shift 2 ;;
     --repo) REPO="${2:?missing value}"; shift 2 ;;
+    --base-url) BASE_URL="${2:?missing value}"; shift 2 ;;
     -y|--yes) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "未知参数：$1" >&2; usage >&2; exit 2 ;;
@@ -86,6 +91,9 @@ sha256_of() {
 }
 
 # ---------- 解析版本 ----------
+if [ "$VERSION" = "latest" ] && [ -n "$BASE_URL" ]; then
+  err "使用 --base-url/BS_BASE_URL 时必须显式指定 --version（自定义前缀没有 releases/latest）"
+fi
 if [ "$VERSION" = "latest" ]; then
   # 不依赖 GitHub API 的鉴权：直接跟随 releases/latest 的重定向取 tag。
   if command -v curl >/dev/null 2>&1; then
@@ -100,10 +108,19 @@ case "$VERSION" in v*) ;; *) VERSION="v$VERSION" ;; esac
 
 PLAIN_VERSION="${VERSION#v}"
 ASSET="bootstrap_${PLAIN_VERSION}_${OS}_${ARCH}.tar.gz"
-BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
+# 显式给的前缀原样用（末尾斜杠去掉）；否则拼 GitHub Release 的公开地址。
+#
+# 自定义前缀时**不再有 GitHub 兜底**：`--version` 是必须的（没有公开的
+# releases/latest 可跟），这样"镜像拿不到"会明确报错，而不是悄悄去连 GitHub。
+if [ -n "$BASE_URL" ]; then
+  BASE_URL="${BASE_URL%/}/$VERSION"
+else
+  BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
+fi
 
 say "仓库    : $REPO"
 say "版本    : $VERSION"
+say "下载前缀: $BASE_URL"
 say "平台    : $OS/$ARCH"
 say "归档    : $ASSET"
 
@@ -130,13 +147,8 @@ tar -xzf "$TMP/$ASSET" -C "$TMP" || err "解压失败"
 [ -f "$TMP/bs" ] || err "归档中找不到 bs 可执行文件"
 
 # ---------- 选择安装目录 ----------
-if [ -z "$INSTALL_DIR" ]; then
-  if [ -d "$HOME/.local/bin" ] && [ -w "$HOME/.local/bin" ]; then
-    INSTALL_DIR="$HOME/.local/bin"
-  else
-    INSTALL_DIR="$HOME/.local/bin"
-  fi
-fi
+# 默认装到 ~/.local/bin（不新建系统目录）；不可写时下面的 install_to 会去试 /usr/local/bin
+[ -n "$INSTALL_DIR" ] || INSTALL_DIR="$HOME/.local/bin"
 mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 
 install_to() {

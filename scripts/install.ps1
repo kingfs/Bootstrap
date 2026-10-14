@@ -9,12 +9,19 @@
 .EXAMPLE
   irm https://raw.githubusercontent.com/kingfs/Bootstrap/main/scripts/install.ps1 | iex
   ./scripts/install.ps1 -Version v0.1.0 -Dir "$env:USERPROFILE\bin"
+  ./scripts/install.ps1 -Version v0.1.0 -BaseUrl https://mirror.example.com/bs
+
+.NOTES
+  环境变量 BS_BASE_URL 等价于 -BaseUrl；用自定义前缀时必须显式给 -Version。
 #>
 [CmdletBinding()]
 param(
     [string]$Version = 'latest',
     [string]$Dir = '',
-    [string]$Repo = 'kingfs/Bootstrap'
+    [string]$Repo = 'kingfs/Bootstrap',
+    # 覆盖下载前缀：公司镜像、加速站，或本地发布彩排。
+    # 给了它就必须显式 -Version（自定义前缀没有 releases/latest 可跟）。
+    [string]$BaseUrl = $env:BS_BASE_URL
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +40,9 @@ if (-not $Dir) {
     $Dir = Join-Path $env:LOCALAPPDATA 'Programs\bs'
 }
 
+if ($Version -eq 'latest' -and $BaseUrl) {
+    Fail '使用 -BaseUrl/BS_BASE_URL 时必须显式指定 -Version（自定义前缀没有 releases/latest）'
+}
 if ($Version -eq 'latest') {
     # 不依赖 API 鉴权：跟随 releases/latest 的重定向。
     $release = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 -Uri "https://github.com/$Repo/releases/latest" -ErrorAction SilentlyContinue
@@ -43,12 +53,17 @@ if (-not $Version.StartsWith('v')) { $Version = "v$Version" }
 $plain = $Version.TrimStart('v')
 
 $asset = "bootstrap_${plain}_windows_${arch}.zip"
-$baseUrl = "https://github.com/$Repo/releases/download/$Version"
+if ($BaseUrl) {
+    $baseUrl = "$($BaseUrl.TrimEnd('/'))/$Version"
+} else {
+    $baseUrl = "https://github.com/$Repo/releases/download/$Version"
+}
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("bs-install-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 Say "仓库    : $Repo"
 Say "版本    : $Version"
+Say "下载前缀: $baseUrl"
 Say "平台    : windows/$arch"
 Say "安装到  : $Dir"
 

@@ -9,8 +9,9 @@
 
 > 当前进度：M1（仓库拉取、代理、shell 集成、体检）、M2（工具清单 / 安装引擎，`bs tool`）、
 > M3（新机器一把梭 `bs init`、自更新 `bs self-update`、交互式界面）已完成；
-> M4 进行中（全局 `--timeout`、`tool install -i` 勾选、下载断点续传与缓存、`bs doctor --fix`、
-> `make lint`/`make vuln`）。Windows 的工具清单尚未编写。
+> M4 打磨已收尾（全局 `--timeout`、`tool install -i` 勾选、下载断点续传与缓存、`bs doctor --fix`、
+> `config get|set|edit`、`tool upgrade --all`、`make lint`/`make vuln`/`make docker-matrix`/
+> `make release-check`），M5 在继续补清单。Windows 的工具清单尚未编写。
 
 ## 安装
 
@@ -23,6 +24,13 @@ irm https://raw.githubusercontent.com/kingfs/Bootstrap/main/scripts/install.ps1 
 ```
 
 安装脚本会从 GitHub Release 下载对应平台的归档，用 `checksums.txt` 校验 sha256 后再安装。
+GitHub 拉不动时可以换成镜像/加速站（给前缀时要显式指定版本，不再有 `releases/latest` 可跟）：
+
+```sh
+sh scripts/install.sh --base-url https://mirror.example.com/bootstrap --version v0.1.0
+BS_BASE_URL=https://mirror.example.com/bootstrap BS_VERSION=v0.1.0 sh scripts/install.sh
+```
+
 也可以直接下载归档，或从源码构建：
 
 ```sh

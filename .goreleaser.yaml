@@ -22,7 +22,11 @@ builds:
       - -s -w
       - -X github.com/kingfs/Bootstrap/internal/buildinfo.Version={{.Version}}
       - -X github.com/kingfs/Bootstrap/internal/buildinfo.Commit={{.Commit}}
-      - -X github.com/kingfs/Bootstrap/internal/buildinfo.Date={{.CommitDate}}
+      # .CommitDate 已是 RFC3339 字符串（与 Makefile 里 `date -u +%Y-%m-%dT%H:%M:%SZ` 同格式）；
+      # 别再换成 .CommitTimestamp —— 那是 Unix 秒数，`bs version` 会打印成一串数字。
+      # 注意：**本仓库没有 git remote 时** goreleaser 读不到 git 信息，会退回假值
+      # （Commit=none、Date=0001-01-01T00:00:00Z），本地 snapshot 才会看到这个假日期。
+      - -X github.com/kingfs/Bootstrap/internal/buildinfo.Date={{ .CommitDate }}
     goos:
       - linux
       - darwin

@@ -15,8 +15,10 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # lint/vuln 用的二进制版本（`make tools` 安装）。刻意固定版本：
 # 不同版本的 golangci-lint 结论不同，不固定会让"本地绿、CI 红"变成常态。
-GOLANGCI_VERSION   ?= v2.11.4
+GOLANGCI_VERSION    ?= v2.11.4
 GOVULNCHECK_VERSION ?= v1.2.0
+# 发布打包用（`make snapshot` / `make release-check`）
+GORELEASER_VERSION  ?= v2.18.3
 # lint/vuln 的二进制装在 $(GOPATH)/bin（受限环境里 devenv.sh 会把它指到仓库内），
 # 它未必在 PATH 上，所以这里显式补进搜索路径。
 GOTOOLBIN := $(shell . "$(ROOT)/scripts/devenv.sh" 2>/dev/null; go env GOPATH)/bin
@@ -44,6 +46,7 @@ help:
 	@echo "  make cross      交叉编译到 6 个平台组合（dist/）"
 	@echo "  make docker-matrix  在 ubuntu/debian 裸镜像里跑新机器流程（需 Docker，不进 check）"
 	@echo "  make snapshot   goreleaser 本地打包快照"
+	@echo "  make release-check  发布流程彩排：打包后用 install.sh 从本地站点真装一遍"
 	@echo "  make clean      清理 bin/ dist/ .cache/"
 
 .PHONY: build
@@ -97,6 +100,7 @@ vuln:
 tools:
 	$(GOENV) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 	$(GOENV) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	$(GOENV) $(GO) install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)
 	@echo "已安装到 $$($(GOENV) $(GO) env GOPATH)/bin"
 
 .PHONY: cover
@@ -160,7 +164,14 @@ cross:
 
 .PHONY: snapshot
 snapshot:
-	$(GOENV) goreleaser release --snapshot --clean
+	$(GOENV) PATH="$(GOTOOLBIN):$$PATH" goreleaser release --snapshot --clean
+
+# 发布流程彩排：先打快照，再把 dist/ 摆成本地"下载站"，让 scripts/install.sh 真装一遍
+# （校验和、失败路径、版本号都验）。不碰 GitHub，产物只在 .cache/release-check。
+# 想反复调试不用重打包时，直接跑 scripts/release-check.sh（可配 DIST_DIR/WORK_DIR）。
+.PHONY: release-check
+release-check: snapshot
+	$(ROOT)/scripts/release-check.sh
 
 .PHONY: clean
 clean:

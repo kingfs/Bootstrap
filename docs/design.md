@@ -1453,15 +1453,26 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
     `make cross` 并上传 `dist/**` 作为产物——**这保证 Windows/macOS 代码路径真的被编译与测试**；
   - `.github/workflows/release.yaml`：`v*` tag 触发，先跑单测与冒烟，再 `goreleaser release --clean`。
 - **Makefile**：`build` `install` `fmt` `fmt-check` `vet` `test` `race` `cover` `smoke`
-  `check` `cross` `snapshot` `clean`。所有 Go 命令都经 `scripts/devenv.sh` 包裹
+  `check` `cross` `snapshot` `release-check` `clean`。所有 Go 命令都经 `scripts/devenv.sh` 包裹
   （把 `GOPATH`/`GOMODCACHE`/`GOCACHE` 指到仓库内 `.cache/`，受限环境也能构建）。
-  `make snapshot` 需要本机装 goreleaser，日常 CI 用不到。
+  `make snapshot` / `make release-check` 需要本机装 goreleaser（`make tools` 里固定了版本），
+  日常 CI 用不到。
+- **发布彩排（`make release-check`）**：发版那天最容易翻车的不是编译，而是"包发出去装不上"。
+  所以有一个不碰 GitHub 的彩排：`make snapshot` 打出 6 个平台的产物后，
+  `scripts/release-check.sh` 把它摆成 `<base>/<tag>/…` 的目录、用本地 HTTP 服务冒充下载站，
+  再让 `scripts/install.sh` **真的去装一遍**。检查：产物齐全/命名/`checksums.txt` 逐条对得上、
+  归档里有 README+设计文档+两个安装脚本、本机那份二进制是静态链接且 `bs version` 带得出
+  快照版本号、覆盖安装不报错；以及三条**必须失败**的路径——归档被篡改（校验拦住）、
+  站点上没有 `checksums.txt`（按红线中止）、版本不存在（明确报下载失败）——
+  且失败后不能留下半个可执行文件。全程只用 `curl`+`tar`+`sha256sum`+`python3` 起本地服务。
 - **引导安装**（鸡生蛋闭环）：
   - `scripts/install.sh`：`curl -fsSL .../install.sh | sh` —— 探测 OS/Arch、
-    解析版本（`--version vX.Y.Z` 或 `BS_VERSION`，缺省查 latest）、下载归档、
+    解析版本（`--version vX.Y.Z` 或 `BS_VERSION`，缺省跟随 `releases/latest`）、
+    `--base-url`/`BS_BASE_URL` 可把下载前缀换成镜像或加速站（此时必须显式给版本）、下载归档、
     **必须**从 `checksums.txt` 取到 sha256 并校验（拿不到就中止）、解压后装到
     `~/.local/bin`（`--dir` / `BS_INSTALL_DIR` 可覆盖），最后提示 `eval "$(bs env path)"`；
-  - `scripts/install.ps1`：Windows 侧同款（下载 zip、校验、装到用户目录并写 PATH）；
+  - `scripts/install.ps1`：Windows 侧同款（下载 zip、校验、装到用户目录并写 PATH，
+    `-BaseUrl`/`BS_BASE_URL` 同样可换镜像）；
   - 两个脚本都可重复执行（重跑即升级）。
 - **`bs self-update`**（ADR-0009：只校验 sha256）：解析目标版本（`--version` 或 latest）→
   取 `checksums.txt` 里的 sha256（**拿不到就中止**，不提供"跳过校验"开关）→ 下载校验 →

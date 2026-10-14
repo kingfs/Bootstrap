@@ -45,11 +45,16 @@ make pty           # 真 PTY 里验证交互式界面（勾选/取消/破坏性�
 make check         # gofmt + vet + test + race（提交前必跑）
 make lint          # golangci-lint 静态检查（需先 `make tools`；刻意不进 check）
 make vuln          # 依赖已知漏洞扫描（需联网查 vuln.go.dev；改动依赖后跑）
-make tools         # 安装上面两个目标需要的二进制（版本固定在 Makefile 里）
+make tools         # 安装 lint/vuln 需要的二进制，以及 goreleaser（版本固定在 Makefile 里）
 make cross         # 交叉编译 6 个平台组合
 make e2e           # 真实下载安装（需要网络，不进 check）
 make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian 镜像跑（需 Docker + 拉镜像）
+make snapshot      # goreleaser 本地打包快照（产物在 dist/）
+make release-check # 发布流程彩排：打包后用 install.sh 从本地站点真装一遍（不碰 GitHub）
 ```
+
+`make snapshot` / `make release-check` 需要 goreleaser（版本固定在 `make tools` 里），
+它得 `go install` 编译一大棵依赖，装一次即可。
 
 `make lint` / `make vuln` **不进 `make check`**：前者比 `go vet` 慢一个量级且要额外的二进制，
 后者要联网——都不该拦住"本地能跑 check 就能提交"。发版前、改依赖后各跑一次。
@@ -202,6 +207,12 @@ make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian �
   都要刷新缓存（install/upgrade 用刚探测到的结果 Merge，uninstall 无条件按 id 失效，
   见 design §6.5）。改"装完/卸完立刻可见"这类行为时，注意 `Step.Detection` 里可能还是
   **计划阶段**的结果，别直接 Merge。
+- **发布前跑 `make release-check`**（`scripts/release-check.sh`）：它不碰 GitHub，把 `dist/` 摆成
+  `<base>/<tag>/…` 用本地 HTTP 服务冒充下载站，让 `scripts/install.sh` 真装一遍，并验
+  "篡改归档 / 缺 checksums.txt / 版本不存在"三条失败路径必须中止且不留残留。
+  改 `scripts/install.sh`、`.goreleaser.yaml`（产物名/归档内容）或安装目录策略后必须跑它。
+  注意 `make snapshot` 会 `--clean` 整个 `dist/`，`make cross` 的产物随之消失
+  （`make docker-matrix` 依赖 `cross`，会自动重建）。
 - 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（`make e2e`，需要网络，不进 `make smoke`）；
   它的离线替身是 `internal/install/artifacts_e2e_test.go`（httptest 冒充 GitHub +
   真 httpx + 真解压），改 release 路径时优先扩充这条测试。
