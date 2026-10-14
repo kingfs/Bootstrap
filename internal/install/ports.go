@@ -313,13 +313,21 @@ func (e *UnsupportedActionError) Error() string {
 }
 
 // ErrUnsupported 表示某个 installer 不支持该动作（例如系统包管理器不支持由 bs 卸载）。
+//
+// Detail 是给用户看的补充说明（"为什么"以及"那该怎么办"），因为这句话会直接出现在
+// `bs tool uninstall` 的表格里——只说"不支持"等于把问题丢回给用户。
 type ErrUnsupported struct {
-	Via string
-	Op  Op
+	Via    string
+	Op     Op
+	Detail string
 }
 
 func (e *ErrUnsupported) Error() string {
-	return "via=" + e.Via + " cannot be used for " + string(e.Op)
+	msg := "via=" + e.Via + " cannot be used for " + string(e.Op)
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	return msg
 }
 
 // ErrDryRun 由 ExecEnv 在干跑模式下返回给"必须真正执行才能继续"的步骤。

@@ -2,7 +2,10 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -247,12 +250,90 @@ type releasePlan struct {
 	Archive  bool
 	// Tree 为真时整包解压到 Dest（目录型发布物），否则只取 Binary。
 	Tree bool
+	// Remove 是卸载计划要删掉的路径（仅 OpUninstall 用；只删文件与软链，不删目录）。
+	Remove []string
+}
+
+// planReleaseUninstall 规划"删掉当初装出去的那些文件"。
+//
+// 发布物是 bs 自己写进 Dest 的（单个可执行文件 + 可选软链），所以卸载的**唯一**依据就是
+// 清单里那几个路径：不需要联网、也不该联网——"卸载先要能连上 GitHub"是荒唐的。
+//
+// 两种情形只能报"不支持"，而且必须把"手工删哪里"讲清楚：
+//   - `params.dest`/`params.binary`/软链里含 `{{version}}`（例如 Gradle 的
+//     `~/.local/share/gradle/gradle-{{version}}/bin/gradle`）：没有"已安装的那个版本"
+//     就渲染不出具体路径，猜一个路径去删是不可接受的；
+//   - `params.extract: true`（整包解压型，如 uv/gradle）：解出来的是一整棵目录树，
+//     bs 没有记录都写了哪些文件，递归删 Dest 可能连累用户放在同一目录下的东西。
+//     要根治得记录"安装时写了哪些路径"（见 design §18.3 的待办），当前先明确拒绝。
+func planReleaseUninstall(e ExecEnv, t manifest.Tool, m manifest.Method) (Action, error) {
+	data := RenderData{OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}
+	dest := fsx.ExpandPath(renderOr(m.Params.Dest, data), e.HomeDir())
+	binary := m.Params.Binary
+	if binary == "" {
+		// 与安装时保持同一套推导规则：直链模式看产物名，repo 模式看仓库名。
+		binary = defaultBinary(releaseSource{repo: m.Params.Repo, asset: assetFromURL(strings.TrimSpace(m.Params.URL))})
+	}
+	if m.Params.Extract != nil && *m.Params.Extract {
+		return Action{}, &ErrUnsupported{Via: "release", Op: OpUninstall,
+			Detail: "整包解压型发布物（params.extract）暂不支持自动卸载；请手工删除 " + dest}
+	}
+	// 模板要在**渲染之前**查：`{{version}}` 在 RenderData 没有版本时会被渲染成空串，
+	// 于是"渲染后不含 {{" 并不代表路径确定——那只会悄悄指向一个错误的路径。
+	//
+	// 只查"决定文件在哪"的字段：dest / 产物名 / 软链。`params.url` 里有模板是常态
+	// （kubectl 的 `v{{version}}/bin/{{os}}/{{arch}}/kubectl`），它的文件名部分照样是
+	// 确定的，不该因此拒绝卸载。
+	templated := []string{m.Params.Dest, binary}
+	for _, l := range releaseSymlinks(m.Params) {
+		templated = append(templated, l.From, l.To)
+	}
+	for _, raw := range templated {
+		if strings.Contains(raw, "{{") {
+			return Action{}, &ErrUnsupported{Via: "release", Op: OpUninstall,
+				Detail: "清单里的路径含 {{...}} 模板（" + raw + "），没有已安装版本就无法确定具体文件；请手工删除 " + dest}
+		}
+	}
+	// 共享目录（~/.local/bin）只删文件本身；软链同样是 bs 建的，一并删。
+	remove := []string{filepath.Join(dest, executableName(binary, e.OS()))}
+	for _, l := range releaseSymlinks(m.Params) {
+		remove = append(remove, fsx.ExpandPath(l.To, e.HomeDir()))
+	}
+	return Action{
+		ToolID: t.ID, Via: "release", Op: OpUninstall,
+		Summary: "删除 " + strings.Join(remove, "、"),
+		Reason:  "via=release（删除当初写入的产物与软链）",
+	}.WithResolved(releasePlan{Remove: remove}), nil
+}
+
+// removeReleaseArtifacts 执行卸载。
+//
+// 只删文件与软链，**绝不**递归删目录：Dest 通常是 ~/.local/bin 这类共享目录，
+// 删目录等于毁掉别人的东西。路径不存在直接跳过，所以卸载是幂等的。
+func removeReleaseArtifacts(paths []string, e ExecEnv) error {
+	for _, p := range paths {
+		info, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("uninstall %s: %w", p, err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("uninstall %s: refusing to remove a directory", p)
+		}
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("uninstall %s: %w", p, err)
+		}
+		e.Log().Info("removed", "path", p)
+	}
+	return nil
 }
 
 // Plan 实现 Installer。
 func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, op Op) (Action, error) {
 	if op == OpUninstall {
-		return Action{}, &ErrUnsupported{Via: "release", Op: op}
+		return planReleaseUninstall(e, t, m)
 	}
 	tag, version, err := r.resolveVersion(ctx, e, m)
 	if err != nil {
@@ -444,6 +525,9 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 	}
 	if e.DryRun() {
 		return nil
+	}
+	if a.Op == OpUninstall {
+		return removeReleaseArtifacts(plan.Remove, e)
 	}
 	local, err := e.Download(ctx, plan.Download)
 	if err != nil {
