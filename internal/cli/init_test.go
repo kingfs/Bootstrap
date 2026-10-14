@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -100,7 +101,17 @@ esac
 echo "$@" >> "$FAKE_G_LOG"
 exit 0
 `)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+	// PATH 里只留这个目录——探测阶段会去跑清单里那些 `verify.command`，
+	// 一旦碰到宿主的真实工具就会真的动本地状态：CI 上 `go version` 会在仓库目录里
+	// 读 go.mod、发现系统 Go 太旧，于是往 HOME 下的模块缓存**下载整条工具链**，
+	// 而模块缓存目录是只读的，测试结束时 t.TempDir 的清理会以 permission denied 失败。
+	// 假管理器要用的 coreutils（chmod）就把它软链进这个目录。
+	if src, err := exec.LookPath("chmod"); err == nil {
+		if err := os.Symlink(src, filepath.Join(binDir, "chmod")); err != nil {
+			t.Fatalf("link chmod: %v", err)
+		}
+	}
+	t.Setenv("PATH", binDir)
 	t.Setenv("FAKE_G_LOG", filepath.Join(root, "fake-g.log"))
 	return rt, out, errBuf, root
 }
