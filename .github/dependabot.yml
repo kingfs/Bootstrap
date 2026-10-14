@@ -1,0 +1,33 @@
+# 依赖更新：每周一早上开一批 PR，而不是让"依赖过期"变成发版前的惊喜。
+#
+# 分两批（Go 依赖 / GitHub Actions）而不是一个包一个 PR：这个仓库的依赖改动基本都要
+# 跑一遍 make check + make smoke，合成一批评审更省事；单个依赖要独立评估时再拆开。
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    groups:
+      go-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    groups:
+      actions:
+        patterns: ["*"]

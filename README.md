@@ -303,9 +303,11 @@ make test         # 单元测试
 make race         # 单元测试（-race）
 make smoke        # 无副作用端到端冒烟测试（沙箱目录，不碰真实 HOME，不发网络请求）
 make check        # gofmt + vet + test + race（提交前必跑）
-make lint         # golangci-lint（需先 make tools；刻意不进 check，慢）
-make vuln         # 依赖已知漏洞扫描（需联网；改动依赖或发版前跑）
-make tools        # 安装上面两个目标的二进制（版本固定在 Makefile 里）
+make lint         # golangci-lint（需先 make tools-lint；刻意不进 check，慢，但进 CI）
+make vuln         # 依赖已知漏洞扫描（需联网；改动依赖或发版前跑，也进 CI）
+make coverage-check # 覆盖率门禁（阈值 COVER_MIN；掉下来要么补测试要么说明例外）
+make tools        # 装齐 lint/vuln/release 的二进制（版本固定在 Makefile 里）
+make tools-lint   # 只装其中一组：tools-lint / tools-vuln / tools-release
 make pty          # 在真 PTY 里验证交互式界面（勾选/取消/默认拒绝）
 make e2e          # 真实下载安装验证（**需要网络**，产物只落在 .cache/e2e）
 make docker-matrix # 在 ubuntu/debian 裸镜像里跑"新机器"流程（需 Docker；容器内 --network none）

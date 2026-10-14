@@ -54,6 +54,54 @@ jobs:
           go build -o bin/bs.exe ./cmd/bs
           ./scripts/smoke.ps1 -Bin "$PWD/bin/bs.exe"
 
+  # 下面三道门禁刻意与 make check 分开：它们慢（lint）、要联网（vuln）或需要额外二进制，
+  # 不该拦住"本地 check 通过就能提交"；但推送/PR 时必须由 CI 兜住。
+  # 版本都只有 Makefile 一处定义（GOLANGCI_VERSION / GOVULNCHECK_VERSION），
+  # 目标是"本地怎么跑，CI 就怎么跑"。
+  lint:
+    name: lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install pinned golangci-lint
+        run: make tools-lint
+      - name: golangci-lint
+        run: make lint
+
+  vuln:
+    name: vuln (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install pinned govulncheck
+        run: make tools-vuln
+      # govulncheck 只报"真会被调用到"的漏洞路径，因此它挂了就是依赖真的需要动
+      #（升级依赖，或按提示升 Go 版本修 stdlib 漏洞）。
+      - name: govulncheck
+        run: make vuln
+
+  coverage:
+    name: coverage (floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # 阈值在 Makefile 的 COVER_MIN（只许往上抬）。掉下来要么补测试，
+      # 要么在提交信息里说清为什么这次例外。
+      - name: coverage gate
+        run: make coverage-check
+
   cross-build:
     name: cross build
     runs-on: ubuntu-latest

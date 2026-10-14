@@ -40,9 +40,11 @@ help:
 	@echo "  make smoke      无副作用端到端冒烟测试（沙箱目录）"
 	@echo "  make pty        在真 PTY 里验证交互式界面（空格勾选/取消/退出码）"
 	@echo "  make check      fmt + vet + test + race"
-	@echo "  make lint       golangci-lint 静态检查（需先 make tools；不进 check）"
-	@echo "  make vuln       依赖已知漏洞扫描（需网络访问 vuln.go.dev）"
-	@echo "  make tools      安装 lint/vuln 需要的二进制（需网络）"
+	@echo "  make lint       golangci-lint 静态检查（需先 make tools-lint；不进 check，但进 CI）"
+	@echo "  make vuln       依赖已知漏洞扫描（需网络访问 vuln.go.dev；进 CI）"
+	@echo "  make coverage-check  单元测试+覆盖率门禁（阈值 COVER_MIN，进 CI）"
+	@echo "  make tools      安装 lint/vuln/release 需要的全部二进制（需网络）"
+	@echo "  make tools-lint / tools-vuln / tools-release  只装其中一组"
 	@echo "  make cross      交叉编译到 6 个平台组合（dist/）"
 	@echo "  make docker-matrix  在 ubuntu/debian 裸镜像里跑新机器流程（需 Docker，不进 check）"
 	@echo "  make docker-integration  在干净镜像里跑真网络集成测试（含代理全链路；需 Docker+外网）"
@@ -98,15 +100,43 @@ vuln:
 	$(GOENV) PATH="$(GOTOOLBIN):$$PATH" govulncheck ./...
 
 .PHONY: tools
-tools:
+tools: tools-lint tools-vuln tools-release
+
+# 拆成三组：CI 的 lint / vuln / release 门禁各装自己那份，
+# 免得"只想跑 lint"却要顺带编译 goreleaser（几分钟）。
+.PHONY: tools-lint
+tools-lint:
 	$(GOENV) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+	@echo "已安装 golangci-lint $(GOLANGCI_VERSION)"
+
+.PHONY: tools-vuln
+tools-vuln:
 	$(GOENV) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@echo "已安装 govulncheck $(GOVULNCHECK_VERSION)"
+
+.PHONY: tools-release
+tools-release:
 	$(GOENV) $(GO) install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)
-	@echo "已安装到 $$($(GOENV) $(GO) env GOPATH)/bin"
+	@echo "已安装 goreleaser $(GORELEASER_VERSION)"
 
 .PHONY: cover
 cover:
-	$(GOENV) $(GO) test -coverprofile=coverage.out ./... && $(GO) tool cover -func=coverage.out | tail -20
+	$(GOENV) $(GO) test -coverprofile=.cache/coverage.out ./... && $(GO) tool cover -func=.cache/coverage.out | tail -20
+
+# 覆盖率门禁：CI 用它拦住"悄悄掉下去"，本地也可以随时跑。
+#
+# 阈值刻意留了几点余量（写这份时的总覆盖率见 docs/design.md §4 的说明）：只许往上抬，
+# 掉下来要么补齐测试，要么在提交信息里说清为什么这次例外。
+COVER_MIN ?= 70
+.PHONY: coverage-check
+coverage-check:
+	@mkdir -p "$(ROOT)/.cache"
+	$(GOENV) $(GO) test -coverprofile="$(ROOT)/.cache/coverage.out" -covermode=atomic ./...
+	@total="$$($(GOENV) $(GO) tool cover -func="$(ROOT)/.cache/coverage.out" | sed -n 's/^total:[[:space:]]*.*[[:space:]]\([0-9.]*\)%$$/\1/p')"; \
+	case "$$total" in ''|*[!0-9.]*) echo "覆盖率解析失败"; exit 1 ;; esac; \
+	echo "总覆盖率：$${total}%（门禁 $(COVER_MIN)%）"; \
+	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { exit (t + 0 >= m + 0) ? 0 : 1 }' || { \
+		echo "总覆盖率低于门禁 $(COVER_MIN)%：补测试，或说明为什么这次例外"; exit 1; }
 
 .PHONY: smoke
 smoke: build

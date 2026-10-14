@@ -44,9 +44,11 @@ make race          # -race
 make smoke         # 无副作用端到端冒烟（关键回归保护）
 make pty           # 真 PTY 里验证交互式界面（勾选/取消/破坏性操作默认拒绝）
 make check         # gofmt + vet + test + race（提交前必跑）
-make lint          # golangci-lint 静态检查（需先 `make tools`；刻意不进 check）
-make vuln          # 依赖已知漏洞扫描（需联网查 vuln.go.dev；改动依赖后跑）
-make tools         # 安装 lint/vuln 需要的二进制，以及 goreleaser（版本固定在 Makefile 里）
+make lint          # golangci-lint 静态检查（需先 `make tools-lint`；刻意不进 check，但进 CI）
+make vuln          # 依赖已知漏洞扫描（需联网查 vuln.go.dev；改动依赖后跑，也进 CI）
+make coverage-check # 单元测试 + 覆盖率门禁（COVER_MIN，默认 70；进 CI）
+make tools         # 装齐 lint/vuln/release 的二进制（版本固定在 Makefile 里）
+make tools-lint / tools-vuln / tools-release   # 只装其中一组（CI 各门禁只装自己那份）
 make cross         # 交叉编译 6 个平台组合
 make e2e           # 真实下载安装（需要网络，不进 check）
 make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian 镜像跑（需 Docker + 拉镜像）
@@ -58,8 +60,11 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 `make snapshot` / `make release-check` 需要 goreleaser（版本固定在 `make tools` 里），
 它得 `go install` 编译一大棵依赖，装一次即可。
 
-`make lint` / `make vuln` **不进 `make check`**：前者比 `go vet` 慢一个量级且要额外的二进制，
-后者要联网——都不该拦住"本地能跑 check 就能提交"。发版前、改依赖后各跑一次。
+`make lint` / `make vuln` / `make coverage-check` **不进本地 `make check`**：前两个慢/要联网，
+覆盖率门禁则希望"改代码时不必先补测试"——都不该拦住"本地能跑 check 就能提交"。
+但它们在 **CI 里都是门禁**（`.github/workflows/ci.yaml` 的 `lint` / `vuln` / `coverage` 三个 job）：
+推送或 PR 时必须绿；工具版本只有 Makefile 一处定义，CI 用 `make tools-lint` / `make tools-vuln`
+装同一版。覆盖率阈值 `COVER_MIN` 只许往上抬（写这份时总覆盖率 75.4%）。
 
 受限环境（`$HOME` 只读）下，先 `. scripts/devenv.sh`：它把 `GOPATH`/`GOCACHE` 指到仓库内 `.cache/`。
 
