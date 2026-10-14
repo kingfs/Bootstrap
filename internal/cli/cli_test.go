@@ -28,6 +28,8 @@ func sandbox(t *testing.T) (*Runtime, *bytes.Buffer, *bytes.Buffer, string) {
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "NO_PROXY"} {
 		t.Setenv(k, "")
 	}
+	// 包装函数才会置位它；测试默认在"没装包装函数"的路径上，需要时各自 t.Setenv 打开。
+	t.Setenv("BS_SHELL_HOOK", "")
 	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -242,6 +244,68 @@ func TestProxyCommandsAndShellRendering(t *testing.T) {
 	}
 }
 
+// TestProxyUseOutputStaysOneLineAndHookAware：装了包装函数（BS_SHELL_HOOK=1）时
+// 只留一行结果，不再重复教用户"当前 shell 怎么生效"；没装时才在 stderr 给一条提示。
+func TestProxyUseOutputStaysOneLineAndHookAware(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+
+	t.Setenv("BS_SHELL_HOOK", "1")
+	code, out, errOut := run(t, rt, "proxy", "use", "corp")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut)
+	}
+	if strings.TrimSpace(out) != "代理 profile 已激活：corp" {
+		t.Errorf("装了包装函数时 stdout 只应有一行，得到 %q", out)
+	}
+	if errOut != "" {
+		t.Errorf("装了包装函数时不该有提示，stderr = %q", errOut)
+	}
+
+	// 没装包装函数：机制上当前 shell 不会变，必须给一句"怎么做"的提示；放 stderr，
+	// 这样 `out=$(bs proxy use x)` 拿到的仍是干净的一行。
+	t.Setenv("BS_SHELL_HOOK", "")
+	code, out, errOut = run(t, rt, "proxy", "off")
+	if code != ExitOK || strings.TrimSpace(out) != "代理已停用" {
+		t.Fatalf("off: exit = %d, out = %q", code, out)
+	}
+	if !strings.Contains(errOut, "bs shell install") {
+		t.Errorf("没装包装函数时应当在 stderr 提示 bs shell install，得到 %q", errOut)
+	}
+}
+
+// TestProxyStatusHidesShellEnvUnlessVerbose：shell 里已有的代理变量默认不打印
+// （通常与上面的 profile 完全重复，看着像噪音），-v 才展开；--json 不受影响。
+func TestProxyStatusHidesShellEnvUnlessVerbose(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	writeConfig(t, root, proxyConfig)
+	t.Setenv("HTTP_PROXY", "http://shell-env.example:1")
+
+	code, out, _ := run(t, rt, "proxy", "status")
+	if code != ExitOK {
+		t.Fatalf("status exit = %d", code)
+	}
+	if strings.Contains(out, "当前 shell 已存在的代理变量") {
+		t.Errorf("默认不该罗列 shell 里已有的代理变量：\n%s", out)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "status", "-v")
+	if code != ExitOK {
+		t.Fatalf("status -v exit = %d", code)
+	}
+	if !strings.Contains(out, "当前 shell 已存在的代理变量") || !strings.Contains(out, "http://shell-env.example:1") {
+		t.Errorf("-v 应当列出 shell 里已有的代理变量：\n%s", out)
+	}
+
+	code, out, _ = run(t, rt, "proxy", "status", "--json")
+	if code != ExitOK {
+		t.Fatalf("status --json exit = %d", code)
+	}
+	if !strings.Contains(out, "shell_env") {
+		t.Errorf("--json 应当保留 shell_env：\n%s", out)
+	}
+}
+
 func TestProxyUseUnknownProfileIsPreconditionError(t *testing.T) {
 	rt, _, _, root := sandbox(t)
 	writeConfig(t, root, proxyConfig)
@@ -265,6 +329,10 @@ func TestProxyAddDefaultsToDrySnippet(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "http_proxy: http://127.0.0.1:7890") {
 		t.Errorf("expected a YAML snippet:\n%s", out.String())
+	}
+	// 说明文字只在 --help 里；运行时第一行是 YAML 注释，整段可直接粘进配置文件。
+	if !strings.HasPrefix(out.String(), "#") {
+		t.Errorf("默认输出应当是可直接粘贴的 YAML：\n%s", out.String())
 	}
 	after, err := os.Stat(filepath.Join(root, "config", "config.yaml"))
 	if err != nil {

@@ -158,6 +158,10 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   开关默认关（与 `auto_proxy` 同理：不擅自改变每个新 shell 的行为）。
 - `bs proxy off` 是**显式关闭**（state 里记 `mode=off`）：此后不再回退到环境变量，
   直到用户重新 `bs proxy use <name>`。
+- 包装函数只对**被拦截的那一次调用**置位 `BS_SHELL_HOOK=1`（常量 `shellsnip.HookEnv`，
+  片段里硬编码了同名变量）：`bs proxy on/off/use` 因此知道"马上会有人 eval 输出"，
+  正常路径只打一行结果，没置位时才在 stderr 提示 `bs shell install`。
+  改 `internal/cli/proxy.go` 的输出或三个 `10-proxy.*` 片段时，两边要一起改。
 - 凭据只能在日志/输出里以 `***` 出现（`proxyenv.MaskProxyURL`、`cmdx.Runner.Redact`）。
 
 ## 8. 安全红线

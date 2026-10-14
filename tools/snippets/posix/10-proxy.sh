@@ -3,11 +3,14 @@
 # 子进程无法修改父 shell 的环境变量（POSIX 硬约束），所以这里用一个与二进制同名的
 # shell 函数做中转——nvm / direnv / zoxide / conda 都是同样的做法。
 # 只有 proxy on|off|use 会被拦截，其余子命令原样直通真二进制。
+#
+# BS_SHELL_HOOK=1 只作用于被拦截的这一次调用：真二进制据此知道"紧接着就会有人 eval
+# 它的输出"，于是不再打印"当前 shell 没生效"的提示（见 internal/shellsnip.HookEnv）。
 
 bs() {
   case "${1:-}.${2:-}" in
     proxy.on|proxy.off|proxy.use)
-      command bs "$@" || return $?
+      BS_SHELL_HOOK=1 command bs "$@" || return $?
       eval "$(command bs proxy env --apply --shell "${BS_SHELL:-bash}")"
       ;;
     *)

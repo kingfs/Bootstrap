@@ -17,6 +17,16 @@ import (
 	"strings"
 )
 
+// HookEnv 是包装函数在调用真二进制时置位的环境变量名。
+//
+// 它只对"被拦截的那一次调用"生效（posix 用 `VAR=1 command bs …`，fish 用 `set -lx`，
+// pwsh 调用前后还原），因此不会漏进用户的其它命令。`bs proxy on/off/use` 用它判断
+// "紧接着会不会有人 eval 我们输出的环境变量"：会的话当前 shell 马上生效，不必再提示；
+// 不会才告诉用户怎么让当前 shell 生效（internal/cli/proxy.go）。
+//
+// 名字同时硬编码在 tools/snippets/*/10-proxy.* 里，改名要一起改。
+const HookEnv = "BS_SHELL_HOOK"
+
 // Family 是 shell 家族，决定使用哪一套片段与语法。
 type Family string
 

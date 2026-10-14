@@ -1046,7 +1046,9 @@ argv 与退出码，实时）与文件日志 `<state>/logs/<时间>-<工具>.log
 bs() {                                   # 与二进制同名的包装函数（由 bs shell init 输出）
   case "${1:-}.${2:-}" in
     proxy.on|proxy.off|proxy.use)
-      command bs "$@" || return $?        # ① 真二进制：持久化活跃 profile
+      # BS_SHELL_HOOK 只作用于这一次调用：真二进制据此知道"马上就会有人 eval 它
+      # 的输出"，于是不再打印"当前 shell 没生效"的提示（见 internal/shellsnip.HookEnv）。
+      BS_SHELL_HOOK=1 command bs "$@" || return $?   # ① 真二进制：持久化活跃 profile
       eval "$(command bs proxy env --apply)"   # ② 注入当前 shell（off 时输出 unset）
       ;;
     *) command bs "$@" ;;                 # 其余命令直通
@@ -1058,6 +1060,9 @@ startproxy() { command bs proxy on "$@" ; eval "$(command bs proxy env --apply)"
 stopproxy()  { command bs proxy off      ; eval "$(command bs proxy env --apply)"; }
 ```
 
+fish 用函数作用域的 `set -lx BS_SHELL_HOOK 1`，pwsh 在调用前后还原 `$env:BS_SHELL_HOOK`——
+三个家族都保证这个标记不会漏进用户的其它命令。
+
 于是：**改代理站点 = 改配置里的 profile**，不用再动系统里那份脚本；换电脑 = `bs shell install` 一条命令。
 
 ### 8.2 命令
@@ -1068,7 +1073,7 @@ bs proxy show [profile]            # 展示将导出的具体变量
 bs proxy on [profile]              # 设为活跃 profile（写 state）；有包装函数时当前 shell 立即生效
 bs proxy off                       # 清空活跃 profile（当前 shell 立即 unset）
 bs proxy use <profile>             # on 的别名（必须给 profile，脚本里更好读）
-bs proxy status                    # 活跃 profile + 当前 shell 实际 env + 来源 + 可达性
+bs proxy status                    # 活跃 profile + 来源；shell 里已有的代理变量只在 -v 时列出
 bs proxy env [profile]             # 输出可 eval 的环境变量族（按 --shell 渲染）
       --shell bash|zsh|fish|pwsh|cmd|dotenv|json
       --apply                      # 按"当前活跃 profile"渲染；无活跃 profile 时输出 unset/清除语句
@@ -1079,6 +1084,12 @@ bs proxy add <name> --http ... --no-proxy ...   # 快速新增 profile（写用�
 ```
 
 `bs proxy on` **只改 state 文件**（持久化默认 profile），绝不修改 rc；rc 的生效由 §8.1 的包装函数或 `eval` 完成。
+
+**输出纪律**：`on`/`use`/`off` 在正常路径上只打一行结果（`代理 profile 已激活：corp`），
+"当前 shell 为什么不生效、怎么生效"这类说明放在 `--help` 的 Long 里；只有检测到
+`BS_SHELL_HOOK` 没置位（说明没人会 eval 输出）时，才在 **stderr** 补一句 `bs shell install`。
+`bs proxy add` 默认输出以 YAML 注释开头，整段可直接粘进配置文件；`bs proxy status` 里的
+"shell 里已有的代理变量"只有 `-v` 才展开（`--json` 始终保留）。
 
 ### 8.3 按平台渲染
 

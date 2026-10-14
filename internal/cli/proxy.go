@@ -2,12 +2,30 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kingfs/Bootstrap/internal/app"
+	"github.com/kingfs/Bootstrap/internal/shellsnip"
 	"github.com/kingfs/Bootstrap/pkg/proxyenv"
 )
+
+// inShellHook 报告这次调用是不是来自 rc 里的包装函数（tools/snippets/*/10-proxy.*）。
+//
+// 是的话，紧接着就会 `eval "$(bs proxy env --apply)"`，代理在当前 shell 真的生效，
+// 不需要再教用户怎么做；不是的话必须提示一句，否则用户会以为改了 state 就等于生效。
+func inShellHook() bool { return os.Getenv(shellsnip.HookEnv) == "1" }
+
+// hintShellHook 只在"没人会 eval 我们的输出"时，提醒一次怎么让当前 shell 生效。
+//
+// 走 stderr：stdout 保持单行可被脚本消费（`bs proxy use x` 的结果仍然一眼能读）。
+func (rt *Runtime) hintShellHook() {
+	if rt.Opts.DryRun || inShellHook() {
+		return
+	}
+	fmt.Fprintln(rt.errOut(), "提示：当前 shell 未装包装函数，代理只在 bs 自己的网络操作里生效；`bs shell install` 一次即可自动注入。")
+}
 
 func (rt *Runtime) proxyCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -17,11 +35,16 @@ func (rt *Runtime) proxyCmd() *cobra.Command {
 
 激活后：
   * bs 自己发起的网络操作（如 bs repo get）自动带上代理；
-  * 安装了受管块的 shell 里，HTTP(S)_PROXY 会立即生效（bs shell install）。
+  * 装了 shell 受管块的终端里，HTTP(S)_PROXY 立即生效。
 
-子进程无法修改父 shell 的环境变量，因此"让当前 shell 生效"依赖
-` + "`bs shell install`" + ` 安装的同名 shell 包装函数。不装 rc 也有替代方案：
-` + "`bs proxy exec -- <cmd>`" + ` 与 ` + "`bs shell`" + ` 子 shell。`,
+子进程改不了父 shell 的环境变量，所以"当前 shell 立即生效"靠 ` + "`bs shell install`" + `
+写进 rc 的同名包装函数：它拦截 on/off/use，执行完真二进制后再
+` + "`eval \"$(bs proxy env --apply)\"`" + `。同一份片段里还有 ` + "`startproxy [profile]`" + `
+与 ` + "`stopproxy`" + ` 两个函数，习惯手敲函数的人可以直接用。
+
+不想碰 rc 的替代方案：` + "`bs proxy exec -- <cmd>`" + `（只给一条命令加代理）、
+` + "`bs shell [--profile P]`" + `（开一个已装配环境的子 shell）、
+` + "`eval \"$(bs proxy env --apply)\"`" + `（手动注入当前 shell）。`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
@@ -109,7 +132,10 @@ func (rt *Runtime) proxyStatusCmd() *cobra.Command {
 					fmt.Fprintf(rt.out(), "no_proxy:%s\n", summary.NoProxy)
 				}
 			}
-			if len(summary.ShellEnv) > 0 {
+			// "shell 里已经存在的变量"只在排障时有价值（例如怀疑某个 rc 脚本抢先设了
+			// 代理、覆盖了 bs 的输出），而它通常和上面的 profile 完全重复，默认就是噪音；
+			// 要看加 -v（--json 里始终保留，脚本消费不受影响）。
+			if len(summary.ShellEnv) > 0 && rt.Opts.Verbose > 0 {
 				fmt.Fprintln(rt.out(), "\n当前 shell 已存在的代理变量:")
 				w := rt.newTable()
 				for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
@@ -130,7 +156,18 @@ func (rt *Runtime) proxyUseCmd(use string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use + " [profile]",
 		Short: "激活一个代理 profile（省略名字则用 proxy.default_profile）",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `激活一个代理 profile（省略名字时用配置里的 proxy.default_profile）。
+
+它只写 bs 自己的 state，**不碰你的 rc**。让"当前 shell 立即生效"的是 rc 里由
+` + "`bs shell install`" + ` 装下的同名包装函数：它拦截 on/off/use，执行完真二进制后再
+` + "`eval \"$(bs proxy env --apply)\"`" + `。
+
+没装包装函数时（可用 ` + "`bs shell status`" + ` 查），本次只改 bs 的状态，当前 shell 不变；
+可以改用：
+  eval "$(bs proxy env --apply)"   # 手动注入当前 shell
+  bs proxy exec -- <命令...>        # 只给这一条命令加代理
+  bs shell [--profile P]           # 开一个已装配环境的子 shell`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := ""
 			if len(args) == 1 {
@@ -144,9 +181,7 @@ func (rt *Runtime) proxyUseCmd(use string) *cobra.Command {
 				return rt.emit(map[string]any{"active": res.Name, "source": res.Source})
 			}
 			fmt.Fprintf(rt.out(), "代理 profile 已激活：%s\n", res.Name)
-			if !rt.Opts.DryRun {
-				fmt.Fprintln(rt.errOut(), "提示：已装受管块时当前 shell 立即生效；否则用 `bs proxy env --apply` 手动 eval。")
-			}
+			rt.hintShellHook()
 			return nil
 		},
 	}
@@ -156,7 +191,12 @@ func (rt *Runtime) proxyOffCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "off",
 		Short: "停用当前代理 profile",
-		Args:  cobra.NoArgs,
+		Long: `停用当前代理 profile：清空 state 里的活跃项，此后不再回退到环境变量，
+直到重新 ` + "`bs proxy use <name>`" + `。
+
+它只写 bs 自己的 state，**不碰你的 rc**；让当前 shell 立即 unset 的仍是 rc 里的
+同名包装函数（见 ` + "`bs proxy use --help`" + `）。`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := rt.app().ProxyOff(cmd.Context()); err != nil {
 				return failf("%v", err)
@@ -165,6 +205,7 @@ func (rt *Runtime) proxyOffCmd() *cobra.Command {
 				return rt.emit(map[string]any{"active": ""})
 			}
 			fmt.Fprintln(rt.out(), "代理已停用")
+			rt.hintShellHook()
 			return nil
 		},
 	}
@@ -301,9 +342,10 @@ func (rt *Runtime) proxyAddCmd() *cobra.Command {
 				return nil
 			}
 			if res.File != "" {
-				fmt.Fprintf(rt.out(), "将写入 %s（dry-run 未执行）；片段如下：\n\n", res.File)
+				fmt.Fprintf(rt.out(), "[dry-run] 将写入 %s，片段如下：\n", res.File)
 			} else {
-				fmt.Fprintf(rt.out(), "把下面的片段加到 %s 的 proxy.profiles 下：\n\n", rt.app().Paths.ConfigFile())
+				// 用 YAML 注释而不是说明段落：用户可以直接把整段复制进配置文件。
+				fmt.Fprintf(rt.out(), "# 粘到 %s 的 proxy.profiles 下（或加 --write 让 bs 写入）\n", rt.app().Paths.ConfigFile())
 			}
 			fmt.Fprint(rt.out(), res.Snippet)
 			return nil

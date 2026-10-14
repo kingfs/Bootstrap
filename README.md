@@ -134,13 +134,13 @@ https://github.com/kingfs/Bootstrap/tree/dev/internal/foo
 | 命令 | 说明 |
 | --- | --- |
 | `bs proxy list` | 列出所有 profile（`*` 标记当前生效项） |
-| `bs proxy status` | 当前代理来源、地址（凭据脱敏）、shell 里已有的代理变量 |
-| `bs proxy use <name>` / `bs proxy on <name>` | 激活 profile，并让当前 shell 立即生效（需装受管块） |
+| `bs proxy status` | 当前代理来源、地址（凭据脱敏）；`-v` 才附上 shell 里已有的代理变量 |
+| `bs proxy use <name>` / `bs proxy on <name>` | 激活 profile，并让当前 shell 立即生效（装了 shell 受管块时自动完成） |
 | `bs proxy off` | 关闭代理（状态被记住，不再回退到环境变量） |
 | `bs proxy env [--apply] [--profile P] [--shell S]` | 输出 shell 语句供 `eval` |
 | `bs proxy exec -- <cmd>` | 在带代理的子进程里执行命令（不需要 rc 集成） |
 | `bs proxy test [url]` | 分别测试直连与走代理的连通性 |
-| `bs proxy add <name> --http ... [--write]` | 新增 profile（默认只打印 YAML 片段） |
+| `bs proxy add <name> --http ... [--write]` | 新增 profile（默认只打印可直接粘贴的 YAML 片段） |
 
 代理 profile 定义在配置文件里，`bs` 自己发起的网络操作会自动带上它：
 
@@ -161,7 +161,13 @@ proxy:
 ```
 
 > 子进程无法修改父 shell 的环境变量，所以"当前 shell 立即生效"依赖 `bs shell install`
-> 装下的同名包装函数。不想动 rc 就用 `bs proxy exec -- <cmd>` 或 `bs shell`。
+> 装下的同名包装函数：它拦截 `bs proxy on|off|use`，执行完真二进制后再
+> `eval "$(bs proxy env --apply)"`。没装受管块时 `bs proxy` 只改状态，并在 stderr 提醒一句。
+> 不想动 rc 就用 `bs proxy exec -- <cmd>`、`bs shell [--profile P]`，或手动
+> `eval "$(bs proxy env --apply)"`。
+>
+> 同一份片段里还有 `startproxy [profile]` 与 `stopproxy` 两个函数——习惯在 rc 里手敲函数的人
+> 可以直接用，它们等价于 `bs proxy on/off` 加注入。
 
 ### shell（`bs shell`）
 
