@@ -226,6 +226,11 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
 - 交互式界面的按键行为**无法在单测里验证**（需要真 PTY，见 §4 第 0 条），
   改动 `internal/ui` 后除了 `make check` 还要跑 `make pty`。
+- 探测（`tool list`/`plan`/`init`）会执行清单里的 `verify.command`，而**工具自己的命令可能有副作用**：
+  Go 1.26 上 `go version` 会往 `~/.config/go/telemetry` 写计数文件，`GOTELEMETRY=off` /
+  `GOTELEMETRYDIR` 实测都拦不住（`go env GOTELEMETRY` 仍报 `local`）。所以：`bs doctor` 干脆
+  不跑 `go version`（§8.4），`tool plan` 的提示语说的是"不安装或升级"，而不是"绝对不执行任何东西"；
+  探测结果有 TTL 缓存，正常使用不会反复触发。
 - 探测缓存（`<cache>/probe.json`）：计划阶段的探测会写缓存，因此 `Engine.Apply` 每执行完一步
   都要刷新缓存（install/upgrade 用刚探测到的结果 Merge，uninstall 无条件按 id 失效，
   见 design §6.5）。改"装完/卸完立刻可见"这类行为时，注意 `Step.Detection` 里可能还是

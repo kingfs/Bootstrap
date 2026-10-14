@@ -223,8 +223,10 @@ plan 是**离线**预览：不联网解析"最新版本"，因此 URL 里显示 
 			if err != nil {
 				return toolErr(err)
 			}
-			// plan 本身就不执行任何东西，所以这里永远提示（而不是只在 --dry-run 时）。
-			return rt.renderPlan(plan, "（只展示计划，不会执行任何操作）")
+			// plan 不安装/不升级任何东西，所以这里永远提示（而不是只在 --dry-run 时）。
+			// 措辞刻意不提"不执行任何操作"：探测会跑清单里的 verify.command（如 `go version`），
+			// 而工具自身的命令可能有副作用（Go 会往 ~/.config/go/telemetry 写计数文件）。
+			return rt.renderPlan(plan, "（只展示计划，不会安装或升级任何工具）")
 		},
 	}
 	f.bind(cmd)
@@ -499,7 +501,13 @@ func (rt *Runtime) runToolOp(cmd *cobra.Command, f toolSelectFlags, args []strin
 		return preconditionErrf("%s失败：%s", install.OpLabel(op), strings.Join(failed, "；"))
 	}
 	if !planHasWork(plan) {
-		if len(skipped) > 0 && !rt.Opts.JSON {
+		if rt.Opts.JSON {
+			// 脚本靠 stdout 解析结果：这里什么都不输出会让 `bs tool install x --json`
+			// 看起来像"命令没跑"，而退出码又是 0。给一份和 --dry-run 一致的计划文档。
+			rt.renderSkipped(skipped)
+			return rt.emit(plan)
+		}
+		if len(skipped) > 0 {
 			fmt.Fprintln(rt.out(), "没有可升级的工具（下面这些没有可用的升级方式）。")
 		}
 		rt.renderSkipped(skipped)

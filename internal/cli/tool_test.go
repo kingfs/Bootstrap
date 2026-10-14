@@ -578,6 +578,47 @@ func TestToolInstallSkipsInstalled(t *testing.T) {
 	}
 }
 
+// TestToolInstallNothingToDoStillEmitsJSON：全部"已就绪"时 stdout 以前是空的——
+// 脚本看到 `{}` 大小的输出会以为命令没跑（退出码却是 0）。现在必须给出一份完整文档，
+// 与 `--dry-run --json` 的形状一致（计划 + 每步状态）。
+func TestToolInstallNothingToDoStillEmitsJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假命令用 POSIX shell 脚本实现")
+	}
+	rt, _, _, root := sandboxWithManifest(t)
+	writeFakeCmd(t, filepath.Join(root, "bin"), "go", fakeCmd{stdout: "go version go1.24.1 linux/amd64"})
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "golang", "--json", "--yes")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	var plan struct {
+		Steps []struct {
+			ToolID string `json:"tool_id"`
+			Status string `json:"status"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &plan); err != nil {
+		t.Fatalf("stdout 必须是一份可解析的 JSON 文档：%v\nstdout=%q", err, stdout)
+	}
+	if len(plan.Steps) == 0 {
+		t.Fatal("至少要有一行说明这个工具的状态")
+	}
+	// golang 会带上依赖 g（版本管理器），两行都应当是 skip。
+	found := false
+	for _, st := range plan.Steps {
+		if st.Status != "skip" {
+			t.Errorf("已安装的工具状态应当是 skip：%+v", st)
+		}
+		if st.ToolID == "golang" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("计划里应当有 golang：%+v", plan.Steps)
+	}
+}
+
 // TestToolInstallFailsWhenNoMethodIsUsable：方法链全部不可用时，
 // 计划里那一行是 failed，命令必须以非 0 结束（否则脚本会误判为装好了）。
 func TestToolInstallFailsWhenNoMethodIsUsable(t *testing.T) {
