@@ -113,3 +113,7 @@ Assert-Equal '未知命令退出码为 2' 2 $LASTEXITCODE
 Write-Host "`n结果：$script:Pass 通过，$script:Fail 失败" -ForegroundColor Cyan
 if ($script:Fail -gt 0) { exit 1 }
 Write-Host "沙箱目录：$Work（可安全删除）"
+# 必须显式 exit 0：脚本里最后一条**外部命令**的退出码会留在 $LASTEXITCODE
+# （这里正是"未知命令退出码为 2"那条断言），而 CI 的 pwsh 包装会在脚本结束后
+# 拿它当进程退出码——于是 14 项全过、步骤仍然判失败。
+exit 0
