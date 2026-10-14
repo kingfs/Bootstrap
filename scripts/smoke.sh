@@ -391,6 +391,43 @@ assert_contains "java profile 含 gradle（直链整包）" "gradle" "$out"
 out="$("$BIN" tool plan kubectl --dry-run 2>&1)"
 assert_contains "直链干跑显示占位版本（不联网解析）" "<latest>" "$out"
 
+step "装完立刻可见（探测缓存要跟着更新）"
+# 计划阶段的探测会把"还没装"写进 probe.json；如果装完不更新缓存，
+# 接下来一整个 TTL 周期里 `tool list --installed` 都会显示 missing。
+# 这里用一个假的 uv 来"安装"：uv tool install <pkg> 会在 ~/.local/bin 放一个二进制。
+CACHEHOME="$WORK/cachehome"
+mkdir -p "$CACHEHOME/bin" "$CACHEHOME/.local/bin"
+cat > "$CACHEHOME/bin/uv" <<'FAKEUV'
+#!/bin/sh
+# 只认 `uv tool install <pkg>`：把 <pkg> 变成一个会打印版本的假二进制。
+mkdir -p "$HOME/.local/bin"
+case "$1 $2" in
+  "tool install")
+    cat > "$HOME/.local/bin/$3" <<'INNER'
+#!/bin/sh
+echo "ruff 99.0.0"
+INNER
+    chmod +x "$HOME/.local/bin/$3"
+    ;;
+  "tool uninstall")
+    rm -f "$HOME/.local/bin/$3"
+    ;;
+esac
+exit 0
+FAKEUV
+chmod +x "$CACHEHOME/bin/uv"
+upenv() { env HOME="$CACHEHOME" PATH="$CACHEHOME/bin:/usr/bin:/bin" NO_COLOR=1 "$@"; }
+out="$(upenv "$BIN" tool install ruff --via uvpm --yes 2>&1)"
+assert_contains "用假的 uv 装 ruff" "完成" "$out"
+out="$(upenv "$BIN" tool list --installed)"
+assert_contains "装完不带 --refresh 也能看到 ruff" "ruff" "$out"
+assert_contains "装完看到的是刚装上的版本" "99.0.0" "$out"
+# 反向：卸载后不能还留着"已安装"（release 装不了卸载，所以走 manager 的 uninstall 路径）
+out="$(upenv "$BIN" tool uninstall ruff --via uvpm --yes 2>&1)"
+assert_contains "卸载走的是 uvpm" "uvpm" "$out"
+out="$(upenv "$BIN" tool list --installed)"
+assert_not_contains "卸完立刻就不再显示 ruff" "ruff" "$out"
+
 step "工具升级（--all）"
 # 造一台"装了旧版 go"的机器：verify.min_version 要求 1.22，假二进制报 1.20.1。
 # PATH 收敛成"假 bin + /usr/bin:/bin"，让候选集合稳定；探测全是本地命令，不发网络。

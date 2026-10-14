@@ -94,7 +94,7 @@ type Tool struct {
 
 	// Disabled 为 true 表示整条禁用（用户覆盖时最常用的手段）。
 	Disabled bool `yaml:"disabled"`
-	// ManagerOptional 允许 runtime 条目没有 `via: manager` 路径（默认不允许，见 §6.5）。
+	// ManagerOptional 允许 runtime 条目没有 `via: manager` 路径（默认不允许，见 §6.6）。
 	ManagerOptional bool `yaml:"manager_optional"`
 
 	// ── 追加语法：只在用户覆盖文件里有意义 ──

@@ -1064,3 +1064,88 @@ tools:
 		t.Errorf("dry-run must not write logs: %q", rep.Steps[0].LogPath)
 	}
 }
+
+// TestRefreshProbeCacheAfterApply：装完/卸完要把结论写回探测缓存。
+//
+// 这是"装完却看不见"的回归保护：计划阶段探测到 missing 会写进 probe.json，
+// 若装完不更新，`bs tool list --installed` 会在整个 TTL 周期里继续显示没装。
+func TestRefreshProbeCacheAfterApply(t *testing.T) {
+	now := time.Now()
+	cache := &detect.Cache{
+		Path: filepath.Join(t.TempDir(), "probe.json"), TTL: time.Hour,
+		Now: func() time.Time { return now },
+	}
+	if err := cache.Merge(map[string]detect.Result{
+		"mytool": {ToolID: "mytool", Status: detect.StatusMissing, CheckedAt: now},
+		"gone":   {ToolID: "gone", Status: detect.StatusInstalled, Version: "1.0.0", CheckedAt: now},
+	}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	env := newFakeEnv(t)
+	env.has("go")
+	fd := newFakeDetector(map[string]detect.Status{"mytool": detect.StatusMissing})
+	det := &detect.Detector{
+		Executor: fd, LookPath: fd, HomeDir: t.TempDir(),
+		Timeout: time.Second, Concurrency: 2, Cache: cache,
+	}
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: mytool
+    stack: base
+    kind: cli
+    verify: {command: mytool, version_args: [--version], version_regex: 'mytool (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: example.com/mytool@latest}
+`)
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	ctx := context.Background()
+	plan, err := eng.PlanTools(ctx, []string{"mytool"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	if plan.Steps[0].Status != StepInstall {
+		t.Fatalf("plan = %+v", plan.Steps[0])
+	}
+
+	// 模拟"装上了"：探测结果变成 installed（真实流程里这是刚跑完的安装命令的结果）。
+	fd.status["mytool"] = detect.StatusInstalled
+	fd.version["mytool"] = "mytool 1.2.3"
+	report, err := eng.Apply(ctx, plan, OpInstall)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if report.Steps[0].Status != StepDone {
+		t.Fatalf("step = %+v", report.Steps[0])
+	}
+
+	got, err := cache.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	r, ok := got["mytool"]
+	if !ok {
+		t.Fatal("装完之后缓存里必须有 mytool：否则 tool list --installed 仍显示没装")
+	}
+	if r.Status != detect.StatusInstalled || r.Version != "1.2.3" {
+		t.Errorf("缓存 = %+v，期望 installed 1.2.3", r)
+	}
+
+	// 卸载：即使 Step 里带着"计划阶段探测到已安装"的结果，也必须按 id 失效，
+	// 否则会把"已安装"重新写回缓存（卸载后列表还显示装着）。
+	installed := detect.Result{ToolID: "gone", Status: detect.StatusInstalled, Version: "1.0.0", CheckedAt: now}
+	eng.refreshProbeCache(Step{ToolID: "gone", Detection: &installed}, OpUninstall)
+	got, err = cache.Load()
+	if err != nil {
+		t.Fatalf("Load#2: %v", err)
+	}
+	if _, ok := got["gone"]; ok {
+		t.Error("卸载后该工具的缓存项应当消失")
+	}
+}

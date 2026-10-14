@@ -198,6 +198,10 @@ make docker-matrix # 裸机行为矩阵：静态二进制丢进 ubuntu/debian �
   不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
 - 交互式界面的按键行为**无法在单测里验证**（需要真 PTY，见 §4 第 0 条），
   改动 `internal/ui` 后除了 `make check` 还要跑 `make pty`。
+- 探测缓存（`<cache>/probe.json`）：计划阶段的探测会写缓存，因此 `Engine.Apply` 每执行完一步
+  都要刷新缓存（install/upgrade 用刚探测到的结果 Merge，uninstall 无条件按 id 失效，
+  见 design §6.5）。改"装完/卸完立刻可见"这类行为时，注意 `Step.Detection` 里可能还是
+  **计划阶段**的结果，别直接 Merge。
 - 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（`make e2e`，需要网络，不进 `make smoke`）；
   它的离线替身是 `internal/install/artifacts_e2e_test.go`（httptest 冒充 GitHub +
   真 httpx + 真解压），改 release 路径时优先扩充这条测试。

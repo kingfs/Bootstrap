@@ -393,6 +393,7 @@ func (e *Engine) Apply(ctx context.Context, plan Plan, op Op) (Report, error) {
 				out.Error = stepErr.Error()
 			}
 		}
+		e.refreshProbeCache(out, op)
 		report.Steps = append(report.Steps, out)
 	}
 	report.Elapsed = time.Since(start)
@@ -461,6 +462,26 @@ func (e *Engine) applyStep(ctx context.Context, s Step, op Op) (Step, error) {
 	}
 	out.Status = StepDone
 	return out, nil
+}
+
+// refreshProbeCache 把"刚装完/刚卸完"的结论写回探测缓存。
+//
+// 为什么必须写回：计划阶段那次探测会把"还没装"（missing）缓存进 probe.json，
+// 装完若不更新，接下来整整一个 TTL 周期里 `bs tool list --installed` 都还显示没装
+// ——用户刚装完就看到"没装上"，是最容易让人怀疑工具本身的那类 bug。
+//
+// 卸载必须**无条件按 id 失效**，不能看 Step.Detection：那里面是**计划阶段**的探测结果
+// （"卸载前它是装着的"），拿它去 Merge 会把"已安装"重新写回缓存，
+// 于是卸载后列表还显示装着（这个坑最初就是这么踩进去的）。
+func (e *Engine) refreshProbeCache(s Step, op Op) {
+	if e.detector == nil || e.detector.Cache == nil {
+		return
+	}
+	if op != OpUninstall && s.Detection != nil {
+		_ = e.detector.Cache.Merge(map[string]detect.Result{s.ToolID: *s.Detection})
+		return
+	}
+	_ = e.detector.Cache.InvalidateTools(s.ToolID)
 }
 
 // tryFallbacks 依次尝试链里其余候选。

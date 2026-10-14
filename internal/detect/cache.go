@@ -101,6 +101,41 @@ func (c *Cache) Merge(fresh map[string]Result) error {
 	return nil
 }
 
+// InvalidateTools 只丢弃指定工具的缓存项（装/卸之后用它，不必把整份缓存删掉）。
+//
+// 过期项不会被写回：Load 本身就会过滤掉它们，顺带做了一次清理。
+func (c *Cache) InvalidateTools(ids ...string) error {
+	if c == nil || c.Path == "" || len(ids) == 0 {
+		return nil
+	}
+	existing, err := c.Load()
+	if err != nil || existing == nil {
+		// 读不出来（或本来就没有）时退回整体删除，结果一样是"下次重新探测"。
+		return c.Invalidate()
+	}
+	changed := false
+	for _, id := range ids {
+		if _, ok := existing[id]; ok {
+			delete(existing, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := fsx.EnsureDir(dirOf(c.Path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cacheFile{Version: 1, Results: existing}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode probe cache: %w", err)
+	}
+	if _, err := fsx.WriteFileIfChanged(c.Path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write probe cache: %w", err)
+	}
+	return nil
+}
+
 // Invalidate 删除缓存文件（`--refresh` 之外的显式失效入口）。
 func (c *Cache) Invalidate() error {
 	if c == nil || c.Path == "" {

@@ -510,3 +510,58 @@ func TestProbeFileProbe(t *testing.T) {
 		t.Errorf("detail = %s", res.Detail)
 	}
 }
+
+// TestCacheInvalidateTools：只丢指定工具的缓存项，别把整份缓存删了。
+//
+// 这是"装完立刻可见"的关键：装/升级后若不更新缓存，
+// `bs tool list --installed` 会在整个 TTL 周期里继续显示 missing。
+func TestCacheInvalidateTools(t *testing.T) {
+	now := time.Now()
+	c := &Cache{Path: filepath.Join(t.TempDir(), "probe.json"), TTL: time.Hour,
+		Now: func() time.Time { return now }}
+	seed := map[string]Result{
+		"go": {ToolID: "go", Status: StatusInstalled, Version: "1.24.1", CheckedAt: now},
+		"rg": {ToolID: "rg", Status: StatusInstalled, Version: "14.1.1", CheckedAt: now},
+		"jq": {ToolID: "jq", Status: StatusMissing, CheckedAt: now},
+	}
+	if err := c.Merge(seed); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if err := c.InvalidateTools("jq"); err != nil {
+		t.Fatalf("InvalidateTools: %v", err)
+	}
+	got, err := c.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := got["jq"]; ok {
+		t.Error("jq 应当被丢掉")
+	}
+	if len(got) != 2 || got["go"].Version != "1.24.1" || got["rg"].Version != "14.1.1" {
+		t.Errorf("其他条目不该被动：%v", got)
+	}
+	// 不在缓存里的 id 不该改动文件（保持"内容不变就不写盘"的既有性质）。
+	before, err := os.Stat(c.Path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := c.InvalidateTools("nope"); err != nil {
+		t.Fatalf("InvalidateTools(unknown): %v", err)
+	}
+	after, err := os.Stat(c.Path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("没有命中任何 id 时不该写文件")
+	}
+	// 空 id / nil 缓存都不该 panic。
+	var nilCache *Cache
+	if err := nilCache.InvalidateTools("go"); err != nil {
+		t.Errorf("nil cache: %v", err)
+	}
+	if err := c.InvalidateTools(); err != nil {
+		t.Errorf("no ids: %v", err)
+	}
+}

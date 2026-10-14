@@ -657,7 +657,17 @@ gradle 的 `versions/current`）、或 `params.repo` 走 GitHub `releases/latest
    现有模板过滤器表达不了"从 tag 里去掉前缀"；先用 brew/发行版包，等真需要时再加
    一个 `trimprefix` 过滤器 + "同目录校验和文件"支持。
 
-### 6.5 校验（`bs tool manifest validate`，CI 中必跑）
+### 6.5 探测缓存与"装完立刻可见"
+
+探测结果缓存在 `<cache>/probe.json`（TTL 见 `detect.CacheTTL`），`tool list` 默认读缓存。
+由此带来一个必须显式处理的坑：**计划阶段的探测会把"还没装"缓存下来**，
+若应用阶段不更新缓存，接下来一整个 TTL 周期里 `bs tool list --installed` 都会显示没装。
+所以 `Engine.Apply` 每执行完一条 install/upgrade 步骤就把刚探测到的结果 Merge 回缓存；
+**卸载则无条件按 id 失效**——卸载步骤里带的 `Detection` 是计划阶段（卸载前）的结果，
+拿它 Merge 会把"已安装"重新写回缓存，卸载后列表照样显示装着。
+`--dry-run` 不碰缓存（一条都不写）。
+
+### 6.6 校验（`bs tool manifest validate`，CI 中必跑）
 
 校验的目的是**一次把错找全**（`manifest.Problems` 聚合，逐条列出），而不是让作者改一个跑一次。
 `--os linux|darwin|windows` 可以按指定系统交叉校验（`bs tool manifest validate --os windows`）。
