@@ -165,6 +165,13 @@ pty: build
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已跳过工具安装" \
 		--keys ENTER ENTER DOWN DOWN DOWN ENTER -- init --dry-run
+	@# 终端变大后列表必须跟着变长：huh 自己会按新尺寸重排，但我们算出来的 Height 是
+	@# 表单启动前的常量，只能靠 WindowSizeMsg 重算（见 internal/ui/huh.go 的 listField）。
+	@# podman 排在第 30 位：24 行终端只看得见 18 个，窗口拉到 50 行后才露出来。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet --cols 100 --rows 24 \
+		--resize 100x50 --resize-after 5.5 \
+		--expect-code 0 --expect-text "已取消" --expect-text "podman" \
+		--keys ENTER ENTER DOWN DOWN ENTER WAIT3 CTRLC -- init --dry-run
 	@# 破坏性操作的确认框：只按回车必须走"默认拒绝"，绝不能悄悄开装
 	@# （duf 只是"多半没装"的普通 CLI，用来触发确认框；按 n/回车都不会真的安装）
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \

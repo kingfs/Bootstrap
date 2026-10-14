@@ -1385,7 +1385,7 @@ Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
 |---|---|---|
 | 非交互（管道/`CI`/`--json`/`--non-interactive`） | `ui.NonInteractive` | 提问即返回 `ErrNotInteractive` → 退出码 5，绝不阻塞 |
 | 真终端 + `--plain-ui`，或不是真终端 | `ui.Text` | 纯文本问答（编号/名字、`a` 全选、`q` 取消），零依赖 |
-| 真终端 | `ui.huhPrompter` | 全屏交互式界面（AltScreen）：空格勾选、`/` 过滤、←/→ 切换、回车提交 |
+| 真终端 | `ui.huhPrompter` | 全屏交互式界面（AltScreen）：空格勾选、`/` 过滤、←/→ 切换、回车提交；列表高度按终端算，窗口变大时跟着变长（见 §13"列表高度/跟着终端重排"） |
 
 **`bs init` 向导要问什么**（2026-10 修订，ADR-0015）：只问三件事，且都带默认值——
 ①仓库根目录（默认＝当前生效值，回车沿用，可改，写回 `repo.root`）；
@@ -1413,11 +1413,20 @@ OSC 11（查背景色）与 DSR（查光标位置），然后从 stdin 读回应
 **替终端回答查询**、再按时间表送按键，并断言退出码与关键输出（例：勾选后干跑落地、
 `Ctrl-C` 取消退出码 0、确认框回车＝拒绝、四个选项一次全看得见）。
 尺寸这一步不能省：0×0 的终端里 huh 会把整段表单渲染成空、只剩帮助行。
+`--resize COLSxROWS`（配合 `--resize-after`）可以在运行中改窗口尺寸并送 SIGWINCH，
+用来断言"界面跟着终端重排"。
 
 **列表高度**（ADR-0015 的后续修正）：huh 的 `Height(n)` 是**整段字段**的高度，
 `viewport = n − 标题行数 − 说明行数`。所以 `internal/ui` 只在列表放不下时才设 Height，
-且把标题/说明的折行数补回去（`fieldHeight`/`chromeRows`）；放得下就交给 huh 按内容撑开——
-写死"选项个数"会少显示一行（4 个选项只看得见 3 个，第 4 个必须滚动）。
+算式是 `终端高 − 标题/说明折行 − 4`（`chromeRows` 按显示宽度算，CJK 用 `pkg/textwidth`）；
+放得下就交给 huh 按内容撑开——写死"选项个数"会少显示一行（4 个选项只看得见 3 个）。
+
+**跟着终端重排**：huh 自己会按 `WindowSizeMsg` 重排宽度与分组高度，但
+`Select/MultiSelect.Height()` 是**表单启动之前**按当时终端算死的常量，窗口变大后列表不会变长
+（"把终端拉满还是只看到原来那么多行"）。`huhPrompter.form()` 因此挂了 `tea.WithFilter`，
+在消息进 `Form.Update` 之前用 `WindowSizeMsg` 的新尺寸重算列表高度（`listField.resize`），
+过滤器原样返回消息，huh 的语义不变。`scripts/pty-check.py --resize COLSxROWS`
+（配合 `--resize-after`）就是这条的回归测试：24 行终端里看不见的条目，拉到 50 行后必须出现。
 
 **日志**：`log/slog` 结构化日志，默认 stderr，级别取 `log.level`（`-v` debug、`-vv` trace）。
 外部命令的完整 argv 与退出码在 debug 级可见；`*_PROXY` 值一律脱敏（保留 host:port，

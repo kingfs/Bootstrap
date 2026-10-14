@@ -138,46 +138,82 @@ func TestHuhPrompterSelectWithoutOptions(t *testing.T) {
 	}
 }
 
-// TestHuhPrompterListRowsFallsBack：拿不到终端尺寸（输出不是 *os.File）时用保守值，
-// 绝不能算出 0 让勾选框什么都不显示。
-func TestHuhPrompterListRowsFallsBack(t *testing.T) {
+// TestHuhPrompterTermSizeFallsBack：拿不到终端尺寸（输出不是 *os.File）时返回 0，
+// 调用方据此用保守值——绝不能算出 0 行让勾选框什么都不显示。
+func TestHuhPrompterTermSizeFallsBack(t *testing.T) {
 	p := &huhPrompter{in: strings.NewReader(""), out: &bytes.Buffer{}}
-	if got := p.listRows(14); got != 14 {
-		t.Errorf("listRows 应当回落到调用方给的值，得到 %d", got)
+	if w, h := p.termSize(); w != 0 || h != 0 {
+		t.Errorf("拿不到终端尺寸时应当返回 0,0，得到 %d,%d", w, h)
 	}
-	if got := p.termWidth(); got != 80 {
-		t.Errorf("拿不到终端宽度时按 80 算，得到 %d", got)
+	if got := listHeight("标题", "说明", 0, 0, 14, 77); got != 16 {
+		t.Errorf("没有终端尺寸时用保守值 14 + 标题说明 2 行 = 16，得到 %d", got)
 	}
 }
 
-// TestHuhPrompterFieldHeight：huh 的 Height 是**整段字段**的高度（含标题与说明），
+// TestListHeight：huh 的 Height 是**整段字段**的高度（含标题与说明），
 // 直接传选项个数会少显示一行——用户实测"4 个选项只看得见 3 个"。
-// 所以列表放得下时干脆不设 Height，放不下才把标题/说明的行数补回去。
-func TestHuhPrompterFieldHeight(t *testing.T) {
-	p := &huhPrompter{in: strings.NewReader(""), out: &bytes.Buffer{}}
+// 另外列表要按**当前**终端高度算：窗口越大给的行越多（用户在窗口里拉大终端后
+// 仍只看到原来那么多行，就是这条没做到）。
+func TestListHeight(t *testing.T) {
+	const title = "本机 linux/arm64，适用工具 77 个（已装 0，缺失 77）。想怎么装？"
 
-	if got := p.fieldHeight("标题", "", 14, 4); got != 0 {
-		t.Errorf("选项全能放下时应当不设 Height（交给 huh 精确撑开），得到 %d", got)
+	if got := listHeight("标题", "", 100, 40, 14, 4); got != 0 {
+		t.Errorf("选项全能放下时不设 Height（交给 huh 精确撑开），得到 %d", got)
 	}
-	if got := p.fieldHeight("标题", "说明", 14, 0); got != 0 {
-		t.Errorf("没有选项时也应当不设 Height，得到 %d", got)
-	}
-
-	title := "本机 linux/arm64，适用工具 77 个（已装 0，缺失 77）。想怎么装？"
-	got := p.fieldHeight(title, "", 14, 77)
-	if got <= 14 {
-		t.Errorf("长列表要把标题占的行补回去，得到 %d（至少 15）", got)
+	if got := listHeight("标题", "", 100, 40, 14, 0); got != 0 {
+		t.Errorf("没有选项时也不设 Height，得到 %d", got)
 	}
 
-	if n := p.chromeRows("一行标题", "一行说明"); n != 2 {
+	// 放不下：高度 = 终端高 − 标题/说明折行 − 4，再加回标题/说明本身。
+	// 40 行终端、标题 1 行 → 列表 35 行 + 标题 1 行 = 36。
+	if got := listHeight(title, "", 100, 40, 14, 77); got != 36 {
+		t.Errorf("40 行终端里长列表应当是 36（35 行列表 + 1 行标题），得到 %d", got)
+	}
+	// 终端越大给得越多：这正是"拉大窗口能多看点"。
+	small := listHeight(title, "", 100, 24, 14, 77)
+	large := listHeight(title, "", 100, 60, 14, 77)
+	if small <= 14 || large <= small {
+		t.Errorf("终端变高时列表应当变长：24 行 → %d，60 行 → %d", small, large)
+	}
+	// 再矮的终端也得给列表留 3 行，不能撑爆屏幕。
+	if got := listHeight(title, "", 100, 6, 14, 77); got < 3 {
+		t.Errorf("极矮终端至少要留 3 行列表，得到 %d", got)
+	}
+
+	if n := chromeRows("一行标题", "一行说明", 100); n != 2 {
 		t.Errorf("一行标题 + 一行说明 = 2 行，得到 %d", n)
 	}
-	if n := p.chromeRows("", ""); n != 0 {
+	if n := chromeRows("", "", 100); n != 0 {
 		t.Errorf("没有标题/说明时应当是 0 行，得到 %d", n)
 	}
-	// 超长标题要按宽度折行计数，不能永远算 1 行。
+	// 超长标题要按宽度折行计数，不能永远算 1 行；窄终端折得更多。
 	long := strings.Repeat("很长的标题", 40)
-	if n := p.chromeRows(long, ""); n < 2 {
+	if n := chromeRows(long, "", 100); n < 2 {
 		t.Errorf("超长标题应当折成多行，得到 %d", n)
+	}
+	if wide, narrow := chromeRows(long, "", 100), chromeRows(long, "", 40); narrow <= wide {
+		t.Errorf("同样长的标题在窄终端里应当折更多行：100 列 %d，40 列 %d", wide, narrow)
+	}
+}
+
+// TestListFieldResize：终端尺寸变化时列表高度跟着变（nil 安全）。
+func TestListFieldResize(t *testing.T) {
+	var nilList *listField
+	nilList.resize(100, 40) // 普通字段表单会传 nil，不能 panic
+
+	got := 0
+	l := &listField{
+		title: "标题", fallback: 14, total: 77,
+		set: func(height int) { got = height },
+	}
+	l.resize(100, 24)
+	short := got
+	l.resize(100, 60)
+	if got <= short {
+		t.Errorf("窗口变高后列表高度应当变大：24 行 → %d，60 行 → %d", short, got)
+	}
+	l.resize(0, 0) // 拿不到尺寸 → 保守值 14 行 + 1 行标题
+	if got != 15 {
+		t.Errorf("拿不到尺寸时用保守值 14 + 1 行标题 = 15，得到 %d", got)
 	}
 }

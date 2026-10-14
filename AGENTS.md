@@ -235,12 +235,20 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 - **huh 的 `Height(n)` 是整段字段的高度**，不是"列表能看到几行"：
   `viewport = n − 标题行数 − 说明行数`（见 huh 的 `updateViewportHeight`）。
   给 4 个选项写 `Height(4)`，第 4 个就被挤出可视区、要滚动才够得着（用户实测反馈）。
-  `internal/ui` 的 `fieldHeight` 因此分两种：列表放得下就**不设 Height**（huh 按内容精确撑开，
-  一行不多一行不少），放不下才把标题/说明的折行数补回去（`chromeRows`：按显示宽度算，
-  CJK 用 `pkg/textwidth`，宁可多算一行也别吃掉一行选项）。改这块必须跑 `make pty`。
+  `internal/ui` 的 `listHeight` 因此分两种：列表放得下就**不设 Height**（huh 按内容精确撑开，
+  一行不多一行不少），放不下才 `终端高 − 标题/说明折行 − 4`（`chromeRows` 按显示宽度算，
+  CJK 用 `pkg/textwidth`；留 4 行给 huh 多画的那行空行、帮助行和一点余量）。
+- **列表高度必须跟着终端窗口走**：huh 自己会按 `WindowSizeMsg` 重排宽度与分组高度
+  （它从不清 `f.width`/`f.height`，`Form.Update` 里那两个 `if == 0` 分支其实每次都进），
+  但 `Select/MultiSelect.Height()` 是我们在**表单启动之前**按当时终端算死的常量——
+  于是用户把窗口拉大后依然只看到原来那么多行。所以 `huhPrompter.form()` 挂了
+  `tea.WithFilter`，在消息进 `Form.Update` 之前用新尺寸重算（`listField.resize`）；
+  过滤器的返回值不变，huh 的语义一点没动。改这块必须跑 `make pty`，
+  里面有一条 `--resize` 回归断言（24 行终端看不见、拉到 50 行才露出来的那一条）。
 - `scripts/pty-check.py` 会先把伪终端设成 `--cols × --rows`（默认 100×30）再 exec：
   0×0 的终端里 huh 会把整段表单渲染成空、只剩帮助行，于是"选项看不看得见"这类回归
-  根本测不出来（改窗口尺寸的坑就是这么发现的）。断言渲染内容时别忘了这一点。
+  根本测不出来（改窗口尺寸的坑就是这么发现的）。它还支持 `--resize COLSxROWS`
+  （配合 `--resize-after`）在运行中改窗口尺寸并送 SIGWINCH，用来验证"跟着终端重排"。
 - 容器里常常没有 `$SHELL`（`docker run -it ubuntu bash` 就是）：`hostinfo.detectShell`
   依次退回 shell 自身环境变量、`/etc/passwd` 的登录 shell、父进程名（`/proc`）；
   **都拿不到就返回空串**，调用方必须当成"没有 shell 可集成"处理（`bs init` 会跳过并提示），

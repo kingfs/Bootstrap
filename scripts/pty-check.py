@@ -30,6 +30,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import sys
 import termios
@@ -79,6 +80,18 @@ def main() -> int:
     ap.add_argument("--cols", type=int, default=100, help="伪终端宽度（默认 100）")
     ap.add_argument("--rows", type=int, default=30, help="伪终端高度（默认 30）")
     ap.add_argument(
+        "--resize",
+        default=None,
+        metavar="COLSxROWS",
+        help="中途改变窗口尺寸（例 100x50），用来验证界面会跟着终端重排",
+    )
+    ap.add_argument(
+        "--resize-after",
+        type=float,
+        default=3.0,
+        help="启动多少秒后改窗口尺寸（默认 3.0，需与 --keys 的时间表错开）",
+    )
+    ap.add_argument(
         "--path",
         default=None,
         help="覆盖子进程 PATH（用 /nonexistent 可让所有工具探测为缺失，便于可重复地触发确认框）",
@@ -111,6 +124,14 @@ def main() -> int:
     if args.path is not None:
         env["PATH"] = args.path
 
+    if args.resize is not None:
+        try:
+            cols, rows = (int(x) for x in args.resize.lower().split("x"))
+        except ValueError:
+            print(f"--resize 要写成 COLSxROWS（例 100x50），收到 {args.resize!r}", file=sys.stderr)
+            return 2
+        args.resize = (cols, rows)
+
     binary = os.path.abspath(args.bin)
     if not os.access(binary, os.X_OK):
         print(f"找不到可执行的 {binary}（先 make build）", file=sys.stderr)
@@ -138,6 +159,7 @@ def main() -> int:
 
     chunks: list[bytes] = []
     code = None
+    resized = False
     timed_out = False
     deadline = start + args.timeout
     while time.time() < deadline and code is None:
@@ -157,6 +179,11 @@ def main() -> int:
                 os.write(fd, b"\x1b[1;1R")
         while schedule and time.time() >= schedule[0][0]:
             os.write(fd, schedule.pop(0)[1])
+        if args.resize is not None and not resized and time.time() - start >= args.resize_after:
+            cols, rows = args.resize
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+            os.kill(pid, signal.SIGWINCH)
+            resized = True
         done, status = os.waitpid(pid, os.WNOHANG)
         if done:
             code = os.waitstatus_to_exitcode(status)
@@ -196,7 +223,8 @@ def main() -> int:
 
     if problems or not args.quiet:
         print(f"== bs {' '.join(cmd)}")
-        print(f"== 按键: {' '.join(args.keys) or '(无)'}   退出码: {code}")
+        resize = f"   改窗口: {args.resize[0]}x{args.resize[1]}" if args.resize else ""
+        print(f"== 按键: {' '.join(args.keys) or '(无)'}   退出码: {code}{resize}")
         print("== 输出（去转义，最后 40 行）:")
         print("\n".join(lines[-40:]))
     for p in problems:
