@@ -3,19 +3,23 @@ package fsx
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
 
 func TestExpandPath(t *testing.T) {
+	// ExpandPath 是**宿主**语义：它展开的是运行时的真实家目录，拼出来的分隔符
+	// 也由宿主决定（Windows 上是 `\`）。所以期望值必须用 filepath.Join 构造，
+	// 而不是写死 `/home/kingfs/...`——后者在 Windows 上必然对不上。
 	home := "/home/kingfs"
 	tests := map[string]string{
 		"~":             home,
-		"~/src":         "/home/kingfs/src",
-		"~/.config/bs":  "/home/kingfs/.config/bs",
+		"~/src":         filepath.Join(home, "src"),
+		"~/.config/bs":  filepath.Join(home, ".config", "bs"),
 		"/data/src":     "/data/src",
 		"":              "",
-		"~/a/$BS_UNSET": "/home/kingfs/a", // filepath.Join 会清理尾部斜杠
+		"~/a/$BS_UNSET": filepath.Join(home, "a"), // filepath.Join 会清理尾部斜杠
 	}
 	for in, want := range tests {
 		if got := ExpandPath(in, home); got != want {
@@ -51,12 +55,16 @@ func TestAtomicWriteFileAndExists(t *testing.T) {
 	if string(data) != "hello" {
 		t.Errorf("content = %q, want hello", data)
 	}
-	st, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if st.Mode().Perm() != 0o640 {
-		t.Errorf("perm = %v, want 0640", st.Mode().Perm())
+	// Windows 没有 POSIX 权限位：os.FileMode 的 Perm() 读出来恒是 0666/0777 之类，
+	// 与请求的 0640 无关，因此这条断言在 Windows 上不成立（其它断言照旧）。
+	if runtime.GOOS != "windows" {
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if st.Mode().Perm() != 0o640 {
+			t.Errorf("perm = %v, want 0640", st.Mode().Perm())
+		}
 	}
 	// 不应留下临时文件。
 	entries, _ := os.ReadDir(filepath.Dir(path))
@@ -147,5 +155,31 @@ func TestEnsureDir(t *testing.T) {
 	}
 	if err := EnsureDir(dir, 0o755); err != nil {
 		t.Errorf("EnsureDir should be idempotent: %v", err)
+	}
+}
+
+// TestJoinFor：拼接结果只取决于目标平台，与宿主无关。
+// 这是"在 linux 上算 windows 路径"这类跨平台逻辑的前提。
+func TestJoinFor(t *testing.T) {
+	cases := []struct {
+		goos string
+		elem []string
+		want string
+	}{
+		{"linux", []string{"/home/kingfs", ".config", "bootstrap"}, "/home/kingfs/.config/bootstrap"},
+		{"darwin", []string{"/home/kingfs", ".zshrc"}, "/home/kingfs/.zshrc"},
+		{"windows", []string{`C:\Users\k`, "AppData", "Roaming", "bootstrap"}, `C:\Users\k\AppData\Roaming\bootstrap`},
+		{"windows", []string{`C:\Users\k\AppData\Roaming`, "bootstrap"}, `C:\Users\k\AppData\Roaming\bootstrap`},
+		{"linux", []string{"/x//cfg/", "bootstrap"}, "/x/cfg/bootstrap"},
+		{"linux", []string{"/home/kingfs", "", ".bashrc"}, "/home/kingfs/.bashrc"},
+		{"linux", []string{"/a/b", "..", "c"}, "/a/c"},
+		{"windows", []string{"/home/kingfs", "Documents"}, `\home\kingfs\Documents`},
+		{"linux", []string{"/x/cfg"}, "/x/cfg"},
+		{"linux", nil, ""},
+	}
+	for _, tc := range cases {
+		if got := JoinFor(tc.goos, tc.elem...); got != tc.want {
+			t.Errorf("JoinFor(%q, %v) = %q, want %q", tc.goos, tc.elem, got, tc.want)
+		}
 	}
 }

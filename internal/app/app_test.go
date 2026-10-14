@@ -117,7 +117,8 @@ func TestRenderPathPerShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPath: %v", err)
 	}
-	if !strings.HasPrefix(got, "export PATH=") || !strings.Contains(got, ".local/bin") {
+	// 目录形状按宿主平台算：Windows 上是 `…\.local\bin`，断言不能写死 `.local/bin`。
+	if !strings.HasPrefix(got, "export PATH=") || !strings.Contains(got, filepath.Join(".local", "bin")) {
 		t.Errorf("bash PATH = %q", got)
 	}
 

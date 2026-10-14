@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -126,6 +127,10 @@ func TestInitNonInteractiveNeedsYes(t *testing.T) {
 
 // TestInitYesInstallsProfile：--yes 全自动跑通"计划 → 执行 → 报告"。
 func TestInitYesInstallsProfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, root := sandboxForInit(t)
 	code, stdout, stderr := run(t, rt, "init", "--yes", "--no-shell")
 	if code != ExitOK {
@@ -149,6 +154,10 @@ func TestInitYesInstallsProfile(t *testing.T) {
 // TestInitDryRunTouchesNothing：--dry-run 只说不做——配置文件、状态、缓存之外
 // 不能有任何新增；这里用目录快照严格比对。
 func TestInitDryRunTouchesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, root := sandboxForInit(t)
 	before := snapshotTree(t, root)
 
@@ -170,6 +179,10 @@ func TestInitDryRunTouchesNothing(t *testing.T) {
 // TestInitConfigBootstrap：配置文件缺失时先生成（--yes 表示同意），
 // 然后继续用默认套装。
 func TestInitConfigBootstrap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, root := sandboxForInit(t)
 	if err := os.Remove(filepath.Join(root, "config", "config.yaml")); err != nil {
 		t.Fatalf("remove config: %v", err)
@@ -188,6 +201,10 @@ func TestInitConfigBootstrap(t *testing.T) {
 
 // TestInitInteractiveConfirmThenInstall：交互式下问一句，回答 y 才动手。
 func TestInitInteractiveConfirmThenInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, root := sandboxForInit(t)
 	yes := true
 	rt.interactiveOverride = &yes
@@ -210,6 +227,10 @@ func TestInitInteractiveConfirmThenInstall(t *testing.T) {
 // TestInitInteractiveCancelIsSuccess：交互式下回答 n 是"主动取消"，
 // 退出码 0 且什么都没做（取消不是失败）。
 func TestInitInteractiveCancelIsSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, root := sandboxForInit(t)
 	yes := true
 	rt.interactiveOverride = &yes
@@ -229,6 +250,10 @@ func TestInitInteractiveCancelIsSuccess(t *testing.T) {
 
 // TestInitJSONIsMachineReadable：--json 下不提问、不阻塞，输出结构化结果。
 func TestInitJSONIsMachineReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, _ := sandboxForInit(t)
 	code, stdout, stderr := run(t, rt, "init", "--json", "--yes", "--no-shell")
 	if code != ExitOK {
@@ -313,6 +338,10 @@ func TestInitUnknownProfileIsUsageError(t *testing.T) {
 
 // TestInitMissingOnlyInstallsOnlyMissing：已有机器上"补缺"只处理缺失的。
 func TestInitMissingOnlyInstallsOnlyMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假管理器 g 是 POSIX 脚本：它要用 sh 把新命令写出来并 chmod +x，" +
+			"Windows 上没有 sh 也没有可执行位（真机行为待补，见 AGENTS §10）")
+	}
 	rt, _, _, root := sandboxForInit(t)
 	writeFakeBin(t, filepath.Join(root, "bin"), "bs-init-probe-a", "#!/bin/sh\necho 'bs-init-probe-a 1.24.1'\n")
 

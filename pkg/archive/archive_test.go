@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -71,12 +72,16 @@ func TestExtractTarWithStrip(t *testing.T) {
 	if string(body) != "#!/bin/sh\n" {
 		t.Errorf("content = %q", body)
 	}
-	info, err := os.Stat(bin)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Error("executable bit lost")
+	// Windows 没有 POSIX 权限位：解压出来的文件 Mode().Perm() 读不出 tar 里的 0755，
+	// "可执行"在产品里由 fsx.IsExecutable 表达为"普通文件即可"，这条断言不适用。
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(bin)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Error("executable bit lost")
+		}
 	}
 	if _, ok := FindBinary(files, "go"); !ok {
 		t.Error("FindBinary should find the extracted binary")
@@ -109,6 +114,11 @@ func TestExtractRejectsTraversal(t *testing.T) {
 }
 
 func TestExtractRejectsEvilSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows 创建符号链接需要管理员权限或开发者模式，解压时 os.Symlink 会直接失败，
+		// 于是"拒绝指向外部的符号链接"这条安全断言根本没走到，fixture 无法构造。
+		t.Skip("Windows 创建符号链接需要特权，fixture 无法构造")
+	}
 	data := makeTarGz(t, []tarEntry{{name: "link", typ: tar.TypeSymlink, link: "/etc/passwd", mode: 0o777}})
 	dest := t.TempDir()
 	if _, err := ExtractTar(bytes.NewReader(decompress(t, data)), dest, 0); err == nil {

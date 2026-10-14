@@ -123,7 +123,14 @@ func newFakeExe(t *testing.T, root, body string) string {
 // baseOptions 返回一份指向假 GitHub 的输入；用例只需要覆盖关心的字段。
 func baseOptions(t *testing.T, exe, current string) Options {
 	t.Helper()
-	t.Setenv("HOME", filepath.Dir(exe)) // 让"是否系统包管理器装的"判定确定
+	// 让"是否系统包管理器装的"判定确定：把宿主家目录指到 exe 所在目录。
+	// Windows 上 os.UserHomeDir() 读的是 USERPROFILE（不看 HOME），只设 HOME 的话
+	// 它仍返回 runner 的真实家目录，exe 就落在"家目录之外"被误判成系统装的。
+	home := filepath.Dir(exe)
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 	return Options{
 		Repo:    "kingfs/Bootstrap",
 		GOOS:    "linux",
@@ -324,9 +331,7 @@ func TestApplyReplacesBinaryAndKeepsBackup(t *testing.T) {
 	if string(data) != "new-bs" {
 		t.Errorf("可执行文件内容 = %q, want %q", data, "new-bs")
 	}
-	if info, err := os.Stat(exe); err != nil || info.Mode().Perm()&0o111 == 0 {
-		t.Errorf("替换后的二进制必须仍可执行：%v %v", info, err)
-	}
+	requireExecBit(t, exe)
 	backup, err := os.ReadFile(res.Backup)
 	if err != nil {
 		t.Fatalf("备份不存在：%v", err)
@@ -533,6 +538,27 @@ func TestApplySkipsWhenNoChecksumInPlan(t *testing.T) {
 	assertUnchanged(t, root, exe, "old-bs")
 }
 
+// requireExecBit 断言 path 带 POSIX 可执行位。
+//
+// Windows 没有 POSIX 权限位：os.FileMode 的 0o111 读出来恒为 0，
+// 产品里"可执行"由 fsx.IsExecutable 表达为"普通文件即视为可执行"，
+// 所以这一条断言在 Windows 上不适用。注意这里刻意**不用 t.Skip**：
+// t.Skip 会中止整个用例，把后面"内容未变/备份存在/没有残留备份"等断言一起丢掉；
+// 直接返回才能只跳过这一条，符合"Windows 上保留其它断言"的要求。
+func requireExecBit(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("可执行位丢了：%s（mode=%v）", path, info.Mode().Perm())
+	}
+}
+
 // assertUnchanged 断言目标二进制字节级未变、可执行位还在，且没有留下备份。
 func assertUnchanged(t *testing.T, root, exe, want string) {
 	t.Helper()
@@ -543,9 +569,7 @@ func assertUnchanged(t *testing.T, root, exe, want string) {
 	if string(data) != want {
 		t.Errorf("可执行文件被改动了：%q, want %q", data, want)
 	}
-	if info, err := os.Stat(exe); err != nil || info.Mode().Perm()&0o111 == 0 {
-		t.Errorf("可执行位丢了：%v %v", info, err)
-	}
+	requireExecBit(t, exe)
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)

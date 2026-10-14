@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -116,7 +117,9 @@ func ExtractTar(r io.Reader, dest string, strip int) ([]string, error) {
 			written = append(written, target)
 		case tar.TypeSymlink:
 			// 符号链接只允许指向归档内部，避免解压出指向 /etc 的链接。
-			if filepath.IsAbs(hdr.Linkname) || strings.HasPrefix(filepath.Clean(hdr.Linkname), "..") {
+			// 软链目标在归档里也是 `/` 分隔的字符串，判定同上：不能依赖宿主的 filepath。
+			link := filepath.ToSlash(hdr.Linkname)
+			if path.IsAbs(link) || hasWindowsVolume(link) || strings.HasPrefix(path.Clean(link), "..") {
 				return written, fmt.Errorf("refusing to extract symlink %s → %s", name, hdr.Linkname)
 			}
 			if err := fsx.EnsureDir(filepath.Dir(target), 0o755); err != nil {
@@ -211,20 +214,38 @@ func stripComponents(name string, n int) string {
 }
 
 // safeJoin 把归档内的相对路径拼到 dest 下，并拒绝任何越界。
+//
+// 判断"绝对路径/越界"必须用 path（`/` 分隔）而不是 filepath：
+// 归档条目名按 POSIX 约定写（tar/zip 都如此），而 Windows 的 filepath.IsAbs("/abs/x")
+// 是 **false**、`filepath.Clean("a\\..\\b")` 也不会按 `/` 拆段——
+// 于是同一份恶意归档在 Windows 上会被放行（CI 的 Windows 任务就是这么暴露它的）。
 func safeJoin(dest, name string) (string, error) {
-	if filepath.IsAbs(name) {
+	name = filepath.ToSlash(name)
+	if path.IsAbs(name) || hasWindowsVolume(name) {
 		return "", fmt.Errorf("refusing absolute path in archive: %s", name)
 	}
-	clean := filepath.Clean(name)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	clean := path.Clean(name)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("refusing path traversal in archive: %s", name)
 	}
-	target := filepath.Join(dest, clean)
+	target := filepath.Join(dest, filepath.FromSlash(clean))
 	rel, err := filepath.Rel(dest, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("refusing path outside destination: %s", name)
 	}
 	return target, nil
+}
+
+// hasWindowsVolume 报告路径是不是 Windows 盘符/UNC 形式（`C:/x`、`\\server\share`）。
+//
+// 在 linux 上 filepath.IsAbs 认不出它们，而在 Windows 上它们都是"绝对路径"。
+// 归档解压要跨平台同一套判定，所以这里显式识别。
+func hasWindowsVolume(name string) bool {
+	if len(name) >= 2 && name[1] == ':' &&
+		((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) {
+		return true
+	}
+	return strings.HasPrefix(name, "//")
 }
 
 // FindBinary 在解压结果里找目标可执行文件。

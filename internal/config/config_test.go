@@ -68,10 +68,10 @@ func TestResolvePathsPerOS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ResolvePathsWith: %v", err)
 		}
-		if want := filepath.Join(`C:\Users\k\AppData\Roaming`, "bootstrap"); p.ConfigDir != want {
+		if want := `C:\Users\k\AppData\Roaming\bootstrap`; p.ConfigDir != want {
 			t.Errorf("ConfigDir = %q, want %q", p.ConfigDir, want)
 		}
-		if want := filepath.Join(`C:\Users\k\AppData\Local`, "Bootstrap", "state"); p.StateDir != want {
+		if want := `C:\Users\k\AppData\Local\Bootstrap\state`; p.StateDir != want {
 			t.Errorf("StateDir = %q, want %q", p.StateDir, want)
 		}
 	})

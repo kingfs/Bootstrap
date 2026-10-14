@@ -191,7 +191,10 @@ func TestProxyCommandsAndShellRendering(t *testing.T) {
 		t.Fatalf("proxy list: exit = %d, out = %s", code, out)
 	}
 
-	code, out, _ = run(t, rt, "proxy", "env", "--apply")
+	// 显式 --shell bash：`--apply` 单独用时按"当前 shell"渲染，而"当前 shell"
+	// 在 CI 的 Windows 机器上是 pwsh（`$env:HTTPS_PROXY = …`）。这里要断言的是
+	// bash 的渲染形式，就不该把结果交给宿主环境决定。
+	code, out, _ = run(t, rt, "proxy", "env", "--apply", "--shell", "bash")
 	if code != ExitOK || !strings.Contains(out, "export HTTPS_PROXY='http://127.0.0.1:7890'") {
 		t.Fatalf("proxy env: exit = %d, out = %s", code, out)
 	}
@@ -340,7 +343,8 @@ func TestEnvPathAndShow(t *testing.T) {
 	rt, out, _, root := sandbox(t)
 	writeConfig(t, root, proxyConfig)
 
-	code, _, _ := run(t, rt, "env", "path")
+	// 同上：断言 bash 的渲染形式，就显式给 --shell bash。
+	code, _, _ := run(t, rt, "env", "path", "--shell", "bash")
 	if code != ExitOK {
 		t.Fatalf("env path exit = %d", code)
 	}
@@ -598,7 +602,7 @@ timeouts:
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	writeFakeBin(t, bin, "git", "#!/bin/sh\nsleep 30\n")
+	writeFakeCmd(t, bin, "git", fakeCmd{sleep: 30 * time.Second})
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	writeConfig(t, root, `version: 1
 log: {level: error}
@@ -660,7 +664,7 @@ func TestDoctorFixDryRunPlansOnly(t *testing.T) {
 // TestDoctorFixAppliesAndRechecks：--yes 时真的修，并且复查结果要反映修复后的状态。
 func TestDoctorFixAppliesAndRechecks(t *testing.T) {
 	rt, _, _, root := sandbox(t)
-	rc := filepath.Join(root, "home", ".bashrc")
+	rc := hostRCFile(root)
 	if err := os.MkdirAll(filepath.Dir(rc), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -910,4 +914,16 @@ func TestToolUpgradeAllSelection(t *testing.T) {
 	if !strings.Contains(errOut, "不能与显式工具名同时使用") {
 		t.Errorf("应当说明冲突：%s", errOut)
 	}
+}
+
+// hostRCFile 返回"当前平台会被 bs 写受管块的那个 rc 文件"。
+//
+// 这些用例断言的是"受管块写进了 rc 且块外内容一字不动"，所以 rc 路径必须按宿主平台算：
+// POSIX 上是 ~/.bashrc，Windows 上 shell 会被认成 pwsh、rc 在 ~/Documents/PowerShell/ 下。
+func hostRCFile(root string) string {
+	home := filepath.Join(root, "home")
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
+	}
+	return filepath.Join(home, ".bashrc")
 }

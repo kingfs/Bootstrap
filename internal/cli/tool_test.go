@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kingfs/Bootstrap/internal/install"
 )
@@ -108,12 +110,10 @@ func sandboxWithManifest(t *testing.T) (*Runtime, *bytes.Buffer, *bytes.Buffer, 
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if runtime.GOOS != "windows" {
-		writeFakeBin(t, binDir, "g", "#!/bin/sh\necho g\n")
-		writeFakeBin(t, binDir, "cargo", "#!/bin/sh\necho cargo\n")
-		// 故意低于 min_version 1.22 → 计划里应出现"安装"而不是"跳过"
-		writeFakeBin(t, binDir, "go", "#!/bin/sh\necho 'go version go1.20.0 linux/amd64'\n")
-	}
+	writeFakeCmd(t, binDir, "g", fakeCmd{stdout: "g"})
+	writeFakeCmd(t, binDir, "cargo", fakeCmd{stdout: "cargo"})
+	// 故意低于 min_version 1.22 → 计划里应出现"安装"而不是"跳过"
+	writeFakeCmd(t, binDir, "go", fakeCmd{stdout: "go version go1.20.0 linux/amd64"})
 	t.Setenv("PATH", binDir)
 	return rt, out, errBuf, root
 }
@@ -124,6 +124,54 @@ func writeFakeBin(t *testing.T, dir, name, body string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
 		t.Fatalf("write fake %s: %v", name, err)
 	}
+}
+
+// fakeCmd 描述一个假命令被调用时该做什么。
+//
+// 用"行为规格"而不是脚本正文来表达，是因为同一份意图要在两种平台上都能成立：
+// POSIX 上是 `#!/bin/sh` 脚本，Windows 上没有 sh、也不认无扩展名的可执行文件
+// （LookPath 靠 PATHEXT 找 `.cmd`）。这些用例的 PATH 只放假命令，所以假命令
+// 必须真的能被找到并执行，否则用例测的就不是"产品怎么选方式"，而是"宿主有没有装 g"。
+type fakeCmd struct {
+	// stdout 是固定输出（版本探测用）。
+	stdout string
+	// logEnv 非空时，把收到的参数追加到该环境变量指向的文件（断言"到底执行了没有"）。
+	logEnv string
+	// sleep 非零时先等这么久（超时用例要一个不会自己结束的命令）。
+	sleep time.Duration
+}
+
+// writeFakeCmd 按当前平台写一个假命令。
+func writeFakeCmd(t *testing.T, dir, name string, spec fakeCmd) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		var b strings.Builder
+		b.WriteString("@echo off\r\n")
+		if spec.sleep > 0 {
+			// ping 是 Windows 上最稳的"睡一会儿"（timeout 需要交互式控制台）。
+			fmt.Fprintf(&b, "ping -n %d 127.0.0.1 >nul\r\n", int(spec.sleep.Seconds())+1)
+		}
+		if spec.stdout != "" {
+			b.WriteString("echo " + spec.stdout + "\r\n")
+		}
+		if spec.logEnv != "" {
+			b.WriteString("echo %*>>\"%" + spec.logEnv + "%\"\r\n")
+		}
+		writeFakeBin(t, dir, name+".cmd", b.String())
+		return
+	}
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	if spec.sleep > 0 {
+		fmt.Fprintf(&b, "sleep %d\n", int(spec.sleep.Seconds()))
+	}
+	if spec.stdout != "" {
+		b.WriteString("echo '" + spec.stdout + "'\n")
+	}
+	if spec.logEnv != "" {
+		b.WriteString("echo \"$@\" >> \"$" + spec.logEnv + "\"\n")
+	}
+	writeFakeBin(t, dir, name, b.String())
 }
 
 func TestToolListCommand(t *testing.T) {
@@ -516,7 +564,7 @@ func TestToolInstallSkipsInstalled(t *testing.T) {
 	logPath := filepath.Join(root, "fake-g.log")
 	t.Setenv("FAKE_G_LOG", logPath)
 	// go 报 1.24.1（>= min_version）→ 视为已安装
-	writeFakeBin(t, filepath.Join(root, "bin"), "go", "#!/bin/sh\necho 'go version go1.24.1 linux/amd64'\n")
+	writeFakeCmd(t, filepath.Join(root, "bin"), "go", fakeCmd{stdout: "go version go1.24.1 linux/amd64"})
 
 	code, stdout, stderr := run(t, rt, "tool", "install", "golang", "--yes")
 	if code != 0 {
@@ -580,7 +628,7 @@ func TestToolInstallRequiresConfirmation(t *testing.T) {
 	rt, _, _, root := sandboxWithManifest(t)
 	logPath := filepath.Join(root, "fake-g.log")
 	t.Setenv("FAKE_G_LOG", logPath)
-	writeFakeBin(t, filepath.Join(root, "bin"), "g", "#!/bin/sh\necho \"$@\" >> \"$FAKE_G_LOG\"\n")
+	writeFakeCmd(t, filepath.Join(root, "bin"), "g", fakeCmd{logEnv: "FAKE_G_LOG"})
 
 	code, stdout, stderr := run(t, rt, "tool", "install", "golang")
 	if code != ExitNeedsInteraction {
@@ -625,7 +673,7 @@ func TestToolInstallInteractiveConfirm(t *testing.T) {
 			rt, _, _, root := sandboxWithManifest(t)
 			logPath := filepath.Join(root, "fake-g.log")
 			t.Setenv("FAKE_G_LOG", logPath)
-			writeFakeBin(t, filepath.Join(root, "bin"), "g", "#!/bin/sh\necho \"$@\" >> \"$FAKE_G_LOG\"\n")
+			writeFakeCmd(t, filepath.Join(root, "bin"), "g", fakeCmd{logEnv: "FAKE_G_LOG"})
 
 			yes := true
 			rt.interactiveOverride = &yes

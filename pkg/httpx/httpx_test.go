@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,9 +155,13 @@ func TestDownloadVerifiesChecksum(t *testing.T) {
 	if err != nil || string(data) != string(payload) {
 		t.Fatalf("content = %q, %v", data, err)
 	}
-	info, _ := os.Stat(dest)
-	if info.Mode().Perm() != 0o755 {
-		t.Errorf("mode = %v, want 0755", info.Mode().Perm())
+	// Windows 没有 POSIX 权限位（读出来恒为 0666/0777），这条断言只在 POSIX 上有意义；
+	// 内容/路径/校验和等断言在 Windows 上照旧执行。
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(dest)
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("mode = %v, want 0755", info.Mode().Perm())
+		}
 	}
 	// 大小写不敏感
 	if _, err := c.Download(context.Background(), srv.URL+"/bs", dest, strings.ToUpper(hex.EncodeToString(sum[:])), 0o644); err != nil {

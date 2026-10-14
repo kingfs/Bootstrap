@@ -2,8 +2,9 @@ package shellsnip
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
+
+	"github.com/kingfs/Bootstrap/pkg/fsx"
 )
 
 // 受管块标记。只识别这两个标记之间的内容，块外字节级不动（docs/design.md §16）。
@@ -118,6 +119,10 @@ func DetectRCFile(goos, shell, home string, getenv func(string) string, exists f
 		return ""
 	}
 
+	// 拼接走 fsx.JoinFor(goos, …)：goos 是**目标平台**，未必是宿主。
+	// 用宿主 filepath 会在 Windows 上把 linux 的 rc 算成 `\home\k\.bashrc`。
+	join := func(elem ...string) string { return fsx.JoinFor(goos, elem...) }
+
 	switch family {
 	case FamilyPosix:
 		if normalizeShellName(shell) == "zsh" {
@@ -125,36 +130,35 @@ func DetectRCFile(goos, shell, home string, getenv func(string) string, exists f
 			if zdotdir == "" {
 				zdotdir = home
 			}
-			return filepath.Join(zdotdir, ".zshrc"), nil
+			return join(zdotdir, ".zshrc"), nil
 		}
 		if goos == "darwin" {
 			return pick(
-				filepath.Join(home, ".bash_profile"),
-				filepath.Join(home, ".bashrc"),
-				filepath.Join(home, ".profile"),
+				join(home, ".bash_profile"),
+				join(home, ".bashrc"),
+				join(home, ".profile"),
 			), nil
 		}
 		return pick(
-			filepath.Join(home, ".bashrc"),
-			filepath.Join(home, ".bash_profile"),
-			filepath.Join(home, ".profile"),
+			join(home, ".bashrc"),
+			join(home, ".bash_profile"),
+			join(home, ".profile"),
 		), nil
 	case FamilyFish:
 		base := getenv("XDG_CONFIG_HOME")
 		if base == "" {
-			base = filepath.Join(home, ".config")
+			base = join(home, ".config")
 		}
-		return filepath.Join(base, "fish", "conf.d", "bootstrap.fish"), nil
+		return join(base, "fish", "conf.d", "bootstrap.fish"), nil
 	case FamilyPwsh:
 		if goos == "windows" {
-			docs := filepath.Join(home, "Documents")
-			return filepath.Join(docs, "PowerShell", "Microsoft.PowerShell_profile.ps1"), nil
+			return join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1"), nil
 		}
 		base := getenv("XDG_CONFIG_HOME")
 		if base == "" {
-			base = filepath.Join(home, ".config")
+			base = join(home, ".config")
 		}
-		return filepath.Join(base, "powershell", "Microsoft.PowerShell_profile.ps1"), nil
+		return join(base, "powershell", "Microsoft.PowerShell_profile.ps1"), nil
 	default:
 		return "", fmt.Errorf("unsupported shell %q", shell)
 	}

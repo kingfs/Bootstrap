@@ -7,6 +7,7 @@ package fsx
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +25,33 @@ func HomeDir() string {
 		return h
 	}
 	return ""
+}
+
+// JoinFor 按"目标平台"拼接路径元素。
+//
+// 需要它是因为本仓库会**在 A 平台上计算 B 平台的路径**：config.ResolvePathsWith(goos, …)
+// 与 shellsnip.DetectRCFile(goos, …) 都接受一个可能与宿主不同的 goos（跨平台单测、
+// `bs config path` 的交叉说明）。用宿主的 filepath.Join 会得到宿主的分隔符，于是
+// "linux 的配置目录"在 Windows 上变成 `\home\kingfs\.config`——既不是 linux 的写法，
+// 也让"在任何机器上跑同一套断言"变成不可能。
+//
+// windows 目标用反斜杠，其余目标用斜杠；清理（`.`/`..`）按斜杠语义做完再换分隔符，
+// 因此结果与宿主无关。
+func JoinFor(goos string, elem ...string) string {
+	parts := make([]string, 0, len(elem))
+	for _, e := range elem {
+		if e != "" {
+			parts = append(parts, e)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	clean := path.Clean(strings.Join(parts, "/"))
+	if goos == "windows" {
+		return strings.ReplaceAll(clean, "/", `\`)
+	}
+	return clean
 }
 
 // ExpandPath 展开路径中的 ~、~user 形式与环境变量引用。

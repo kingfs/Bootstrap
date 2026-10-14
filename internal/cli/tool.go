@@ -726,8 +726,14 @@ func (rt *Runtime) confirmDestructive(prompt string) error {
 }
 
 // interactive 报告当前是否可以进行交互式提问。
+//
+// 判定顺序有意分成两组：**用户显式声明**（--json/--non-interactive/--interactive）
+// 排在前面，**环境推断**（测试注入、CI 变量、终端探测）排在后面。
+// 测试注入之所以要压过 CI：`interactiveOverride` 就是用来替代"环境里有没有人"这件事的，
+// 如果它输给 CI 变量，那这套用例在 CI 里必然红——而 CI 正是最需要它们的地方
+// （本地有终端、CI 没有，于是"本地绿、CI 红"）。产品行为不受影响：这个字段只在测试里被设过。
 func (rt *Runtime) interactive() bool {
-	if rt.Opts.JSON || rt.Opts.NonInteractive || os.Getenv("CI") != "" {
+	if rt.Opts.JSON || rt.Opts.NonInteractive {
 		return false
 	}
 	// --interactive 是"我的终端被包装器挡住了，但确实有人"时的显式声明。
@@ -736,6 +742,9 @@ func (rt *Runtime) interactive() bool {
 	}
 	if rt.interactiveOverride != nil {
 		return *rt.interactiveOverride
+	}
+	if os.Getenv("CI") != "" {
+		return false
 	}
 	// 输入输出都得是终端：重定向到文件/管道的场景不能阻塞等待输入。
 	in, ok := rt.Opts.In.(io.Writer)

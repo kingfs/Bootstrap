@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/kingfs/Bootstrap/pkg/fsx"
 )
 
 func realGOOS() string { return runtime.GOOS }
@@ -66,26 +68,31 @@ func ResolvePathsWith(goos string, getenv EnvFunc, home string) (Paths, error) {
 		return Paths{}, errors.New("cannot determine home directory (set HOME or BS_CONFIG_HOME)")
 	}
 
+	// 拼接一律走 fsx.JoinFor(goos, …)：这里的 goos 是**目标平台**，未必是宿主。
+	// 用 filepath.Join 会在 Windows 上把 linux 的配置目录算成 `\home\k\.config`，
+	// 于是"跨平台断言"只在 linux 机器上成立（CI 的 Windows 任务全红就是这么来的）。
+	// 最后再用同一个函数做一次 Clean，保证环境变量给进来的路径也按目标平台整理。
+	join := func(elem ...string) string { return fsx.JoinFor(goos, elem...) }
 	var configDir, stateDir, cacheDir string
 	if goos == "windows" {
-		appData := firstNonEmpty(getenv("AppData"), filepath.Join(home, "AppData", "Roaming"))
-		localAppData := firstNonEmpty(getenv("LocalAppData"), filepath.Join(home, "AppData", "Local"))
-		configDir = firstNonEmpty(getenv("BS_CONFIG_HOME"), getenv("BOOTSTRAP_CONFIG_HOME"), filepath.Join(appData, "bootstrap"))
-		stateDir = firstNonEmpty(getenv("BS_STATE_HOME"), filepath.Join(localAppData, "Bootstrap", "state"))
-		cacheDir = firstNonEmpty(getenv("BS_CACHE_HOME"), filepath.Join(localAppData, "Bootstrap", "cache"))
+		appData := firstNonEmpty(getenv("AppData"), join(home, "AppData", "Roaming"))
+		localAppData := firstNonEmpty(getenv("LocalAppData"), join(home, "AppData", "Local"))
+		configDir = firstNonEmpty(getenv("BS_CONFIG_HOME"), getenv("BOOTSTRAP_CONFIG_HOME"), join(appData, "bootstrap"))
+		stateDir = firstNonEmpty(getenv("BS_STATE_HOME"), join(localAppData, "Bootstrap", "state"))
+		cacheDir = firstNonEmpty(getenv("BS_CACHE_HOME"), join(localAppData, "Bootstrap", "cache"))
 	} else {
-		xdgConfig := firstNonEmpty(getenv("XDG_CONFIG_HOME"), filepath.Join(home, ".config"))
-		xdgState := firstNonEmpty(getenv("XDG_STATE_HOME"), filepath.Join(home, ".local", "state"))
-		xdgCache := firstNonEmpty(getenv("XDG_CACHE_HOME"), filepath.Join(home, ".cache"))
-		configDir = firstNonEmpty(getenv("BS_CONFIG_HOME"), getenv("BOOTSTRAP_CONFIG_HOME"), filepath.Join(xdgConfig, "bootstrap"))
-		stateDir = firstNonEmpty(getenv("BS_STATE_HOME"), filepath.Join(xdgState, "bootstrap"))
-		cacheDir = firstNonEmpty(getenv("BS_CACHE_HOME"), filepath.Join(xdgCache, "bootstrap"))
+		xdgConfig := firstNonEmpty(getenv("XDG_CONFIG_HOME"), join(home, ".config"))
+		xdgState := firstNonEmpty(getenv("XDG_STATE_HOME"), join(home, ".local", "state"))
+		xdgCache := firstNonEmpty(getenv("XDG_CACHE_HOME"), join(home, ".cache"))
+		configDir = firstNonEmpty(getenv("BS_CONFIG_HOME"), getenv("BOOTSTRAP_CONFIG_HOME"), join(xdgConfig, "bootstrap"))
+		stateDir = firstNonEmpty(getenv("BS_STATE_HOME"), join(xdgState, "bootstrap"))
+		cacheDir = firstNonEmpty(getenv("BS_CACHE_HOME"), join(xdgCache, "bootstrap"))
 	}
 
 	return Paths{
-		ConfigDir: filepath.Clean(configDir),
-		StateDir:  filepath.Clean(stateDir),
-		CacheDir:  filepath.Clean(cacheDir),
+		ConfigDir: join(configDir),
+		StateDir:  join(stateDir),
+		CacheDir:  join(cacheDir),
 		HomeDir:   home,
 	}, nil
 }

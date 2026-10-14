@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,6 +93,22 @@ func tarGz(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
+// hostAsset 给出"当前平台"的发布产物名，规则与 selfupdate.AssetName 和
+// .goreleaser.yaml 的 name_template 一致：bootstrap_<版本>_<goos>_<goarch>.tar.gz
+// （windows 是 .zip）。
+//
+// 假 GitHub 必须按宿主平台提供服务：bs 的自更新解析的是 runtime.GOOS/GOARCH 对应的产物，
+// 写死 linux_arm64 会让这套用例只在维护者的机器上通过（CI 的 amd64 任务会报
+// "checksums.txt has no entry for bootstrap_…_linux_amd64.tar.gz"）。
+func hostAsset(version string) string {
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+	return fmt.Sprintf("bootstrap_%s_%s_%s%s",
+		strings.TrimPrefix(version, "v"), runtime.GOOS, runtime.GOARCH, ext)
+}
+
 // withVersion 临时把"当前版本"改掉（自更新的版本比较依赖它）。
 func withVersion(t *testing.T, v string) {
 	t.Helper()
@@ -119,7 +136,7 @@ func sandboxForSelfUpdate(t *testing.T) (*Runtime, *bytes.Buffer, *bytes.Buffer,
 func TestSelfUpdateCheckUpToDate(t *testing.T) {
 	withVersion(t, "v0.3.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	f := startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", nil)
+	f := startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"), nil)
 
 	code, stdout, stderr := run(t, rt, "self-update", "--check", "--exe", exe)
 	if code != ExitOK {
@@ -138,13 +155,13 @@ func TestSelfUpdateCheckOutdated(t *testing.T) {
 	withVersion(t, "v0.2.0")
 	rt, _, _, root, exe := sandboxForSelfUpdate(t)
 	before := snapshotTree(t, root)
-	f := startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", nil)
+	f := startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"), nil)
 
 	code, stdout, stderr := run(t, rt, "self-update", "--check", "--exe", exe)
 	if code != ExitOK {
 		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
 	}
-	for _, want := range []string{"v0.2.0", "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", exe} {
+	for _, want := range []string{"v0.2.0", "v0.3.0", hostAsset("v0.3.0"), exe} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("输出里缺少 %q：\n%s", want, stdout)
 		}
@@ -162,7 +179,7 @@ func TestSelfUpdateDryRunTouchesNothing(t *testing.T) {
 	withVersion(t, "v0.2.0")
 	rt, _, _, root, exe := sandboxForSelfUpdate(t)
 	before := snapshotTree(t, root)
-	f := startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", tarGz(t, map[string]string{"bs": "new\n"}))
+	f := startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"), tarGz(t, map[string]string{"bs": "new\n"}))
 
 	code, stdout, stderr := run(t, rt, "self-update", "--dry-run", "--exe", exe)
 	if code != ExitOK {
@@ -187,7 +204,7 @@ func TestSelfUpdateDryRunTouchesNothing(t *testing.T) {
 func TestSelfUpdateNeedsYesInNonInteractive(t *testing.T) {
 	withVersion(t, "v0.2.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	f := startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", tarGz(t, map[string]string{"bs": "new\n"}))
+	f := startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"), tarGz(t, map[string]string{"bs": "new\n"}))
 
 	code, _, stderr := run(t, rt, "self-update", "--exe", exe)
 	if code != ExitNeedsInteraction {
@@ -220,7 +237,7 @@ func TestSelfUpdateInteractiveConfirm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			withVersion(t, "v0.2.0")
 			rt, _, _, _, exe := sandboxForSelfUpdate(t)
-			startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz",
+			startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"),
 				tarGz(t, map[string]string{"bs": "#!/bin/sh\necho bs v0.3.0\n"}))
 			yes := true
 			rt.interactiveOverride = &yes
@@ -252,7 +269,7 @@ func TestSelfUpdateYesReplacesAndBacksUp(t *testing.T) {
 	}
 	withVersion(t, "v0.2.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz",
+	startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"),
 		tarGz(t, map[string]string{"bs": "#!/bin/sh\necho bs v0.3.0\n"}))
 
 	code, stdout, stderr := run(t, rt, "self-update", "--yes", "--exe", exe)
@@ -283,7 +300,7 @@ func TestSelfUpdateYesReplacesAndBacksUp(t *testing.T) {
 func TestSelfUpdateWithoutChecksumsAborts(t *testing.T) {
 	withVersion(t, "v0.2.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	f := startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", tarGz(t, map[string]string{"bs": "new\n"}))
+	f := startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"), tarGz(t, map[string]string{"bs": "new\n"}))
 	f.checksum = ""
 
 	code, _, stderr := run(t, rt, "self-update", "--yes", "--exe", exe)
@@ -305,7 +322,7 @@ func TestSelfUpdateWithoutChecksumsAborts(t *testing.T) {
 func TestSelfUpdateJSON(t *testing.T) {
 	withVersion(t, "v0.2.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz", tarGz(t, map[string]string{"bs": "new\n"}))
+	startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"), tarGz(t, map[string]string{"bs": "new\n"}))
 
 	code, stdout, stderr := run(t, rt, "self-update", "--json", "--dry-run", "--exe", exe)
 	if code != ExitOK {
@@ -339,7 +356,7 @@ func TestSelfUpdateJSON(t *testing.T) {
 func TestSelfUpdateVersionFlagPinsTag(t *testing.T) {
 	withVersion(t, "v0.2.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	f := startCLIFakeRelease(t, "v0.9.9", "bootstrap_0.3.0_linux_arm64.tar.gz", tarGz(t, map[string]string{"bs": "new\n"}))
+	f := startCLIFakeRelease(t, "v0.9.9", hostAsset("v0.3.0"), tarGz(t, map[string]string{"bs": "new\n"}))
 
 	code, stdout, stderr := run(t, rt, "self-update", "--check", "--version", "0.3.0", "--exe", exe)
 	if code != ExitOK {
@@ -362,7 +379,7 @@ func TestSelfUpdateForceReinstallsSameVersion(t *testing.T) {
 	}
 	withVersion(t, "v0.3.0")
 	rt, _, _, _, exe := sandboxForSelfUpdate(t)
-	startCLIFakeRelease(t, "v0.3.0", "bootstrap_0.3.0_linux_arm64.tar.gz",
+	startCLIFakeRelease(t, "v0.3.0", hostAsset("v0.3.0"),
 		tarGz(t, map[string]string{"bs": "#!/bin/sh\necho bs v0.3.0-reinstalled\n"}))
 
 	code, stdout, stderr := run(t, rt, "self-update", "--yes", "--force", "--exe", exe)

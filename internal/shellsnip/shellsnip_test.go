@@ -223,27 +223,31 @@ func TestDetectRCFile(t *testing.T) {
 		name  string
 		goos  string
 		shell string
+		home  string
 		geten func(string) string
 		exist func(string) bool
 		want  string
 	}{
-		{"linux bash", "linux", "bash", blank, none, "/home/kingfs/.bashrc"},
-		{"darwin bash prefers profile", "darwin", "bash", blank,
+		{"linux bash", "linux", "bash", home, blank, none, "/home/kingfs/.bashrc"},
+		{"darwin bash prefers profile", "darwin", "bash", home, blank,
 			func(p string) bool { return p == "/home/kingfs/.bash_profile" }, "/home/kingfs/.bash_profile"},
-		{"zsh", "linux", "zsh", blank, none, "/home/kingfs/.zshrc"},
-		{"zsh zdotdir", "linux", "zsh", func(k string) string {
+		{"zsh", "linux", "zsh", home, blank, none, "/home/kingfs/.zshrc"},
+		{"zsh zdotdir", "linux", "zsh", home, func(k string) string {
 			if k == "ZDOTDIR" {
 				return "/zdot"
 			}
 			return ""
 		}, none, "/zdot/.zshrc"},
-		{"fish", "linux", "fish", blank, none, "/home/kingfs/.config/fish/conf.d/bootstrap.fish"},
-		{"pwsh unix", "linux", "pwsh", blank, none, "/home/kingfs/.config/powershell/Microsoft.PowerShell_profile.ps1"},
-		{"pwsh windows", "windows", "pwsh", blank, none, "/home/kingfs/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"},
+		{"fish", "linux", "fish", home, blank, none, "/home/kingfs/.config/fish/conf.d/bootstrap.fish"},
+		{"pwsh unix", "linux", "pwsh", home, blank, none, "/home/kingfs/.config/powershell/Microsoft.PowerShell_profile.ps1"},
+		// windows 用例刻意用 windows 形状的 home 与反斜杠期望值：
+		// 断言必须只取决于目标平台，而不是"跑测试的机器"（CI 的 Windows 任务会跑同一套用例）。
+		{"pwsh windows", "windows", "pwsh", `C:\Users\kingfs`, blank, none,
+			`C:\Users\kingfs\Documents\PowerShell\Microsoft.PowerShell_profile.ps1`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := DetectRCFile(tc.goos, tc.shell, home, tc.geten, tc.exist)
+			got, err := DetectRCFile(tc.goos, tc.shell, tc.home, tc.geten, tc.exist)
 			if err != nil {
 				t.Fatalf("DetectRCFile: %v", err)
 			}
