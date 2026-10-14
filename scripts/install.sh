@@ -96,11 +96,18 @@ if [ "$VERSION" = "latest" ] && [ -n "$BASE_URL" ]; then
 fi
 if [ "$VERSION" = "latest" ]; then
   # 不依赖 GitHub API 的鉴权：直接跟随 releases/latest 的重定向取 tag。
-  if command -v curl >/dev/null 2>&1; then
-    VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" | sed 's#.*/tag/##')"
-  else
-    err "自动探测最新版本需要 curl；请用 --version 指定版本"
-  fi
+  command -v curl >/dev/null 2>&1 || err "自动探测最新版本需要 curl；请用 --version 指定版本"
+  effective="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" || true)"
+  case "$effective" in
+    */tag/*) VERSION="${effective##*/tag/}" ;;
+    "")
+      err "访问 https://github.com/$REPO/releases/latest 失败（网络或仓库不可达）；请用 --version 指定版本" ;;
+    *)
+      # 仓库一个 Release 都没有时，GitHub 会 302 到 /releases 而不是 /releases/tag/<tag>。
+      # 这里必须显式报错：否则会把整条 URL 当成版本号去拼产物名，
+      # 用户看到的是"archive not found"这种指错方向的报错（README 的 curl|sh 就是这么装的）。
+      err "$REPO 还没有发布任何版本（$effective）——先等首次 Release，或用 --version 指定已有 tag" ;;
+  esac
   [ -n "$VERSION" ] || err "无法确定最新版本，请用 --version 指定"
 fi
 # 统一成 vX.Y.Z 形式
