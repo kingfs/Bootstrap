@@ -11,6 +11,7 @@ import (
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
 	"github.com/kingfs/Bootstrap/pkg/cmdx"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
+	"github.com/kingfs/Bootstrap/pkg/hostinfo"
 )
 
 func getenv(key string) string { return os.Getenv(key) }
@@ -33,20 +34,8 @@ func gitrepoDiscover(root string) ([]string, error) { return gitrepo.Discover(ro
 // IsTerminalWriter 判断输出是不是交互式终端（命令层需要它来决定默认策略）。
 func IsTerminalWriter(w io.Writer) bool { return isTerminal(w) }
 
-// isTerminal 判断输出是不是交互式终端。
-//
-// 只依赖标准库：拿不到 *os.File 或不是字符设备就认为是非交互。
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
-}
+// isTerminal 判断输出是不是交互式终端（实现收敛在 pkg/hostinfo，供 ui 层共用）。
+func isTerminal(w io.Writer) bool { return hostinfo.IsTerminal(w) }
 
 // allowedKinds 把配置里的字符串转成合法的 kind 列表（忽略非法值）。
 func allowedKinds(list []string) []config.Kind {

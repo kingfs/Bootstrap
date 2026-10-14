@@ -140,8 +140,12 @@ profile 至少要有一个非空代理地址，否则配置校验失败。
 | --- | --- | --- | --- |
 | `snippets_dir` | 路径 | `<config>/shell` | 用户片段目录，按 `posix/`、`fish/`、`pwsh/` 分；同名**整体覆盖**内置片段 |
 | `rc_files.<shell>` | 路径 | 自动探测 | 指定某个 shell 的 rc 文件（如 `zsh: ~/.zshrc`），优先于自动探测 |
-| `auto_path` | 布尔 | `true` | ⚠️ 当前**未接线**：内置片段总是装配 PATH |
-| `auto_proxy` | 布尔 | `false` | ⚠️ 当前**未接线**：是否带代理由 `proxy` 的 state 决定 |
+| `auto_path` | 布尔 | `true` | 关掉则 `bs shell init` 不渲染 `20-path.*` 片段（自己管 PATH 的场景） |
+| `auto_proxy` | 布尔 | `false` | 打开则每个新 shell 自动应用 bs 当前活跃的 proxy profile |
+
+`auto_path` / `auto_proxy` 只影响 `bs shell init` 渲染的内容，**不写进 rc 文件**——受管块永远只有
+`eval "$(bs shell init <shell>)"` 一行，所以改完配置立刻生效（重开 shell 或重新 `eval` 一次）。
+`auto_proxy` 默认关是刻意的：它会让 `bs proxy off` 之后把新 shell 里**已有的**代理变量也清掉。
 
 rc 文件自动探测规则：`bash` → `~/.bashrc`（macOS 优先 `~/.bash_profile`）；
 `zsh` → `$ZDOTDIR/.zshrc` 或 `~/.zshrc`；`fish` → `~/.config/fish/conf.d/bootstrap.fish`；
@@ -153,8 +157,8 @@ rc 文件自动探测规则：`bash` → `~/.bashrc`（macOS 优先 `~/.bash_pro
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `confirm` | 布尔 | `true` | ⚠️ 当前**未接线**：确认逻辑只看 `--yes` / 非交互 / 终端（见 design.md §7.5 的 [4]） |
-| `progress` | `auto\|plain\|off` | `auto` | ⚠️ 当前只参与校验，没有渲染分支 |
+| `confirm` | 布尔 | `true` | 置 `false` 时，**交互会话里**不再问"继续？"（非交互环境仍需 `--yes`，否则退出码 5） |
+| `progress` | `auto\|plain\|off` | `auto` | 安装过程中的逐步骤进度：`auto` 只在交互终端打；`plain` 总是打；`off` 从不打 |
 
 ## 3. 完整示例
 

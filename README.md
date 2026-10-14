@@ -7,8 +7,8 @@
 - **先看后做**：所有会改动文件系统或外部状态的命令都支持 `--dry-run`
 - **可脚本化**：`--json` 输出 + 明确区分的退出码
 
-> 当前进度：M1（仓库拉取、代理、shell 集成、体检）与 M2（工具清单 / 安装引擎，`bs tool`）已完成。
-> 交互式向导（`bs init`）与自更新在 M3；Windows 的工具清单尚未编写。
+> 当前进度：M1（仓库拉取、代理、shell 集成、体检）、M2（工具清单 / 安装引擎，`bs tool`）与
+> M3（新机器一把梭 `bs init`、自更新 `bs self-update`、交互式界面）已完成；Windows 的工具清单尚未编写。
 
 ## 安装
 
@@ -31,6 +31,17 @@ make cross          # 交叉编译 6 个平台组合到 dist/
 
 ## 快速开始
 
+新机器上先一把梭（认环境 → 选工具 → 装好）：
+
+```sh
+bs init                         # 交互式：看概览 → 勾选工具 → 确认 → 装（可选顺手装受管块）
+bs init --dry-run               # 只看看会发生什么，一行都不写
+bs init --profile base --yes    # 全自动：用默认套装，不问任何问题
+bs init --missing-only --yes    # 只补当前缺的
+```
+
+日常则是这套循环：
+
 ```sh
 bs config init                  # 生成默认配置（含本地/公司代理 profile 示例）
 bs shell install                # 在 rc 里装受管块：代理立即生效 + PATH 装配
@@ -42,9 +53,26 @@ bs repo get kingfs/Bootstrap    # 克隆或更新到 ~/src/github.com/kingfs/Boo
 bs tool list                    # 看清单里哪些装了、哪些缺（实时探测）
 bs tool plan --profile golang   # 先看要做什么
 bs tool install --profile golang  # 再动手（含依赖，按拓扑序）
+
+bs self-update                  # 把 bs 自己更新到最新发布版（sha256 校验）
 ```
 
 ## 命令一览
+
+### 开荒与自更新（`bs init` / `bs self-update`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `bs init` | 新机器一把梭：打印环境概览 → 选工具（交互勾选 / 套装 / 只补缺失）→ 确认 → 安装，可选顺手 `shell install` |
+| `bs init --profile P` / `--tools a,b` / `--missing-only` | 明确"装什么"，不再问选择（三者互斥） |
+| `bs init --with-shell` / `--no-shell` | 是否在收尾时安装 shell 受管块（交互时问一次） |
+| `bs self-update` | 下载最新发布版、校验 sha256、自检新二进制能跑、备份旧文件后原地替换 |
+| `bs self-update --check` | 只查有没有新版本（不下载、不改动） |
+| `bs self-update --version vX.Y.Z` / `--force` / `--repo owner/repo` | 指定版本 / 同版本重装 / 换 release 来源 |
+
+`bs init` 的安全约定：`--dry-run` 一个字节都不写；非交互环境（管道/CI/`--json`）没有 `--yes`
+就以退出码 5 拒绝；确认框里按回车＝拒绝；Ctrl-C 取消＝什么都没做（退出码 0）。
+`bs self-update` 在替换前会**先跑一遍新二进制的 `version`**，跑不起来就保留旧的。
 
 ### 仓库（`bs repo`）
 
@@ -198,7 +226,10 @@ bs tool manifest validate --os darwin
 
 交互约定：安装/升级/卸载这类会改动系统或用户目录的操作，执行前会要求确认。
 
-- 终端里：打印计划后问一句 `继续？[y/N]`，**回车＝拒绝**；
+- 终端里：打印计划后问一句，按钮上写着"继续 / 取消"，**回车＝取消**（默认拒绝）；
+- 在真终端上，多选/单选/确认用交互式界面（方向键、空格勾选、`y`/`n`、回车提交），
+  想用朴素问答就加 `--plain-ui`；`--interactive` 可强制开启提问，`--non-interactive` 强制关闭；
+- 取消（Ctrl-C，或回答 no）不是失败：退出码 0 + "未做任何修改"；
 - 非交互（管道、CI、`--json`、`--non-interactive`）**绝不阻塞等待输入**：
   没有 `--yes` 就直接以退出码 5 结束，并提示加 `--yes`；
 - `--dry-run` 在打印计划后就结束，连确认都不会问。
@@ -231,6 +262,7 @@ make test         # 单元测试
 make race         # 单元测试（-race）
 make smoke        # 无副作用端到端冒烟测试（沙箱目录，不碰真实 HOME，不发网络请求）
 make check        # gofmt + vet + test + race
+make pty          # 在真 PTY 里验证交互式界面（勾选/取消/默认拒绝）
 make e2e          # 真实下载安装验证（**需要网络**，产物只落在 .cache/e2e）
 make cross        # 交叉编译 6 个平台
 ```

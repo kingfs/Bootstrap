@@ -5,7 +5,7 @@
 ## 1. 这个项目是什么
 
 `bs`（仓库名 Bootstrap）是维护者个人的开发环境重建工具：新机器上用它拉回仓库、
-恢复代理与 shell 环境、按清单安装/更新工具链（M1 + M2 已完成）。
+恢复代理与 shell 环境、按清单安装/更新工具链（M1–M3 已完成：`bs init` 一把梭 + 自更新）。
 
 - 语言：Go（版本见 `go.mod`），命令框架 cobra + 配置 viper
 - 支持平台：Linux / macOS / Windows；Linux 与 macOS 的 `amd64`、`arm64` 都必须可用
@@ -38,6 +38,7 @@ make build     # bin/bs
 make test      # 单元测试
 make race      # -race
 make smoke     # 无副作用端到端冒烟（关键回归保护）
+make pty       # 真 PTY 里验证交互式界面（勾选/取消/破坏性操作默认拒绝）
 make check     # gofmt + vet + test + race（提交前必跑）
 make cross     # 交叉编译 6 个平台组合
 ```
@@ -46,6 +47,10 @@ make cross     # 交叉编译 6 个平台组合
 
 ## 4. 测试要求（重要）
 
+0. **交互式界面（huh）不能只靠单测**：它只在真终端里启动，而假终端会吞掉按键
+   （bubbletea 会往终端发色彩/光标查询并等回应，`script` 这类假终端没人回应）。
+   因此 `internal/ui` 的单测覆盖纯文本路径与选项映射，真界面用
+   `make pty`（`scripts/pty-check.py`：扮演会回答查询的终端 + 按时间表送按键）验证。
 1. **所有测试必须无副作用**：
    - 文件读写只用 `t.TempDir()`，绝不写真实 `$HOME`、`/etc`、注册表；
    - 不改真实 rc 文件（用 `--rc` / 注入路径）；
@@ -80,6 +85,7 @@ make cross     # 交叉编译 6 个平台组合
 | 新的外部工具调用 | 通过 `pkg/cmdx`；只读探测走 `LookPath`/`RunCapture` |
 | 新的持久化状态字段 | `internal/state`，并保证内容不变时不写盘 |
 | 新的平台差异 | `pkg/hostinfo` 或 `internal/config/paths.go` |
+| 新的交互式提问（勾选/确认/输入） | `internal/ui` 的 `Prompter`（**只有这个包能 import huh**，纯文本实现必须同步可用） |
 | 新的内置 shell 片段 | `tools/snippets/<posix|fish|pwsh>/NN-名字.{sh,fish,ps1}` |
 | 新的内置工具清单条目 | `tools/{common,linux,darwin}.yaml`（字段说明见 `docs/tool-schema.md`） |
 | 新的工具套装（profile） | 跨平台的写 `tools/profiles.yaml`，有平台差异的写 `tools/<os>.yaml` |
@@ -152,11 +158,12 @@ make cross     # 交叉编译 6 个平台组合
 
 - **Windows 工具清单尚未编写**（`tools/windows.yaml` 为空，ADR-0014）：只保证能加载、不报错。
 - Windows 的 `repo.root` 默认值仍待细化（设计文档 §18.3）。
-- `bs init` 的交互式向导（`charmbracelet/huh`，ADR-0003）与自更新（sha256 校验，ADR-0009）属 M3。
 - 内置清单未覆盖 `fd`/`bat`：Ubuntu 上二进制名是 `fdfind`/`batcat`，与其它平台不一致，
   等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。
-- 配置里的 `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` 与
-  `--interactive` 开关尚未接线（M3 与 `huh` 一起做）。
+- 交互式取消只认 **Ctrl-C**：huh 的 ESC 在可过滤列表里用于"退出过滤/清空输入"，
+  不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
+- 交互式界面的按键行为**无法在单测里验证**（需要真 PTY，见 §4 第 0 条），
+  改动 `internal/ui` 后除了 `make check` 还要跑 `make pty`。
 - 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（`make e2e`，需要网络，不进 `make smoke`）；
   它的离线替身是 `internal/install/artifacts_e2e_test.go`（httptest 冒充 GitHub +
   真 httpx + 真解压），改 release 路径时优先扩充这条测试。

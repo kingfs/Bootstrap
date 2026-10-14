@@ -214,10 +214,14 @@ func splitList(values []string) []string {
 	return out
 }
 
-// prompter 返回本次运行的交互通道。
+// prompter 按当前环境挑一个提问实现，优先级：
 //
-// 非交互（管道/CI/--json/--non-interactive）→ NonInteractive：提问即退出码 5，绝不阻塞；
-// 交互终端 → 纯文本实现（交互式界面在下一步接 uh huh 时挂在这里，--plain-ui 可强制纯文本）。
+//	非交互            → NonInteractive（一问就退出码 5，绝不阻塞）
+//	交互 + --plain-ui → 纯文本
+//	交互 + 真终端     → huh（空格勾选 / 方向键选择；huh 只允许出现在 internal/ui）
+//	交互但没有终端    → 纯文本（测试注入 reader、被包装器挡住终端等）
+//
+// 纯文本路径永远存在，所以"没有 huh"只是少一点漂亮，不会少一个功能。
 func (rt *Runtime) prompter() ui.Prompter {
 	if !rt.interactive() {
 		return ui.NonInteractive{}
@@ -225,6 +229,12 @@ func (rt *Runtime) prompter() ui.Prompter {
 	in, ok := rt.Opts.In.(io.Reader)
 	if !ok {
 		in = strings.NewReader("")
+	}
+	if rt.Opts.PlainUI {
+		return ui.NewText(in, rt.Opts.Err)
+	}
+	if p, ok := ui.NewInteractive(in, rt.Opts.Err); ok {
+		return p
 	}
 	return ui.NewText(in, rt.Opts.Err)
 }

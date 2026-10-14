@@ -25,7 +25,7 @@
 |---|---|---|
 | 1 | 输入 GitHub 仓库任意形态的 URL/简写，自动 clone 到 `<repo_root>/<host>/<owner>/<repo>`；目标已存在则转为 `git pull` | `gitrepo` + `bs repo` |
 | 2 | 自动探测 OS/Arch（含 Linux 发行版、Shell），加载对应工具清单 | `platform` + `manifest` |
-| 3 | 初始化时列出"已安装 / 未安装"，可交互勾选安装 | `install` + `ui` + `bs init`（当前：`bs tool list --installed/--missing` + `bs tool install` 已可用；交互式勾选向导属 M3） |
+| 3 | 初始化时列出"已安装 / 未安装"，可交互勾选安装 | `bs init`：环境概览 + huh 多选（缺失项默认勾选）+ plan → apply（`bs tool list --installed/--missing` + `bs tool install` 仍是脚本化的等价入口） |
 | 4 | 纯 CLI（无 GUI、无常驻服务） | 全局约束 |
 | 5 | 执行下载 / clone 等网络操作时自动识别并注入代理 | `proxy` + `pkg/cmdx`/`httpx` |
 | 6 | 集成 startproxy / chaitinproxy 能力，按平台生成可生效的代理环境变量 | `proxy` + `bs proxy` + `bs shell init` |
@@ -175,7 +175,8 @@ Bootstrap/
 > 与早期设计稿的差异：原计划里的 `internal/domain/`、`internal/install/manager/`、
 > `internal/install/{bun,npm,apt,…}.go` 单文件、`internal/ui/`、`internal/httpx/` 都被合并或上移了——
 > 模型进了 `internal/manifest`，管理器与包管理器改成**表驱动的一份实现**，
-> `httpx` 与新增的 `ghrelease`/`archive` 落在 `pkg/`，`internal/ui` 留到 M3 引入 huh 时再建。
+> `httpx` 与新增的 `ghrelease`/`archive` 落在 `pkg/`；`internal/ui` 在 M3 建起来了，
+> huh 只被它 import（见 §12）。
 > 依据是 §4.1 的准入规则：能表驱动的就不要拆文件，能脱离业务复用的就上移 `pkg/`。
 
 ### 4.1 `pkg/` 准入规则（回答"常见方法是否抽成 pkg"）
@@ -1167,10 +1168,15 @@ type Platform struct {
 
 ```
 bs [--config FILE] [--repo-root DIR] [--dry-run] [--yes] [--json] [--no-color]
-   [--non-interactive] [-v|-vv] [--log-level LEVEL] <command>
+   [--interactive|--non-interactive] [--plain-ui] [-v|-vv] [--log-level LEVEL] <command>
 
 version              版本信息（--json：version/commit/date/go_version/os/arch）
 doctor               环境自检（只读）：平台、必需命令、包管理器、配置、清单、代理、PATH、rc 受管块、仓库根
+
+init                 新机器一把梭：环境概览 → 选工具 → plan → apply（可选 shell install）
+                     [--profile P] [--tools a,b] [--missing-only] [--with-shell|--no-shell]
+self-update          把 bs 自己更新到最新发布版（sha256 校验 + 自检 + 备份 + 原子替换）
+                     [--check] [--version vX.Y.Z] [--force] [--repo owner/repo]
 
 config path          打印各配置/状态/缓存目录的实际路径及来源
 config show          打印合并后的生效配置
@@ -1228,10 +1234,11 @@ completion <shell>   由 cobra 提供
 在交互终端会问一句（默认拒绝），拒绝后打印"已取消，未做任何修改。"并以 0 结束。
 
 **尚未实现**（设计意图，不在当前二进制里；写在这里以免误读）：
-`bs init` 向导（ADR-0003）、`bs self-update`（ADR-0009）、`config get|set|edit`、
-`tool install -i` 交互勾选、`tool upgrade --all`、`tool uninstall --allow-system`、
-`proxy remove`、`repo info`、`shell snippet edit|show|remove`、`shell update`、
-跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、全局 `--timeout`。
+`config get|set|edit`、`tool install -i` 交互勾选（`bs init` 已经能勾选，`tool install` 还没接）、
+`tool upgrade --all`、`tool uninstall --allow-system`、`proxy remove`、`repo info`、
+`shell snippet edit|show|remove`、`shell update`、
+跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、全局 `--timeout`、
+Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
 
 ---
 
@@ -1265,14 +1272,29 @@ completion <shell>   由 cobra 提供
   需要稳定消费面的用 `tool list` / `tool info` / `tool plan`。
 - `--json` 同时隐式进入非交互模式：不提问、不阻塞，`fallback` 默认关闭（ADR-0013）。
 
-**交互（ADR-0003）**：`charmbracelet/huh` 的多选向导属于 M3 的 `bs init`，**当前还没引入**
-（`go.mod` 里没有这个依赖）。今天唯一的交互是破坏性操作前的一句确认（`confirmDestructive`）：
+**交互（ADR-0003）**：所有提问都经由 `internal/ui.Prompter`，`charmbracelet/huh` 是它唯一的
+落点（`go.mod` 里 huh 只被这个包 import）。选择顺序：
 
-- 提示打在 stderr，`[y/N]`，默认回车＝拒绝；拒绝不是错误（退出码 0）；
-- `--yes` 是脚本与 CI 的正规授权方式；
-- 非交互环境（stdin/输出不是终端、`--json`、`--non-interactive`、`CI=1`）**绝不阻塞**，
-  没有 `--yes` 就以退出码 5 明确拒绝执行（AGENTS.md §8.6）；
-- 将来引入 huh 时，`internal/ui` 是它唯一的落点，且必须保留上述纯文本降级路径。
+| 环境 | 实现 | 行为 |
+|---|---|---|
+| 非交互（管道/`CI`/`--json`/`--non-interactive`） | `ui.NonInteractive` | 提问即返回 `ErrNotInteractive` → 退出码 5，绝不阻塞 |
+| 真终端 + `--plain-ui`，或不是真终端 | `ui.Text` | 纯文本问答（编号/名字、`a` 全选、`q` 取消），零依赖 |
+| 真终端 | `ui.huhPrompter` | 交互式界面：空格勾选、`/` 过滤、←/→ 切换、回车提交 |
+
+约定与红线：
+
+- 破坏性操作前问一句，按钮写"继续 / 取消"，**回车＝默认拒绝**；拒绝不是错误（退出码 0，
+  提示"未做任何修改"）；`Ctrl-C` 同样按取消处理（`huh.ErrUserAborted` → `ui.ErrCancelled`）；
+- `--yes` 是脚本与 CI 的正规授权方式；非交互环境没有 `--yes` 就以退出码 5 明确拒绝
+  （AGENTS.md §8.6），而且**先判同意再联网**（`bs self-update` 在没授权时不发任何请求）；
+- `ui.confirm=false` 只让交互会话不再确认，**不**放宽非交互环境的 `--yes` 要求；
+- 纯文本路径永远可用，也是测试里唯一能跑的实现；`internal/ui` 不允许把 huh 类型泄漏到接口上。
+
+**怎么验证交互式界面**：huh 只在真终端启动，而"假终端会吞掉按键"——bubbletea 启动时会往终端写
+OSC 11（查背景色）与 DSR（查光标位置），然后从 stdin 读回应；`script` 这类假终端没人回答，
+于是把用户按键当回应吃掉，看起来像"按键失灵"。所以真界面用 `make pty` 验证：
+`scripts/pty-check.py` 用 `pty.fork` 起一个真 PTY、**替终端回答查询**、再按时间表送按键，
+并断言退出码与关键输出（例：勾选后干跑落地、`Ctrl-C` 取消退出码 0、确认框回车＝拒绝）。
 
 **日志**：`log/slog` 结构化日志，默认 stderr，级别取 `log.level`（`-v` debug、`-vv` trace）。
 外部命令的完整 argv 与退出码在 debug 级可见；`*_PROXY` 值一律脱敏（保留 host:port，
@@ -1294,7 +1316,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 测试 | 表驱动单测；安装引擎用 `internal/install/fake_test.go` 的 `fakeEnv`/`fakeDetector`（记录命令、可编排返回值），探测用注入的 `Executor`/`LookPath`；CLI 层用进程内 `Runtime.Run` + 临时 `BS_CONFIG_HOME`/`BS_STATE_HOME`/`BS_CACHE_HOME` + 缓冲区输出；端到端用 `scripts/smoke.sh`（POSIX）与 `scripts/smoke.ps1`（Windows），两者都不发网络请求；另有**需要网络的**可选 `scripts/e2e-install.sh`（真下载真校验，产物全部落在 `.cache/e2e/`，不属于 CI 必跑项） |
 | 无副作用测试（硬要求） | 全部读写都在 `t.TempDir()`；`--dry-run` 断言"目标路径不存在/文件数不变"；幂等断言"第二次执行 mtime 不变"（`fsx.WriteFileIfChanged`/`state`）；涉及用户文件的逻辑断言"内容字节级未变"（`shellsnip`）；单测与 smoke **都不发网络请求** |
 | 静态检查 | `make check` = `gofmt -l` + `go vet ./...` + `go test ./...` + `go test -race ./...`；CI 在 ubuntu/macos/windows 三个 runner 上跑同样的四件事 + 冒烟。**尚未接入** `golangci-lint` / `govulncheck`（设计里提过，属 M4 打磨） |
-| 依赖策略 | 目前只有 4 个直接依赖：`spf13/cobra`、`spf13/viper`、`gopkg.in/yaml.v3`、`golang.org/x/sync`；UI 依赖（`huh`）在 M3 引入且只允许出现在 `internal/ui`；`pkg/*` 不 import `internal/*` |
+| 依赖策略 | 直接依赖 5 个：`spf13/cobra`、`spf13/viper`、`gopkg.in/yaml.v3`、`golang.org/x/sync`、`charmbracelet/huh`；huh 只允许出现在 `internal/ui`（其余包通过 `Prompter` 提问）；`pkg/*` 不 import `internal/*` |
 | 提交规范 | Conventional Commits（`feat(tool): ...`），正文写动机与影响；每个提交都要"可编译、可发布、可用" |
 | 版本管理 | `internal/buildinfo.{Version,Commit,Date}`，由 `-ldflags -X` 注入（`Makefile` 与 `.goreleaser.yaml` 各一份）；`bs version --json` 暴露 |
 | 幂等与安全 | 文件写入用 `pkg/fsx` 的 `AtomicWriteFile`（tmp+rename）与 `WriteFileIfChanged`（内容不变不碰 mtime）；改用户 rc 前先 `fsx.BackupFile`；下载必须校验 sha256（拿不到就中止） |
@@ -1339,14 +1361,17 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
     `~/.local/bin`（`--dir` / `BS_INSTALL_DIR` 可覆盖），最后提示 `eval "$(bs env path)"`；
   - `scripts/install.ps1`：Windows 侧同款（下载 zip、校验、装到用户目录并写 PATH）；
   - 两个脚本都可重复执行（重跑即升级）。
-- **`bs self-update`（ADR-0009：只校验 sha256）尚未实现**，属 M3；在那之前升级就是重跑
-  `install.sh`。
+- **`bs self-update`**（ADR-0009：只校验 sha256）：解析目标版本（`--version` 或 latest）→
+  取 `checksums.txt` 里的 sha256（**拿不到就中止**，不提供"跳过校验"开关）→ 下载校验 →
+  解压出 `bs` → **跑一遍 `<新二进制> version` 自检** → 备份旧文件 → 原子替换 → 清理自己产生的
+  `*.bak-*`/`*.tmp-*`。Windows 上正在运行的 exe 不能被覆盖、但能被改名，因此"改名让位 → 放新的"，
+  失败时把原件改回去。`--check` 只查版本，`--dry-run` 连校验和都算给你看但什么都不下载。
 
 ---
 
 ## 15. 文档体系
 
-- **`README.md`（给人看，简洁）**：一段话定位 → 安装（三平台各一行）→ **5 分钟上手**（`bs shell install` + `bs tool plan/install`；`bs init` 向导要到 M3）→ 常用命令速查表（repo/proxy/tool/env 各 2–4 条）→ 配置示例 → 卸载。
+- **`README.md`（给人看，简洁）**：一段话定位 → 安装（三平台各一行）→ **5 分钟上手**（`bs init` 一把梭，再是 `bs shell install` + `bs tool plan/install`）→ 常用命令速查表（init/self-update/repo/proxy/shell/tool/env）→ 配置示例 → 卸载。
 - **`AGENTS.md`（给 AI Agent 看）** 必含：项目定位与不变量、**构建/测试/校验命令**、目录地图与分层依赖规则、**如何新增一个工具（只改 YAML 的三步流程）**、如何新增一种安装机制（实现 Installer + 注册 + 测试）、代码风格与提交规范、Definition of Done 清单、禁止事项（如禁止在 `cli` 层写业务逻辑、禁止无 sha256 的脚本安装）。
 - **`docs/`**：`tool-schema.md`（清单字段全参考 + 每个 via 的 params）、`configuration.md`（配置项全参考 + 示例）、`design.md`（本文，**ADR 以 §18 的形式内联在这里，没有单独的 `docs/adr/` 目录**）。
 - **命令内建文档**：每个 cobra 命令有 `Long`/`Example`；`bs completion <shell>` 由 cobra 自动提供；`bs <cmd> --help` 即权威参考。
@@ -1366,7 +1391,8 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
    人工确认是**整批一次**的"即将安装/升级/卸载 N 个工具，继续？"（§7.5 的 [4]），
    不是逐命令二次确认；`--yes` 表示调用方已明确授权。
 3. 代理凭据不落明文日志；日志中 `*_PROXY` 值做掩码（保留 host:port，隐去 userinfo）。
-4. `bs self-update` **尚未实现**（M3）；实现时只校验 sha256（ADR-0009），签名校验明确不做。
+4. `bs self-update` **只校验 sha256**（ADR-0009），签名校验明确不做；校验和拿不到就中止，
+   没有"跳过校验"的开关。替换前先跑一遍新二进制的 `version` 自检，跑不起来就保留旧的。
 5. rc 文件只允许通过 `bs shell install` 的**受管块**修改：块由固定标记包围、可幂等替换、可精确移除，块外字节级不动；写前自动备份。其余场景一律只**输出**片段，不写文件。
 6. **破坏性操作必须先拿到明确同意**（`confirmDestructive`）：交互终端默认拒绝，
    非交互环境绝不阻塞，没有 `--yes` 就以退出码 5 结束（`--dry-run` 不需要同意，因为它什么都不做）。
@@ -1382,7 +1408,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M0 骨架** | 能发布一个"什么都不能干但装得上"的 `bs` | go.mod 定版、目录结构、cobra root、`config path/show/validate/init`、`version`、goreleaser + CI、`install.sh`/`install.ps1` | ✅ 完成 |
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
-| **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256）；交互式多选 | ⏳ 未开始 |
+| **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
 | **M4 打磨** | 长期好用 | `golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、`bs doctor --fix`、shell completion 覆盖、README/AGENTS/ADR 定稿 | ⏳ 未开始 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
 
@@ -1464,8 +1490,10 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 11 | `tools/common.yaml` 里 `g`/`lazygit`/`k9s` 都误写了 `strip_components: 1`，而这三个归档**没有**外层目录，结果把二进制本身剥没了（只有真下载才暴露） | 删掉这三处（uv/ripgrep/ruff 确实有外层目录，保留）；`archive` 解出 0 个文件时立即报"nothing left after stripping"，找不到 binary 时把归档顶层条目列出来 |
 | 12 | `make e2e` 不依赖 `build`，脚本用的是**过期的 `bin/bs`**——"测试通过/失败"都可能是上一版代码的结论 | `e2e: build`；脚本头部写明"自己不做构建"；PATH 收敛为沙箱 bin + `/usr/bin:/bin`（宿主已装的同名工具会让安装被跳过，e2e 就什么都验证不到），并在计划阶段就断言不是 skip |
 
-仍未接线（刻意保留，属 M3）：`ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy`
-四个配置项、`--interactive` 显式开关、`huh` 交互式勾选、自更新。
+M3 已把上面这批接线补齐：`ui.confirm`（交互会话里可关掉确认）、`ui.progress`（逐步骤进度）、
+`shell.auto_path` / `shell.auto_proxy`（`bs shell init` 渲染时生效，不写 rc）、
+`--interactive` / `--plain-ui`、`huh` 交互式勾选、`bs init`、`bs self-update`。
+仍未接线（属 M4）：全局 `--timeout`、`golangci-lint`/`govulncheck`。
 
 ## 18.4 待修缺陷（代码与设计不一致，已知且未修）
 
