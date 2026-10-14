@@ -1420,6 +1420,20 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
   里的模板没有被渲染（§18.4 缺陷 #1），清单里所有 `via: manager` + `{{versions.*}}` 的
   runtime 条目都受影响。修掉它 M2 才真正闭环。
 
+**M3 完成判据的自查**（全部在无副作用沙箱里验证；`make pty` 需要 `/dev/ptmx`）：
+
+| 判据 | 验证方式 | 结果 |
+|---|---|---|
+| `bs init` 能一把梭 | `bs init --dry-run --yes --tools ripgrep` 零写入；`make pty` 里真勾选后落地 | ✅ |
+| 非交互不阻塞 | `init` / `self-update` 无 `--yes` → 退出码 5；`--json` 也走这条路 | ✅ |
+| 参数互斥/未知目标 | `--missing-only --profile`、`--with-shell --no-shell`、未知 profile/tool → 退出码 2 | ✅ |
+| 交互式勾选（huh） | `make pty`：多选勾选后干跑落地；勾选数回填正确（缺失项默认勾选） | ✅ |
+| 取消语义 | `make pty`：Ctrl-C → 退出码 0 + "未做任何修改"；确认框回车＝拒绝 | ✅ |
+| `bs self-update` | 20+ 条离线单测（假 GitHub）：缺校验和/坏校验和/自检失败都中止并保留旧文件；Windows 让位失败回滚 | ✅ |
+| 未发布 Release 时的提示 | `bs self-update --check --repo kingfs/Bootstrap` → 退出码 1 + "还没有发布任何 Release" | ✅ |
+| 配置项接线 | `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` 都有单测与冒烟断言 | ✅ |
+| 无副作用 | `make check`（fmt+vet+test+race）、`make smoke`（90 条断言，沙箱 + 不联网）、`make cross` 全绿 | ✅ |
+
 ---
 
 ## 18. 决策记录
