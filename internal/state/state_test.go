@@ -51,9 +51,9 @@ func TestSaveIsIdempotent(t *testing.T) {
 		t.Error("no-op save touched the file (mtime changed)")
 	}
 
-	changed, err = s.SetActiveProfile("chaitin")
+	changed, err = s.SetActiveProfile("corp")
 	if err != nil {
-		t.Fatalf("SetActiveProfile chaitin: %v", err)
+		t.Fatalf("SetActiveProfile corp: %v", err)
 	}
 	if !changed {
 		t.Error("switching profile must write")
@@ -62,8 +62,8 @@ func TestSaveIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ActiveProfile: %v", err)
 	}
-	if name != "chaitin" {
-		t.Errorf("ActiveProfile = %q, want chaitin", name)
+	if name != "corp" {
+		t.Errorf("ActiveProfile = %q, want corp", name)
 	}
 	mode, err := s.ProxyMode()
 	if err != nil {

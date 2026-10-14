@@ -10,7 +10,7 @@ func testProfile() Profile {
 		Name:       "local",
 		HTTPProxy:  "http://127.0.0.1:7890",
 		HTTPSProxy: "http://127.0.0.1:7890",
-		NoProxy:    "127.0.0.1,localhost,10.2.0.0/16",
+		NoProxy:    "127.0.0.1,localhost,10.0.0.0/8",
 	}
 }
 
@@ -21,8 +21,8 @@ func TestProfileEnvSetsUpperAndLower(t *testing.T) {
 		"http_proxy":  "http://127.0.0.1:7890",
 		"HTTPS_PROXY": "http://127.0.0.1:7890",
 		"https_proxy": "http://127.0.0.1:7890",
-		"NO_PROXY":    "127.0.0.1,localhost,10.2.0.0/16",
-		"no_proxy":    "127.0.0.1,localhost,10.2.0.0/16",
+		"NO_PROXY":    "127.0.0.1,localhost,10.0.0.0/8",
+		"no_proxy":    "127.0.0.1,localhost,10.0.0.0/8",
 	}
 	if len(env) != len(want) {
 		t.Fatalf("Env() has %d keys, want %d: %v", len(env), len(want), env)
@@ -47,8 +47,8 @@ func TestRenderBash(t *testing.T) {
 		"export http_proxy='http://127.0.0.1:7890'",
 		"export HTTPS_PROXY='http://127.0.0.1:7890'",
 		"export https_proxy='http://127.0.0.1:7890'",
-		"export NO_PROXY='127.0.0.1,localhost,10.2.0.0/16'",
-		"export no_proxy='127.0.0.1,localhost,10.2.0.0/16'",
+		"export NO_PROXY='127.0.0.1,localhost,10.0.0.0/8'",
+		"export no_proxy='127.0.0.1,localhost,10.0.0.0/8'",
 	}
 	if got := strings.Split(out, "\n"); len(got) != len(wantLines) {
 		t.Fatalf("got %d lines, want %d:\n%s", len(got), len(wantLines), out)

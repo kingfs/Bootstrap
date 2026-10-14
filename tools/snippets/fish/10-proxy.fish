@@ -11,8 +11,9 @@ function bs
     end
 end
 
+# startproxy 可以带 profile 名（不带就用配置里的 default_profile）。
 function startproxy
-    command bs proxy use local >/dev/null 2>&1; and eval (command bs proxy env --apply --shell fish)
+    command bs proxy on $argv >/dev/null 2>&1; and eval (command bs proxy env --apply --shell fish)
 end
 
 function stopproxy

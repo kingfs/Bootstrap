@@ -183,7 +183,7 @@ func (rt *Runtime) proxyEnvCmd() *cobra.Command {
 		Long: `把代理环境变量渲染成 shell 语句输出到 stdout，例如：
 
   eval "$(bs proxy env --apply)"     # 按当前活跃 profile 设置（无则清除）
-  bs proxy env --profile chaitin     # 只看某个 profile 的语句
+  bs proxy env --profile corp        # 只看某个 profile 的语句
   bs proxy env --off                 # 清除代理变量`,
 		Args:         cobra.NoArgs,
 		Annotations:  map[string]string{AnnotationTolerateConfigErrors: "true"},

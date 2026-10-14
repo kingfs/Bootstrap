@@ -29,7 +29,7 @@ func TestProxyFor(t *testing.T) {
 		"HTTP_PROXY":  "http://127.0.0.1:7890",
 		"HTTPS_PROXY": "http://127.0.0.1:7891",
 		"ALL_PROXY":   "socks5://127.0.0.1:1080",
-		"NO_PROXY":    "127.0.0.1,localhost,10.2.0.0/16,192.168.0.0/16,chaitin.net,chaitin.cn,.chaitin.net,.chaitin.cn,.baizhi.cloud,::1,[::1]",
+		"NO_PROXY":    "127.0.0.1,localhost,10.0.0.0/8,192.168.0.0/16,corp.example.com,corp.example.cn,.corp.example.com,.example.org,::1,[::1]",
 	}
 	tests := []struct {
 		name   string
@@ -39,10 +39,10 @@ func TestProxyFor(t *testing.T) {
 	}{
 		{"https goes through https proxy", full, "https://github.com/x", "http://127.0.0.1:7891"},
 		{"http goes through http proxy", full, "http://example.com/x", "http://127.0.0.1:7890"},
-		{"no_proxy plain host", full, "https://chaitin.net/x", ""},
-		{"no_proxy dot suffix", full, "https://git.chaitin.net/x", ""},
-		{"no_proxy bare suffix", full, "https://git.chaitin.cn/x", ""},
-		{"no_proxy other domain", full, "https://baizhi.cloud/x", ""},
+		{"no_proxy plain host", full, "https://corp.example.com/x", ""},
+		{"no_proxy dot suffix", full, "https://git.corp.example.com/x", ""},
+		{"no_proxy bare suffix", full, "https://git.corp.example.cn/x", ""},
+		{"no_proxy other domain", full, "https://other.example.org/x", ""},
 		{"no_proxy ipv4", full, "https://127.0.0.1:8080/x", ""},
 		{"no_proxy cidr", full, "https://10.2.3.4/x", ""},
 		{"cidr outside range", full, "https://11.2.3.4/x", "http://127.0.0.1:7891"},

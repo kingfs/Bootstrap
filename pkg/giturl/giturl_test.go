@@ -32,7 +32,7 @@ func TestParse(t *testing.T) {
 		{name: "fragment as ref", in: "https://github.com/kingfs/Bootstrap#dev", wantHost: "github.com", wantOwner: "kingfs", wantRepo: "Bootstrap", wantRef: "dev", wantScheme: "https"},
 		{name: "gitlab dash separator", in: "https://gitlab.com/group/sub/proj/-/tree/main/x", wantHost: "gitlab.com", wantOwner: "group/sub", wantRepo: "proj", wantRef: "main", wantSub: "x", wantScheme: "https"},
 		{name: "commit page", in: "https://github.com/kingfs/Bootstrap/commit/abc123", wantHost: "github.com", wantOwner: "kingfs", wantRepo: "Bootstrap", wantRef: "abc123", wantScheme: "https"},
-		{name: "self hosted", in: "https://git.chaitin.net/team/repo.git", wantHost: "git.chaitin.net", wantOwner: "team", wantRepo: "repo", wantScheme: "https"},
+		{name: "self hosted", in: "https://git.example.com/team/repo.git", wantHost: "git.example.com", wantOwner: "team", wantRepo: "repo", wantScheme: "https"},
 		{name: "localhost host", in: "http://localhost:3000/team/repo", wantHost: "localhost:3000", wantOwner: "team", wantRepo: "repo", wantScheme: "http"},
 	}
 

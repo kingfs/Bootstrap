@@ -458,7 +458,7 @@ func (e *StatusError) Error() string {
 //
 // 支持 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY（大小写均可）与 NO_PROXY：
 // 后者支持 `*`、域名后缀（.example.com 或 example.com）、IP、CIDR、host:port。
-// 匹配规则与 curl / Go 标准库的行为一致，因此用 `no_proxy=10.2.0.0/16` 这类
+// 匹配规则与 curl / Go 标准库的行为一致，因此用 `no_proxy=10.0.0.0/8` 这类
 // 内网段写法时，bs 自己的下载不会绕代理。
 func ProxyFor(getenv func(string) string, target *url.URL) (*url.URL, error) {
 	if target == nil {
