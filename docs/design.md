@@ -1537,16 +1537,19 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、✅ Docker 集成矩阵（`make docker-matrix`：ubuntu/debian 裸镜像 + `--network none`）、README/AGENTS/ADR 定稿 | 🔄 进行中 |
-| **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② ✅ 按 stack 补齐 java/cpp/containers/rust/agent（2026-10-14：+27 条，含 `release` 类资产的归档结构与校验和实测）；③ 直链类工具（kubectl/helm/gradle）等 `release` 支持 `params.url` 后再补 | 🔄 进行中 |
+| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、✅ `config get\|set\|unset\|edit\|keys`、✅ `tool upgrade --all` + `tool list --outdated`、✅ `golangci-lint`/`govulncheck`（`make lint`/`make vuln`，刻意不进 `make check`）、✅ shell completion 覆盖（smoke 断言四种 shell）、✅ Docker 集成矩阵（`make docker-matrix`：ubuntu/debian 裸镜像 + `--network none`）、✅ README/AGENTS/design/configuration 定稿（判据见下） | ✅ 完成 |
+| **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② ✅ 按 stack 补齐 java/cpp/containers/rust/agent（2026-10-14：+27 条，含 `release` 类资产的归档结构与校验和实测）；③ ✅ 直链类工具（kubectl/helm/gradle）——`release` 已支持 `params.url`；④ ✅ 发布流程彩排 `make release-check`（本地站点真装 + 自更新整条链路，不碰 GitHub）；⑤ ✅ GitHub 镜像前缀 `BS_GITHUB_API`/`BS_GITHUB_ASSET_BASE`（按清单装 release 工具与自更新同一条路径） | 🔄 进行中 |
 
 **M2 完成判据的自查**：
 
 - `bs tool list` 能看到三平台差异 ✅（`when` 过滤 + `--all` 标注"不适用于当前平台"）；
   `bs tool manifest validate --os linux|darwin|windows` 三种系统都能通过 ✅；
-- `bs tool install golang` 是否"走 g 装好并可用" ❌——**当前不成立**：`g install {{versions.golang}}`
-  里的模板没有被渲染（§18.4 缺陷 #1），清单里所有 `via: manager` + `{{versions.*}}` 的
-  runtime 条目都受影响。修掉它 M2 才真正闭环。
+- `bs tool install golang` 是否"走 g 装好并可用" ✅——曾经的拦路虎（`params.version` 里的
+  `{{versions.golang}}` 从不渲染，见 §18.4 缺陷 #1/#2）已修：引擎在选完工具、`Installer.Plan`
+  之前统一展开"名字类"参数。复核方式（离线、可复查字面量）：
+  `bs tool install golang --dry-run` 在已装 `g` 的机器上显示 `g install latest`；
+  `bs config set tool.versions.golang 1.26.9` 之后显示 `g install 1.26.9`。
+  任何一步若出现字面量 `{{...}}`，就说明渲染链又断了。
 
 **M3 完成判据的自查**（全部在无副作用沙箱里验证；`make pty` 需要 `/dev/ptmx`）：
 
@@ -1561,6 +1564,18 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 未发布 Release 时的提示 | `bs self-update --check --repo kingfs/Bootstrap` → 退出码 1 + "还没有发布任何 Release" | ✅ |
 | 配置项接线 | `ui.confirm` / `ui.progress` / `shell.auto_path` / `shell.auto_proxy` 都有单测与冒烟断言 | ✅ |
 | 无副作用 | `make check`（fmt+vet+test+race）、`make smoke`（90 条断言，沙箱 + 不联网）、`make cross` 全绿 | ✅ |
+
+**M4 完成判据的自查**（同样全部无副作用；"真终端"那一格靠 `make pty`）：
+
+| 判据 | 验证方式 | 结果 |
+|---|---|---|
+| 全局 `--timeout` | 优先级 flag > `timeouts.global` > 内置默认；超时以退出码 1 结束并提示"进程树已停掉、已完成步骤不回滚"；取消时杀整棵进程组由 `pkg/cmdx` 单测锁定；`--timeout 0` = 不限（与"没给"同义，文档写明） | ✅ |
+| `tool install -i` 勾选 | `internal/cli` 注入假 Prompter 的单测：勾选结果决定计划、非交互 → 退出码 5、与显式工具名互斥 → 退出码 2；真终端行为由 `make pty` 覆盖（勾选/取消/默认勾选） | ✅ |
+| 下载断点续传 | `pkg/httpx` 单测：206 接着下、服务端忽略 `Range` 回 200 时必须**整体重下**、416 重下、**校验失败删半成品**、`.part` 名字含 URL 指纹（同 URL 才复用）、缓存 30 天未用才清理且 `--dry-run` 不清理 | ✅ |
+| `bs doctor --fix` | 默认只读（有"零写入"断言）；`--fix` 只修"生成配置 / 建目录 / 装 shell 受管块"这三类结论唯一的问题；`--dry-run` 预览不落盘；非交互无 `--yes` → 退出码 5；`internal/app/doctorfix_test.go` 逐步断言写入内容 | ✅ |
+| `make lint` / `make vuln` | 两者都**不在** `make check` 里（一个慢一个要联网）；工具版本钉在 Makefile，缺失时给出"先跑 make tools"的提示；`make lint` 0 issues、`make vuln` 无已知漏洞 | ✅ |
+| 文档定稿 | README（安装/镜像/进度）、AGENTS（施工图 + 已知未完成项）、design（本文）、configuration（环境变量表）、tool-schema（清单字段）与实现逐条对齐；M2/M3/M4 三份判据自查各自留档 | ✅ |
+| 无副作用总验收 | `make check`、`make smoke`（193 条断言）、`make pty`、`make cross`（6 个平台组合）、`make docker-matrix`（ubuntu/debian 裸镜像 + `--network none`）、`make e2e`（真实下载）、`make release-check`（61 条断言）全绿 | ✅ |
 
 ---
 

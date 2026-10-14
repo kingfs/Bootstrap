@@ -6,9 +6,10 @@
 
 `bs`（仓库名 Bootstrap）是维护者个人的开发环境重建工具：新机器上用它拉回仓库、
 恢复代理与 shell 环境、按清单安装/更新工具链。
-M1–M3 已完成（`bs init` 一把梭 + 自更新），M4 打磨进行中（`--timeout`、`-i` 勾选、
-下载断点续传、`bs doctor --fix`、`config get|set|edit`、`tool upgrade --all`、
-`make lint`/`make vuln`、`make docker-matrix` 裸机矩阵）；尚未做的主要是 Windows 清单（见 §10）。
+M1–M4 已完成（`bs init` 一把梭 + 自更新；以及 `--timeout`、`-i` 勾选、下载断点续传、
+`bs doctor --fix`、`config get|set|edit`、`tool upgrade --all`、`make lint`/`make vuln`、
+`make docker-matrix` 裸机矩阵、`make release-check` 发布彩排、GitHub 镜像前缀）。
+现在处于 M5：按 stack 持续补清单，尚未做的主要是 Windows 清单（见 §10）。
 
 - 语言：Go（版本见 `go.mod`），命令框架 cobra + 配置 viper
 - 支持平台：Linux / macOS / Windows；Linux 与 macOS 的 `amd64`、`arm64` 都必须可用

@@ -86,8 +86,8 @@ if [ ! -f "$INSTALLER" ]; then
 fi
 
 # 陈旧产物会给出假结论（这条是踩出来的：改了 install.sh 忘了重打包，脚本却"验过了"）
-if [ -n "$(find "$ROOT/cmd" "$ROOT/internal" "$ROOT/pkg" "$ROOT/tools" \
-  "$ROOT/scripts/install.sh" "$ROOT/scripts/install.ps1" \
+if [ -n "$(find "$ROOT/cmd" "$ROOT/internal" "$ROOT/pkg" "$ROOT/tools" "$ROOT/docs" \
+  "$ROOT/scripts/install.sh" "$ROOT/scripts/install.ps1" "$ROOT/README.md" \
   -newer "$DIST/checksums.txt" -type f 2>/dev/null | head -1)" ]; then
   warn "dist/ 比源码旧：先跑 \`make snapshot\`（\`make release-check\` 会先重新打包），否则下面的结论只对新代码之外的东西有效"
 fi

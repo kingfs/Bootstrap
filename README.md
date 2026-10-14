@@ -9,9 +9,10 @@
 
 > 当前进度：M1（仓库拉取、代理、shell 集成、体检）、M2（工具清单 / 安装引擎，`bs tool`）、
 > M3（新机器一把梭 `bs init`、自更新 `bs self-update`、交互式界面）已完成；
-> M4 打磨已收尾（全局 `--timeout`、`tool install -i` 勾选、下载断点续传与缓存、`bs doctor --fix`、
+> M4 已完成（全局 `--timeout`、`tool install -i` 勾选、下载断点续传与缓存、`bs doctor --fix`、
 > `config get|set|edit`、`tool upgrade --all`、`make lint`/`make vuln`/`make docker-matrix`/
-> `make release-check`），M5 在继续补清单。Windows 的工具清单尚未编写。
+> `make release-check` 发布彩排、GitHub 镜像前缀），现在在 M5 里继续按 stack 补清单。
+> Windows 的工具清单尚未编写。
 
 ## 安装
 
