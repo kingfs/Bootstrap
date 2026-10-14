@@ -218,7 +218,7 @@ Bootstrap/
 | config | 见上表 | `%AppData%\bootstrap` |
 | shell 片段（受管） | `<config>/shell/` | `<config>\shell\` |
 | state（活跃 profile、安装记录） | `$XDG_STATE_HOME/bootstrap` → `~/.local/state/bootstrap` | `%LocalAppData%\Bootstrap\state` |
-| cache（下载缓存、checksum） | `$XDG_CACHE_HOME/bootstrap` → `~/.cache/bootstrap` | `%LocalAppData%\Bootstrap\cache` |
+| cache（下载缓存、探测缓存） | `$XDG_CACHE_HOME/bootstrap` → `~/.cache/bootstrap`（`downloads/` 可随时删除） | `%LocalAppData%\Bootstrap\cache` |
 
 `bs config path` 打印全部实际路径（含来源层级），`bs config path --json` 供脚本消费。
 
@@ -810,6 +810,12 @@ type ExecEnv interface {
   这些"元数据查询"（最新 tag、校验和文件、版本文本）共用 `install.LookupTimeout = 60s`
   的单次上限，而真正的下载用 `httpx.DefaultDownloadTimeout = 15min`（通用 GET 是 60s）——
   **下载慢是正常的，查元数据慢不是**；把两者绑在同一个 60s 上，会出现"能下完却永远装不上"。
+- **下载是"可续、可复用"的**（M4）：归档/脚本落在 `<cache>/downloads`（跨次运行稳定，
+  与每次运行都不同的 `WorkDir` 刻意分开），半成品命名为 `.<名字>.<url 指纹>.part`——
+  带 URL 指纹就不会出现"v1.2 的半成品被 v1.3 续上"；下次下载带 `Range` 接着来，
+  目标文件已存在且 sha256 一致时直接用缓存。两条防线保证"续传不破坏完整性"：
+  服务端忽略 `Range`（回 200）时整体重写、校验失败时删掉半成品。缓存条目 30 天未用
+  在下次下载前清理（`--dry-run` 不清理）。**`<cache>/downloads` 可以随时整个删掉。**
 - **`extract` 决定"目录型"还是"单文件型"**：默认从归档里挑出 `binary`（缺省是 repo 名）
   复制到 `dest`；`extract: true` 则整棵解压到 `dest`（Go 工具链、uv 这类目录型发布物），
   再用 `symlinks` 把要暴露的可执行文件链到 PATH 目录。
@@ -1410,7 +1416,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | **M1 CLI 主干跑通** | 高频能力先可用 | `pkg/{giturl,version,proxyenv,hostinfo,cmdx,fsx}`；`proxy` 全套；`shellsnip` + `shell init/install/uninstall/status/snippet`；`repo get/list/root/sync`；`env show/path/export`；`doctor`（只读） | ✅ 完成 |
 | **M2 工具引擎** | 清单驱动安装 | 清单 schema + 分层加载/合并/校验；`detect`（四态 + TTL 缓存 + 强制重探）；`plan`/`install`/`upgrade`/`uninstall`；14 类 via（`manager` 覆盖 g/fnm/nvm/uv/rustup/mise/pyenv，`brew`，apt/dnf/yum/pacman/zypper/apk/winget/scoop/choco，bun/npm/pnpm/pipx/uvpm/cargo/goinstall，`release`/`script`/`source`）；真实内置清单 `tools/{common,linux,darwin,profiles}.yaml`；`tool list/info/search/plan/install/upgrade/uninstall` + `tool manifest path/validate/show/diff`；`--dry-run` 与"破坏性操作先要一句同意"（退出码 5） | ✅ 完成（判据见下） |
 | **M3 初始闭环** | 新机器一把梭（**linux + darwin**） | `bs init` 向导（huh：环境概览 + 已装/未装 + 勾选）→ plan → apply → 可选 `bs shell install`；`self-update`（sha256 + 自检 + 备份 + 原子替换）；`internal/ui` 的 `Prompter` 抽象（纯文本永久可用）；接线 `ui.confirm`/`ui.progress`/`shell.auto_path`/`shell.auto_proxy`/`--interactive`/`--plain-ui` | ✅ 完成 |
-| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、下载断点续传、`golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、shell completion 覆盖、README/AGENTS/ADR 定稿 | 🔄 进行中 |
+| **M4 打磨** | 长期好用 | ✅ 全局 `--timeout` + `timeouts.*` 配置（取消时杀整棵进程组）、✅ `tool install -i` 交互勾选、✅ `bs doctor --fix`、✅ 下载断点续传 + 下载缓存复用、`golangci-lint`/`govulncheck` 接入、集成测试矩阵（Docker）、shell completion 覆盖、README/AGENTS/ADR 定稿 | 🔄 进行中 |
 | **M5+ 持续补全** | 不断把喜欢的工具链补进来 | ① Windows 清单（scoop/winget + pwsh 片段 + `repo.root` 的 `D:/src` 约定）；② 按 stack 补齐 rust/cpp/java/containers/agent；③ 修 §18.4 的缺陷 | ⏳ 未开始 |
 
 **M2 完成判据的自查**：

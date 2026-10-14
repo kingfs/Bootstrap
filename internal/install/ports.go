@@ -115,6 +115,11 @@ type ExecEnv interface {
 
 	// WorkDir 是本次安装可用的临时目录（惰性：只算路径，不创建目录）。
 	WorkDir() string
+	// DownloadDir 是**跨次运行稳定**的下载缓存目录（惰性：只算路径，不创建目录）。
+	//
+	// 与 WorkDir 的关键区别：WorkDir 每次运行都不一样，下载到那里等于
+	// 每次都从头再来；下载缓存要能"这次断了下次接着下"，所以必须稳定。
+	DownloadDir() string
 	// Log 用于结构化日志。
 	Log() *slog.Logger
 }

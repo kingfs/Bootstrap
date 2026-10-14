@@ -258,6 +258,9 @@ bs tool manifest validate --os darwin
 内置默认值 < 系统级 < 用户级 < 项目级(.bootstrap.yaml) < BS_* 环境变量 < 命令行 flag
 ```
 
+下载缓存放在 `BS_CACHE_HOME`（默认 `~/.cache/bootstrap/downloads`）：断线可以接着下，
+同一个归档校验和一致时直接复用；删掉它只会让下次重新下载，不影响任何状态。
+
 常用环境变量：`BS_CONFIG_HOME`、`BS_STATE_HOME`、`BS_CACHE_HOME`、`BS_REPO_ROOT`、
 `BS_PROXY_PROFILE`、`BS_LOG_LEVEL`、`BS_TIMEOUT`（整条命令的总时限）、`NO_COLOR`。完整字段见
 [docs/configuration.md](docs/configuration.md)。

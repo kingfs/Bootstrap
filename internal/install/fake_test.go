@@ -23,24 +23,25 @@ import (
 // ── 假执行环境：所有 installer / engine 测试都跑在它上面，绝不碰真实系统 ──
 
 type fakeEnv struct {
-	mu        sync.Mutex
-	os        string
-	arch      string
-	distro    string
-	home      string
-	work      string
-	dry       bool
-	root      bool
-	env       map[string]string
-	bins      map[string]string // 命令名 → 路径（等价于 PATH 里有它）
-	files     map[string]string // URL → 内容（FetchText/Download 用）
-	tags      map[string]string // repo → latest tag
-	commands  []Command
-	downloads []Download
-	runErr    map[string]error // 命令名 → 故意失败
-	runOut    map[string]string
-	versions  map[string]string
-	log       *slog.Logger
+	mu          sync.Mutex
+	os          string
+	arch        string
+	distro      string
+	home        string
+	work        string
+	downloadDir string
+	dry         bool
+	root        bool
+	env         map[string]string
+	bins        map[string]string // 命令名 → 路径（等价于 PATH 里有它）
+	files       map[string]string // URL → 内容（FetchText/Download 用）
+	tags        map[string]string // repo → latest tag
+	commands    []Command
+	downloads   []Download
+	runErr      map[string]error // 命令名 → 故意失败
+	runOut      map[string]string
+	versions    map[string]string
+	log         *slog.Logger
 }
 
 func newFakeEnv(t *testing.T) *fakeEnv {
@@ -137,7 +138,13 @@ func (f *fakeEnv) Versions() map[string]string {
 	}
 	return f.versions
 }
-func (f *fakeEnv) WorkDir() string   { return f.work }
+func (f *fakeEnv) WorkDir() string { return f.work }
+func (f *fakeEnv) DownloadDir() string {
+	if f.downloadDir == "" {
+		f.downloadDir = filepath.Join(f.work, "downloads")
+	}
+	return f.downloadDir
+}
 func (f *fakeEnv) Log() *slog.Logger { return f.log }
 
 func (f *fakeEnv) ran(name string) []Command {

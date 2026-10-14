@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kingfs/Bootstrap/internal/detect"
@@ -425,5 +426,170 @@ tools:
 	}
 	if !strings.Contains(report.Steps[0].Error, "strip") {
 		t.Errorf("error = %q, want it to mention stripping", report.Steps[0].Error)
+	}
+}
+
+// TestReleaseInstallResumesInterruptedDownload 是本仓库对"断点续传"最真的一条断言：
+// 第一次下载被服务端掐断（真实 TCP 断开），半成品留在下载缓存里；第二次重跑必须
+// 带 Range 从断点续上，最终校验和通过、解压出可用的二进制。
+//
+// 之所以放在 artifacts_e2e_test.go：它和 TestReleaseInstallEndToEndOffline 走同一条
+// release 路径（真 httpx + 真解压 + 真校验），能顺带证明"续传不会破坏 sha256 校验"。
+func TestReleaseInstallResumesInterruptedDownload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	const (
+		repo  = "acme/resumetool"
+		tag   = "v2.0.0"
+		ver   = "2.0.0"
+		asset = "resumetool_2.0.0_linux_amd64.tar.gz"
+	)
+	// 造一个足够大的归档，保证"掐断点"在中间而不是刚好在末尾。
+	big := strings.Repeat("#!/bin/sh\necho padding\n", 4000)
+	payload := buildTarGz(t, map[string]tarEntry{
+		"resumetool-2.0.0/resumetool": {Body: "#!/bin/sh\necho \"resumetool " + ver + "\"\n", Mode: 0o755},
+		"resumetool-2.0.0/pad.txt":    {Body: big, Mode: 0o644},
+	})
+	sum := sha256.Sum256(payload)
+
+	var (
+		mu        sync.Mutex
+		rangeHdrs []string
+		attempts  int
+	)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/"+repo+"/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tag})
+		case r.URL.Path == "/"+repo+"/releases/download/"+tag+"/checksums.txt":
+			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), asset)
+		case r.URL.Path == "/"+repo+"/releases/download/"+tag+"/"+asset:
+			mu.Lock()
+			attempts++
+			rangeHdrs = append(rangeHdrs, r.Header.Get("Range"))
+			n := attempts
+			mu.Unlock()
+			if rng := r.Header.Get("Range"); rng != "" {
+				var start int64
+				if _, err := fmt.Sscanf(rng, "bytes=%d-", &start); err == nil && start < int64(len(payload)) {
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(payload)-1, len(payload)))
+					w.WriteHeader(http.StatusPartialContent)
+					_, _ = w.Write(payload[start:])
+					return
+				}
+			}
+			if n == 1 {
+				// 第一次：只写一半，然后把连接掐掉（不设 Content-Length，避免客户端等齐）。
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(payload[:len(payload)/2])
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				if hj, ok := w.(http.Hijacker); ok {
+					if conn, _, err := hj.Hijack(); err == nil {
+						_ = conn.Close()
+					}
+				}
+				return
+			}
+			_, _ = w.Write(payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	oldAPI, oldAsset := ghrelease.APIBaseURL, ghrelease.AssetBaseURL
+	ghrelease.APIBaseURL, ghrelease.AssetBaseURL = api.URL, api.URL
+	defer func() { ghrelease.APIBaseURL, ghrelease.AssetBaseURL = oldAPI, oldAsset }()
+
+	home := t.TempDir()
+	cache := t.TempDir()
+	dest := filepath.Join(home, "bin")
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: resumetool
+    stack: base
+    kind: cli
+    verify:
+      command: resumetool
+      version_args: [--version]
+      version_regex: 'resumetool (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: release
+        params:
+          repo: `+repo+`
+          asset: "resumetool_{{version}}_{{os}}_{{arch}}.tar.gz"
+          strip_components: 1
+          binary: resumetool
+          dest: `+dest+`
+          checksum_file: checksums.txt
+`)
+	runner := cmdx.New(nil)
+	runner.DryRun = false
+
+	// 每次"运行一次 bs"都构造一套新的 ExecEnv（同一 cache）——模拟两次命令调用。
+	newEngine := func() *Engine {
+		env := NewOSEnv(OSEnvOptions{
+			Env:       map[string]string{"PATH": os.Getenv("PATH"), "HOME": home},
+			ExtraPath: []string{dest},
+			HomeDir:   home, GOOS: "linux", Arch: "amd64",
+			Client:   httpx.New(30e9, nil),
+			WorkRoot: cache, CacheDir: cache,
+		})
+		det := &detect.Detector{Executor: runner, LookPath: env, HomeDir: home,
+			Timeout: detect.ProbeTimeout, Concurrency: 2}
+		eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+		if err != nil {
+			t.Fatalf("NewEngine: %v", err)
+		}
+		return eng
+	}
+
+	// 第一次：被掐断 → 失败，但半成品要留在下载缓存里。
+	eng := newEngine()
+	plan, err := eng.PlanTools(context.Background(), []string{"resumetool"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	if _, err := eng.Apply(context.Background(), plan, OpInstall); err == nil {
+		t.Fatal("被掐断的下载应当让这次安装失败")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "resumetool")); err == nil {
+		t.Fatal("没下完就出现了二进制")
+	}
+	parts, _ := filepath.Glob(filepath.Join(cache, "downloads", ".*.part"))
+	if len(parts) != 1 {
+		t.Fatalf("应当留下一个半成品，实际 %v", parts)
+	}
+	if info, err := os.Stat(parts[0]); err != nil || info.Size() == 0 {
+		t.Fatalf("半成品应当是部分内容：%v", err)
+	}
+
+	// 第二次：带 Range 续上 → 校验和通过 → 解压出可用的二进制。
+	eng = newEngine()
+	plan2, err := eng.PlanTools(context.Background(), []string{"resumetool"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools#2: %v", err)
+	}
+	report, err := eng.Apply(context.Background(), plan2, OpInstall)
+	if err != nil {
+		t.Fatalf("续传安装失败：%v (steps=%+v)", err, report.Steps)
+	}
+	mu.Lock()
+	hdrs := append([]string(nil), rangeHdrs...)
+	mu.Unlock()
+	if len(hdrs) < 2 || hdrs[len(hdrs)-1] == "" {
+		t.Errorf("第二次下载没有带 Range：%v", hdrs)
+	}
+	bin := filepath.Join(dest, "resumetool")
+	res, err := runner.Run(context.Background(), cmdx.Command{Name: bin, Args: []string{"--version"}})
+	if err != nil || !strings.Contains(res.Stdout, ver) {
+		t.Fatalf("续传装出来的二进制不可用：%v / %q", err, res.Stdout)
+	}
+	if parts, _ := filepath.Glob(filepath.Join(cache, "downloads", ".*.part")); len(parts) != 0 {
+		t.Errorf("成功后不该留下半成品：%v", parts)
 	}
 }

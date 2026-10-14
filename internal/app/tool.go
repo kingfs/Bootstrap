@@ -475,6 +475,7 @@ func (a *App) installEnv() install.ExecEnv {
 		Distro:    a.Platform.Distro,
 		DryRun:    a.DryRun,
 		WorkRoot:  a.Paths.CacheDir,
+		CacheDir:  a.Paths.CacheDir,
 		Versions:  a.Cfg.Tool.Versions,
 		Log:       a.Log,
 		Runner:    a.Runner,

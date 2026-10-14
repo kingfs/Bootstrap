@@ -54,7 +54,9 @@ func (s *scriptInstaller) Plan(_ context.Context, e ExecEnv, t manifest.Tool, m 
 		return Action{}, &ErrUnsupported{Via: "script", Op: op}
 	}
 	shell := scriptShell(m)
-	dest := filepath.Join(e.WorkDir(), t.ID+"-install.sh")
+	// 落到下载缓存（而不是本次运行的临时目录）：脚本很小，但"同一个脚本重复下载"
+	// 完全没必要，而且校验和一致时可以直接复用。
+	dest := filepath.Join(e.DownloadDir(), t.ID+"-install.sh")
 	args := append([]string{dest}, m.Params.Args...)
 	dl := Download{URL: renderOr(m.Params.URL, RenderData{OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}), SHA256: m.Params.SHA256, Dest: dest, Mode: 0o700}
 	return Action{
@@ -160,7 +162,8 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 		binary = filepath.Base(strings.Trim(m.Params.Repo, "/"))
 	}
 	plan := releasePlan{
-		Download: Download{URL: url, SHA256: sha, Dest: filepath.Join(e.WorkDir(), asset), Mode: 0o644},
+		// 归档放在跨次运行稳定的下载缓存里：断了能续，装过了能直接复用（见 httpx.Download）。
+		Download: Download{URL: url, SHA256: sha, Dest: filepath.Join(e.DownloadDir(), asset), Mode: 0o644},
 		Dest:     dest,
 		Strip:    m.Params.StripComponents,
 		Binary:   binary,

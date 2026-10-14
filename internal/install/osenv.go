@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type OSEnv struct {
 	distro   string
 	dryRun   bool
 	workRoot string
+	cacheDir string
 	workDir  string
 	workOnce sync.Once
 	log      *slog.Logger
@@ -53,6 +55,9 @@ type OSEnvOptions struct {
 	DryRun    bool
 	// WorkRoot 是临时工作目录的父目录（默认 cache 目录）；真正用到时才创建。
 	WorkRoot string
+	// CacheDir 是 bs 的缓存目录；下载缓存放在它的 downloads/ 子目录里。
+	// 留空则不跨次复用下载文件（只影响"能不能续传/命中缓存"，不影响正确性）。
+	CacheDir string
 	// Versions 来自配置 tool.versions，供清单模板使用。
 	Versions map[string]string
 	Log      *slog.Logger
@@ -95,6 +100,7 @@ func NewOSEnv(opt OSEnvOptions) *OSEnv {
 		extraBin: opt.ExtraPath,
 		versions: opt.Versions,
 		lookup:   opt.LookupTimeout,
+		cacheDir: opt.CacheDir,
 	}
 }
 
@@ -124,9 +130,49 @@ func (e *OSEnv) Download(ctx context.Context, d Download) (string, error) {
 		return "", ErrDryRun
 	}
 	if d.Dest == "" {
-		d.Dest = filepath.Join(e.workDir, filepath.Base(d.URL))
+		d.Dest = filepath.Join(e.DownloadDir(), filepath.Base(d.URL))
+	}
+	if strings.HasPrefix(d.Dest, e.DownloadDir()) {
+		// 下载缓存是有上限的：每次真正下载前顺手清掉长期没用过的条目，
+		// 否则"每个工具的每个版本一个归档"会无声地把缓存撑大。
+		e.pruneDownloadCache()
 	}
 	return e.client.Download(ctx, d.URL, d.Dest, d.SHA256, d.Mode)
+}
+
+// downloadCacheMaxAge 是下载缓存的保留期。
+//
+// 取舍：太短会让"昨天断了的下载"今天还得从头来；太长则每个工具的每个版本
+// 都留一个归档（Go 工具链一个就上百 MB）。30 天足够覆盖"重装一遍环境"的节奏。
+const downloadCacheMaxAge = 30 * 24 * time.Hour
+
+// pruneDownloadCache 清掉久未使用的下载缓存与残留半成品。
+//
+// 只在"真的要下载"时调用（`--dry-run` 不碰任何文件），失败只记日志：
+// 清理是打扫卫生，不该让安装失败。
+func (e *OSEnv) pruneDownloadCache() {
+	if e.dryRun {
+		return
+	}
+	dir := e.DownloadDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-downloadCacheMaxAge)
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		info, err := ent.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		path := filepath.Join(dir, ent.Name())
+		if err := os.Remove(path); err == nil {
+			e.log.Debug("pruned stale download", "file", path)
+		}
+	}
 }
 
 // LookupTimeout 是"元数据查询"（最新 tag、校验和文件、版本文本）的超时。
@@ -231,6 +277,18 @@ func (e *OSEnv) HomeDir() string { return e.home }
 
 // Versions 实现 ExecEnv。
 func (e *OSEnv) Versions() map[string]string { return e.versions }
+
+// DownloadDir 实现 ExecEnv：下载缓存放在 `<cache>/downloads`。
+//
+// 下载缓存必须跨次运行稳定（否则断点续传/缓存命中都无从谈起），
+// 同时它是**可随时删除**的：删掉只会让下次重新下载，不影响任何状态。
+func (e *OSEnv) DownloadDir() string {
+	if e.cacheDir == "" {
+		// 没给缓存目录时退回临时工作目录：此时只是"能下完"，不跨次复用。
+		return e.WorkDir()
+	}
+	return filepath.Join(e.cacheDir, "downloads")
+}
 
 // WorkDir 实现 ExecEnv。
 //

@@ -783,3 +783,101 @@ func TestOSEnvTimeoutsAreApplied(t *testing.T) {
 		t.Errorf("%v 才返回：lookup 时限没有生效（应当 ~50ms）", elapsed)
 	}
 }
+
+// TestOSEnvDownloadsLandInStableCache：归档/脚本必须落到**跨次运行稳定**的
+// `<cache>/downloads`。落到每次运行都不同的临时目录，断点续传与缓存命中都无从谈起。
+func TestOSEnvDownloadsLandInStableCache(t *testing.T) {
+	cache := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "archive-bytes")
+	}))
+	defer srv.Close()
+
+	mk := func() *OSEnv {
+		return NewOSEnv(OSEnvOptions{Client: httpx.New(time.Minute, nil), HomeDir: t.TempDir(),
+			GOOS: "linux", Arch: "amd64", CacheDir: cache})
+	}
+	first := mk()
+	if got, want := first.DownloadDir(), filepath.Join(cache, "downloads"); got != want {
+		t.Fatalf("DownloadDir = %q，期望 %q", got, want)
+	}
+	dest, err := first.Download(context.Background(), Download{URL: srv.URL + "/tool.tar.gz"})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if filepath.Dir(dest) != first.DownloadDir() {
+		t.Errorf("落点 %q 不在下载缓存里", dest)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("文件没落地：%v", err)
+	}
+
+	// 第二次运行（新的 OSEnv，同一 cache）：同 URL 无校验和时必须重下（不能拿缓存的
+	// 内容冒充），但放的是同一个位置——这正是"能续传/能复用"的前提。
+	second := mk()
+	again, err := second.Download(context.Background(), Download{URL: srv.URL + "/tool.tar.gz"})
+	if err != nil {
+		t.Fatalf("第二次 Download: %v", err)
+	}
+	if again != dest {
+		t.Errorf("第二次落点 %q，期望与第一次相同 %q", again, dest)
+	}
+}
+
+// TestOSEnvPrunesOldDownloadCache：下载缓存不能无限长大——久未使用的条目要在
+// 下一次真下载前被清掉，而新鲜文件与半成品之外的东西不受影响。
+func TestOSEnvPrunesOldDownloadCache(t *testing.T) {
+	cache := t.TempDir()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "fresh")
+	}))
+	defer srv.Close()
+
+	env := NewOSEnv(OSEnvOptions{Client: httpx.New(time.Minute, nil), HomeDir: t.TempDir(),
+		GOOS: "linux", Arch: "amd64", CacheDir: cache})
+	if err := os.MkdirAll(env.DownloadDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	stale := filepath.Join(env.DownloadDir(), "old-tool.tar.gz")
+	fresh := filepath.Join(env.DownloadDir(), "recent-tool.tar.gz")
+	for _, f := range []string{stale, fresh} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if _, err := env.Download(context.Background(), Download{URL: srv.URL + "/new.tar.gz"}); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("过期条目应当被清掉")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("新鲜条目不该被清掉：%v", err)
+	}
+}
+
+// TestOSEnvDryRunPrunesNothing：干跑连缓存都不整理（"dry-run 零写入"包括删除）。
+func TestOSEnvDryRunPrunesNothing(t *testing.T) {
+	cache := t.TempDir()
+	env := NewOSEnv(OSEnvOptions{HomeDir: t.TempDir(), GOOS: "linux", CacheDir: cache, DryRun: true})
+	if err := os.MkdirAll(env.DownloadDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	stale := filepath.Join(env.DownloadDir(), "old.tar.gz")
+	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	old := time.Now().Add(-90 * 24 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	env.pruneDownloadCache()
+	if _, err := os.Stat(stale); err != nil {
+		t.Errorf("干跑不该删除任何文件：%v", err)
+	}
+}

@@ -120,6 +120,12 @@ make cross     # 交叉编译 6 个平台组合
 1. **绝不删除或覆盖用户已有内容**：目标目录非空且不是 git 仓库时，`bs repo get` 只 `skip` 并提示。
 2. 修改用户文件（rc、配置文件）之前先备份（`fsx.BackupFile`），并优先用 `AtomicWriteFile`。
 3. 下载内容必须校验 sha256；校验文件拿不到就中止（见 `scripts/install.sh`）。
+   校验**永远覆盖整份文件**（续传时也一样），因此"续传"不会成为绕过校验的后门。
+   归档/脚本下载到 `<cache>/downloads`（跨次运行稳定，这样才能续传与复用），
+   断线时半成品 `.<名字>.<url 指纹>.part` 留在原处供下次带 `Range` 续下；
+   两条硬规矩：**服务端忽略 Range（回 200）必须整体重下**（否则文件里会混两段内容）、
+   **校验失败必须删掉半成品**（否则下次续传永远对不上）。缓存条目 30 天未用会在
+   下次下载前清掉，`--dry-run` 不清理任何东西。
 4. `bs doctor` **默认只读**：不创建目录、不写配置、不发网络请求；`--fix` 才动手，而且只修
    "结论明确、修法唯一"的问题（生成配置、建仓库根、装 shell 受管块），走 `confirmDestructive`
    那套同意规则并支持 `--dry-run`。**只读**那部分的细则：网络检查只放在 `bs proxy test`。
@@ -169,8 +175,6 @@ make cross     # 交叉编译 6 个平台组合
 - 真实下载/安装的验证脚本是 `scripts/e2e-install.sh`（`make e2e`，需要网络，不进 `make smoke`）；
   它的离线替身是 `internal/install/artifacts_e2e_test.go`（httptest 冒充 GitHub +
   真 httpx + 真解压），改 release 路径时优先扩充这条测试。
-- 下载**没有断点续传**：中途断线要从头再来（`httpx.do` 只重试建连阶段），
-  慢网络上限速代理下体验不好。
 - 代理注入的语义见 `internal/proxy.Service.NetworkEnv`：`override_existing=false` 时
   **同一组变量用 shell 里的值**，绝不能"这一组就不注入"——`httpx` 把注入的 env 当权威，
   缺键即等于直连。改动这块务必跑 `internal/proxy` 的单测与 `make e2e`。

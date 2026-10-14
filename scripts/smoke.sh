@@ -269,6 +269,11 @@ code=0; out="$("$BIN" tool install -i ripgrep 2>&1)" || code=$?
 assert_eq "-i 与工具名冲突退出码 2" "2" "$code"
 assert_contains "-i 与工具名冲突说清原因" "不能与显式工具名同时使用" "$out"
 
+# 下载缓存是"跨次运行稳定"的目录，但计划/干跑都不该把它建出来（dry-run 零写入）。
+assert_missing "tool plan 不创建下载缓存" "$WORK/cache/downloads"
+out="$("$BIN" tool plan --profile base --dry-run 2>&1 || true)"
+assert_missing "tool plan --dry-run 不创建下载缓存" "$WORK/cache/downloads"
+
 step "体检"
 set +e
 out="$("$BIN" doctor)"

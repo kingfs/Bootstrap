@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -158,7 +159,11 @@ func (c *Client) GetString(ctx context.Context, rawURL string) (string, error) {
 
 // Download 下载到 dest（父目录自动创建），可选校验 sha256。
 //
-// 返回实际写入的路径。校验失败时不会留下任何文件。
+// 支持**断点续传**：半成品留在 dest 同目录的 `.<名字>.<url 指纹>.part`（同名 URL 才复用），
+// 下次调用带 `Range` 接着下；服务端不支持范围请求（回 200）时自动从头开始。
+// 校验失败会把半成品删掉（它已经被证明是坏数据），网络中断则保留下来供下次续传。
+//
+// 返回实际写入的路径。
 func (c *Client) Download(ctx context.Context, rawURL, dest, wantSHA256 string, mode os.FileMode) (string, error) {
 	if dest == "" {
 		return "", fmt.Errorf("download %s: empty destination", rawURL)
@@ -166,61 +171,177 @@ func (c *Client) Download(ctx context.Context, rawURL, dest, wantSHA256 string, 
 	if mode == 0 {
 		mode = 0o644
 	}
+	if err := fsx.EnsureDir(filepath.Dir(dest), 0o755); err != nil {
+		return "", err
+	}
 	// 下载用独立的（更长的）预算，见 DefaultDownloadTimeout 的说明。
 	ctx, cancel := withBudget(ctx, c.DownloadTimeout)
 	defer cancel()
-	resp, err := c.do(ctx, rawURL)
+
+	// 已经下载过且校验和一致：直接用，别再把几十 MB 重下一遍。
+	// 只在给了校验和时这么做——没有校验和就无法证明缓存里的文件是它对的那一份。
+	if wantSHA256 != "" {
+		if got, err := hashFile(dest); err == nil && strings.EqualFold(strings.TrimSpace(wantSHA256), got) {
+			if err := os.Chmod(dest, mode); err == nil {
+				c.logf("download cache hit %s → %s", rawURL, dest)
+				return dest, nil
+			}
+		}
+	}
+
+	part := partPath(dest, rawURL)
+	offset := partSize(part)
+
+	resp, resumed, err := c.openDownload(ctx, rawURL, part, offset)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	if err := fsx.EnsureDir(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if resumed {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".bs-download-*")
+	f, err := os.OpenFile(part, flags, mode)
 	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
+		return "", fmt.Errorf("open partial download %s: %w", part, err)
 	}
-	tmpName := tmp.Name()
-	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmpName)
+	written, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
+		// 网络断了不是"数据坏了"：留下半成品，下次从这里接着下。
+		c.logf("download %s interrupted after %d bytes; keeping %s for resume: %v",
+			rawURL, offset+written, part, copyErr)
+		return "", fmt.Errorf("download %s: %w", rawURL, copyErr)
 	}
-
-	h := sha256.New()
-	var written int64
-	if wantSHA256 != "" {
-		written, err = io.Copy(io.MultiWriter(tmp, h), resp.Body)
-	} else {
-		written, err = io.Copy(tmp, resp.Body)
+	if closeErr != nil {
+		return "", fmt.Errorf("close %s: %w", part, closeErr)
 	}
-	if err != nil {
-		cleanup()
-		return "", fmt.Errorf("download %s: %w", rawURL, err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return "", fmt.Errorf("close temp file: %w", err)
+	if resumed {
+		c.logf("resumed %s from byte %d (%d more bytes)", rawURL, offset, written)
 	}
 
 	if wantSHA256 != "" {
-		got := hex.EncodeToString(h.Sum(nil))
+		got, err := hashFile(part)
+		if err != nil {
+			return "", err
+		}
 		if !strings.EqualFold(strings.TrimSpace(wantSHA256), got) {
-			os.Remove(tmpName)
+			// 坏数据不能留着：留着只会让下一次续传出"永远对不上"的结果。
+			os.Remove(part)
 			return "", fmt.Errorf("checksum mismatch for %s: want %s, got %s", rawURL, strings.TrimSpace(wantSHA256), got)
 		}
 	}
-	if err := os.Chmod(tmpName, mode); err != nil {
-		os.Remove(tmpName)
+	if err := os.Chmod(part, mode); err != nil {
+		os.Remove(part)
 		return "", err
 	}
-	if err := os.Rename(tmpName, dest); err != nil {
-		os.Remove(tmpName)
+	if err := os.Rename(part, dest); err != nil {
+		os.Remove(part)
 		return "", fmt.Errorf("move into place: %w", err)
 	}
-	c.logf("downloaded %s (%d bytes) → %s", rawURL, written, dest)
+	c.logf("downloaded %s (%d bytes) → %s", rawURL, offset+written, dest)
 	return dest, nil
+}
+
+// openDownload 发起（可能带 Range 的）下载请求。
+//
+// resumed 为真表示"服务端同意从 offset 接着传"（206）；服务端忽略 Range 回 200 时
+// 必须从头写，否则文件里会混进两段内容。
+func (c *Client) openDownload(ctx context.Context, rawURL, part string, offset int64) (*http.Response, bool, error) {
+	resp, err := c.fetch(ctx, rawURL, offset)
+	if err != nil {
+		var status *StatusError
+		// 416：本地半成品比服务端资源还长（版本换了/文件被改小了）——丢掉它从零重来。
+		if offset > 0 && errors.As(err, &status) && status.Status == http.StatusRequestedRangeNotSatisfiable {
+			os.Remove(part)
+			resp, err = c.fetch(ctx, rawURL, 0)
+			if err != nil {
+				return nil, false, err
+			}
+			return resp, false, nil
+		}
+		return nil, false, err
+	}
+	if offset == 0 {
+		return resp, false, nil
+	}
+	if resp.StatusCode == http.StatusPartialContent {
+		return resp, true, nil
+	}
+	// 200（服务端不支持/忽略了 Range）：丢掉半成品，整体重下。
+	c.logf("server ignored Range for %s; restarting from scratch", rawURL)
+	return resp, false, nil
+}
+
+// fetch 发一次 GET（带 offset 时加 Range 头），并按 Retries 重试**建立响应**阶段。
+//
+// 只重试"拿到响应头"这一段：真正的断线发生在读 body 时，那由半成品 + 下次续传来兜。
+func (c *Client) fetch(ctx context.Context, rawURL string, offset int64) (*http.Response, error) {
+	attempts := c.Retries + 1
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("bad url %s: %w", rawURL, err)
+		}
+		if c.UserAgent != "" {
+			req.Header.Set("User-Agent", c.UserAgent)
+		}
+		if offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+		}
+		resp, err := c.doOnce(req, rawURL)
+		if err != nil {
+			var perm *permanentError
+			if errors.As(err, &perm) {
+				return nil, perm.err
+			}
+			lastErr = err
+			continue
+		}
+		return resp, nil
+	}
+	return nil, lastErr
+}
+
+// partPath 是半成品文件的路径：`.<名字>.<url 指纹8位>.part`。
+//
+// 名字里带 URL 指纹，保证"同一个目标文件的不同版本/镜像"不会互相续传；
+// 放在 dest 同目录，保证跨进程、跨命令都能接着下（放临时目录就没意义了）。
+func partPath(dest, rawURL string) string {
+	sum := sha256.Sum256([]byte(rawURL))
+	name := filepath.Base(dest)
+	return filepath.Join(filepath.Dir(dest), "."+name+"."+hex.EncodeToString(sum[:4])+".part")
+}
+
+// partSize 返回可续传的半成品大小（不存在或为空都算 0）。
+func partSize(part string) int64 {
+	info, err := os.Stat(part)
+	if err != nil || info.IsDir() {
+		return 0
+	}
+	return info.Size()
+}
+
+// hashFile 计算文件内容的 sha256。
+//
+// 续传场景下哈希必须覆盖"已有前缀 + 新写入部分"，所以这里整文件流式读一遍：
+// 比边下边算多一次本地读，但换来"续传/重下走同一条校验路径"的简单性。
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (c *Client) logf(format string, args ...any) {
@@ -232,6 +353,9 @@ func (c *Client) logf(format string, args ...any) {
 // Logger 是可选的下载日志钩子（由上层注入 slog）。
 var Logger func(format string, args ...any)
 
+// do 是带重试的 GET（元数据、checksums 这类整体请求走这里）。
+//
+// 4xx（429 除外）重试没有意义，直接返回；5xx 与网络错误按 Retries 重放。
 func (c *Client) do(ctx context.Context, rawURL string) (*http.Response, error) {
 	attempts := c.Retries + 1
 	if attempts < 1 {
@@ -246,28 +370,51 @@ func (c *Client) do(ctx context.Context, rawURL string) (*http.Response, error) 
 		if c.UserAgent != "" {
 			req.Header.Set("User-Agent", c.UserAgent)
 		}
-		resp, err := c.HTTP.Do(req)
+		resp, err := c.doOnce(req, rawURL)
 		if err != nil {
-			lastErr = fmt.Errorf("GET %s: %w", rawURL, err)
+			var perm *permanentError
+			if errors.As(err, &perm) {
+				return nil, perm.err
+			}
+			lastErr = err
 			continue
 		}
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return resp, nil
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		resp.Body.Close()
-		lastErr = &StatusError{
-			URL:    rawURL,
-			Status: resp.StatusCode,
-			Body:   strings.TrimSpace(string(body)),
-		}
-		// 4xx（除 429）重试没有意义。
-		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-			return nil, lastErr
-		}
+		return resp, nil
 	}
 	return nil, lastErr
 }
+
+// doRequest 发一次请求（不重试），把非 2xx 变成 *StatusError。
+//
+// 供带自定义头（Range / If-Range）的下载复用；重试策略留在调用方，
+// 因为"断点续传的 206"与"整体 GET 的 200"对状态码的期待不同。
+func (c *Client) doOnce(req *http.Request, rawURL string) (*http.Response, error) {
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", rawURL, err)
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp, nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	resp.Body.Close()
+	statusErr := &StatusError{
+		URL:    rawURL,
+		Status: resp.StatusCode,
+		Body:   strings.TrimSpace(string(body)),
+	}
+	if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+		// 4xx（除 429）重试没有意义：包一层让调用方一眼看出是"不再重试"。
+		return nil, &permanentError{statusErr}
+	}
+	return nil, statusErr
+}
+
+// permanentError 标记"重试也没用"的错误（4xx）。
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
 
 // StatusError 描述非 2xx 响应。
 type StatusError struct {
