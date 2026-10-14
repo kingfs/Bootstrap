@@ -250,8 +250,13 @@ type releasePlan struct {
 	Archive  bool
 	// Tree 为真时整包解压到 Dest（目录型发布物），否则只取 Binary。
 	Tree bool
-	// Remove 是卸载计划要删掉的路径（仅 OpUninstall 用；只删文件与软链，不删目录）。
+	// Remove 是卸载计划要删掉的产物路径（仅 OpUninstall 用；只删文件，不删目录）。
 	Remove []string
+	// RemoveLinks 是卸载计划要删掉的软链（仅 OpUninstall 用）。
+	//
+	// 与 Remove 分开是因为校验方式不同：软链路径上如果站着一个**真实文件**，
+	// 那多半是用户自己放的（安装时 replaceSymlink 就不会去覆盖它），卸载不能删。
+	RemoveLinks []string
 }
 
 // planReleaseUninstall 规划"删掉当初装出去的那些文件"。
@@ -296,22 +301,27 @@ func planReleaseUninstall(e ExecEnv, t manifest.Tool, m manifest.Method) (Action
 	}
 	// 共享目录（~/.local/bin）只删文件本身；软链同样是 bs 建的，一并删。
 	remove := []string{filepath.Join(dest, executableName(binary, e.OS()))}
+	var links []string
 	for _, l := range releaseSymlinks(m.Params) {
-		remove = append(remove, fsx.ExpandPath(l.To, e.HomeDir()))
+		links = append(links, fsx.ExpandPath(l.To, e.HomeDir()))
 	}
+	summary := "删除 " + strings.Join(append(append([]string{}, remove...), links...), "、")
 	return Action{
 		ToolID: t.ID, Via: "release", Op: OpUninstall,
-		Summary: "删除 " + strings.Join(remove, "、"),
+		Summary: summary,
 		Reason:  "via=release（删除当初写入的产物与软链）",
-	}.WithResolved(releasePlan{Remove: remove}), nil
+	}.WithResolved(releasePlan{Remove: remove, RemoveLinks: links}), nil
 }
 
 // removeReleaseArtifacts 执行卸载。
 //
 // 只删文件与软链，**绝不**递归删目录：Dest 通常是 ~/.local/bin 这类共享目录，
 // 删目录等于毁掉别人的东西。路径不存在直接跳过，所以卸载是幂等的。
-func removeReleaseArtifacts(paths []string, e ExecEnv) error {
-	for _, p := range paths {
+//
+// 软链路径上站着真实文件时不删：那是用户自己的东西（安装时 replaceSymlink
+// 也会拒绝覆盖它），卸载更不能越权。§8.1"绝不删除用户已有内容"。
+func removeReleaseArtifacts(plan releasePlan, e ExecEnv) error {
+	for _, p := range plan.Remove {
 		info, err := os.Lstat(p)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -326,6 +336,23 @@ func removeReleaseArtifacts(paths []string, e ExecEnv) error {
 			return fmt.Errorf("uninstall %s: %w", p, err)
 		}
 		e.Log().Info("removed", "path", p)
+	}
+	for _, p := range plan.RemoveLinks {
+		info, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("uninstall symlink %s: %w", p, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			e.Log().Warn("uninstall: not a symlink, leaving it alone", "path", p)
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("uninstall symlink %s: %w", p, err)
+		}
+		e.Log().Info("removed symlink", "path", p)
 	}
 	return nil
 }
@@ -527,7 +554,7 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 		return nil
 	}
 	if a.Op == OpUninstall {
-		return removeReleaseArtifacts(plan.Remove, e)
+		return removeReleaseArtifacts(plan, e)
 	}
 	local, err := e.Download(ctx, plan.Download)
 	if err != nil {

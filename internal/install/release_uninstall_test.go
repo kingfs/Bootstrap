@@ -220,6 +220,27 @@ tools:
 	}
 }
 
+// TestReleaseUninstallKeepsRealFileAtSymlinkPath：软链路径上如果站着用户的真实文件，
+// 卸载必须放过它——安装时 replaceSymlink 就不会覆盖它，卸载更不该删（§8.1）。
+func TestReleaseUninstallKeepsRealFileAtSymlinkPath(t *testing.T) {
+	env := newFakeEnv(t)
+	binDir := filepath.Join(env.home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(binDir, "tt")
+	if err := os.WriteFile(userFile, []byte("用户自己写的\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeReleaseArtifacts(releasePlan{RemoveLinks: []string{userFile}}, env); err != nil {
+		t.Fatalf("不该报错：%v", err)
+	}
+	body, err := os.ReadFile(userFile)
+	if err != nil || string(body) != "用户自己写的\n" {
+		t.Errorf("用户文件必须原封不动：%v %q", err, body)
+	}
+}
+
 // TestReleaseUninstallRefusesDirectory：万一 dest/binary 推出一个目录，
 // 宁可报错也不能递归删（这属于清单写错，不是"卸载失败"）。
 func TestReleaseUninstallRefusesDirectory(t *testing.T) {
@@ -228,7 +249,7 @@ func TestReleaseUninstallRefusesDirectory(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := removeReleaseArtifacts([]string{dir}, env)
+	err := removeReleaseArtifacts(releasePlan{Remove: []string{dir}}, env)
 	if err == nil || !strings.Contains(err.Error(), "refusing to remove a directory") {
 		t.Fatalf("应当拒绝删目录，实际：%v", err)
 	}
