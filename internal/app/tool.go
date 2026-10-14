@@ -14,6 +14,7 @@ import (
 	"github.com/kingfs/Bootstrap/internal/detect"
 	"github.com/kingfs/Bootstrap/internal/install"
 	"github.com/kingfs/Bootstrap/internal/manifest"
+	"github.com/kingfs/Bootstrap/internal/ui"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
 	"github.com/kingfs/Bootstrap/tools"
 )
@@ -321,6 +322,89 @@ func (e *UnknownToolError) Error() string {
 		return "unknown tool " + e.ID
 	}
 	return "unknown tool " + e.ID + " (known: " + strings.Join(e.Known, ", ") + ")"
+}
+
+// PickOptions 控制"让用户勾选工具"的展示方式。
+type PickOptions struct {
+	// Title 是提问标题；留空时由 PickTools 依据候选数量生成。
+	Title string
+	// Question 是纯文本实现里的提示行（huh 界面下不显示）。
+	Question string
+	// PreSelected 决定默认勾选规则；为 nil 时"非已安装"默认勾选。
+	PreSelected func(ToolRow) bool
+}
+
+// PickTools 让用户从候选工具里勾选，返回选中的 id（`bs init` 与 `tool install -i` 共用）。
+//
+// 只做"取候选行 → 组装选项 → 提问"三件事：候选过滤复用 ToolRows，
+// 默认勾选规则可注入，交互通道由调用方给（非交互环境下 Prompter 会返回 ErrNotInteractive）。
+// disabled / 本机不适用的条目不进候选——让用户选一个"选了也不能装"的东西只会添乱。
+func (a *App) PickTools(ctx context.Context, opt ToolListOptions, p ui.Prompter, pick PickOptions) ([]string, error) {
+	if p == nil {
+		p = ui.NonInteractive{}
+	}
+	rows, err := a.ToolRows(ctx, opt)
+	if err != nil {
+		return nil, err
+	}
+	rows = sortToolRows(rows)
+	options := make([]ui.Option, 0, len(rows))
+	for _, r := range rows {
+		if r.Disabled || r.NotMatching {
+			continue
+		}
+		preselect := r.Status != string(detect.StatusInstalled)
+		if pick.PreSelected != nil {
+			preselect = pick.PreSelected(r)
+		}
+		options = append(options, ui.Option{
+			Value:    r.ID,
+			Label:    r.ID,
+			Hint:     toolRowHint(r),
+			Selected: preselect,
+		})
+	}
+	if len(options) == 0 {
+		return nil, errors.New("no applicable tool found in manifest")
+	}
+	title := pick.Title
+	if title == "" {
+		title = fmt.Sprintf("选择要处理的工具（%d 个候选）", len(options))
+	}
+	question := pick.Question
+	if question == "" {
+		question = "缺失/可升级的已默认勾选；编号用逗号/空格分隔，a=全选，回车=用默认，q=取消"
+	}
+	return p.MultiSelect(ui.MultiSelect{
+		Title:       title,
+		Description: question,
+		Options:     options,
+		MinSelected: 1,
+	})
+}
+
+// sortToolRows 让勾选列表稳定可读：先按技术栈，再按 id。
+func sortToolRows(rows []ToolRow) []ToolRow {
+	out := append([]ToolRow(nil), rows...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Stack != out[j].Stack {
+			return out[i].Stack < out[j].Stack
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// toolRowHint 给一行工具配一句人话（装了/可升级时带上版本）。
+func toolRowHint(r ToolRow) string {
+	switch {
+	case r.Status == string(detect.StatusInstalled) && r.Version != "":
+		return "已装 " + r.Version
+	case r.Status == string(detect.StatusOutdated) && r.Version != "":
+		return "可升级 " + r.Version
+	default:
+		return r.Stack
+	}
 }
 
 // ToolPlan 计算安装/升级/卸载计划。

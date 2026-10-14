@@ -695,3 +695,59 @@ func TestToolSelectorErrorsAreUsageErrors(t *testing.T) {
 		t.Errorf("stderr = %s", stderr)
 	}
 }
+
+// TestToolInstallInteractiveSelectionDrivesPlan：-i 在交互终端里问"勾哪些"，
+// 勾选结果直接决定计划内容（这里勾掉默认项之外的一个）。
+func TestToolInstallInteractiveSelectionDrivesPlan(t *testing.T) {
+	rt, out, errBuf, _ := sandboxWithManifest(t)
+	yes := true
+	rt.interactiveOverride = &yes
+	// 纯文本多选：按 id 勾 golang（裸编号依赖清单里的排序，名字更稳），再回答 y 确认。
+	rt.Opts.In = strings.NewReader("golang\ny\n")
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "-i", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if !strings.Contains(errBuf.String(), "选择要安装的工具") {
+		t.Errorf("交互式下应当先问勾哪些：\n%s", errBuf.String())
+	}
+	if !strings.Contains(out.String(), "golang") {
+		t.Errorf("计划里应当有勾选的 golang：\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "btop") {
+		t.Errorf("没勾的工具不该进计划：\n%s", out.String())
+	}
+}
+
+// TestToolInstallInteractiveNeedsTerminal：--json/管道等非交互场景下 -i 必须以
+// 退出码 5 明确拒绝，而不是静默退化成"全部安装"。
+func TestToolInstallInteractiveNeedsTerminal(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	no := false
+	rt.interactiveOverride = &no
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "-i", "--dry-run")
+	if code != ExitNeedsInteraction {
+		t.Fatalf("exit = %d，期望 %d\nstdout=%s\nstderr=%s", code, ExitNeedsInteraction, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "需要终端") {
+		t.Errorf("应当说明需要终端：\n%s", stderr)
+	}
+}
+
+// TestToolInstallInteractiveRejectsArgs：-i 与显式工具名同时给是用法错误，
+// 否则"我点名的工具被勾掉了"这种意外会很难查。
+func TestToolInstallInteractiveRejectsArgs(t *testing.T) {
+	rt, _, _, _ := sandboxWithManifest(t)
+	yes := true
+	rt.interactiveOverride = &yes
+
+	code, _, stderr := run(t, rt, "tool", "install", "-i", "golang")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d，期望 %d\nstderr=%s", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "不能与显式工具名同时使用") {
+		t.Errorf("错误信息应当说清冲突：\n%s", stderr)
+	}
+}

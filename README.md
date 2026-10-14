@@ -170,6 +170,7 @@ eval "$(bs shell init bash)"
 | `bs tool info <工具>` | 单个工具的详情、方式链（哪个可用、哪个会选中）与依赖 |
 | `bs tool plan [...]` | 只打印将要执行的步骤，不做任何修改（离线预览，不解析"最新版本"） |
 | `bs tool install [...]` | 安装（幂等：已装的跳过；含依赖，按拓扑序） |
+| `bs tool install -i [...]` | 先探测再用交互界面勾选要处理的工具（`-i` 对 `upgrade`/`uninstall` 同样有效） |
 | `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
 | `bs tool uninstall [...]` | 卸载（交给各自的包管理器/官方方式；清单可单独写 `uninstall:` 链） |
 | `bs tool manifest path\|validate\|show\|diff` | 清单来自哪里、是否写错、合并后长什么样 |
@@ -180,6 +181,8 @@ eval "$(bs shell init bash)"
 ```sh
 bs tool list --missing                 # 这台机器上还缺什么
 bs tool install --profile golang        # 装整套：g → golang → gopls/dlv/staticcheck
+bs tool install -i --stack base         # 在 base 里勾着装（缺失项已默认勾选）
+bs tool uninstall -i                    # 反过来，从已装的中勾着卸载
 bs tool install uv --via brew           # 只对 uv 强制用 brew
 bs tool plan --tag monitor --json       # 计划也能机读
 ```

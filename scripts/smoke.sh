@@ -246,6 +246,15 @@ assert_missing "计划不创建 go install 目录" "$WORK/home/go"
 out="$("$BIN" tool install --profile golang --dry-run 2>&1)"
 assert_not_contains "干跑不执行安装命令" "正在安装" "$out"
 
+# -i（交互勾选）在非交互环境里必须明确拒绝（退出码 5），不能静默退化成"全都装"
+code=0; out="$("$BIN" tool install -i --dry-run 2>&1)" || code=$?
+assert_eq "-i 非交互退出码 5" "5" "$code"
+assert_contains "-i 非交互提示需要终端" "需要终端" "$out"
+# -i 与点名工具同时给是用法错误（退出码 2），避免"我点名的被勾掉了"
+code=0; out="$("$BIN" tool install -i ripgrep 2>&1)" || code=$?
+assert_eq "-i 与工具名冲突退出码 2" "2" "$code"
+assert_contains "-i 与工具名冲突说清原因" "不能与显式工具名同时使用" "$out"
+
 step "体检"
 set +e
 out="$("$BIN" doctor)"

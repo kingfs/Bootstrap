@@ -1199,9 +1199,9 @@ tool   search <关键词>      （别名 find；与 list 同一套过滤参数�
 tool   info <工具> [--refresh]
 tool   plan  [工具...] [--profile P] [--stack S] [--kind K] [--tag T]... [--missing]
              [--via V] [--fallback|--no-fallback]      # 离线预览：不联网解析版本、不写缓存
-tool   install   （同上参数）
-tool   upgrade   （同上参数）
-tool   uninstall （同上参数）
+tool   install   [同上] [-i/--interactive]     # -i：先探测，再在交互界面里勾选要处理的工具
+tool   upgrade   [同上] [-i/--interactive]
+tool   uninstall [同上] [-i/--interactive]
 tool   manifest path | validate [--os linux|darwin|windows] | show [工具...] | diff <文件>
 
 env    show           显示将被装配的 PATH 条目（含来源与是否存在）与代理状态
@@ -1234,8 +1234,7 @@ completion <shell>   由 cobra 提供
 在交互终端会问一句（默认拒绝），拒绝后打印"已取消，未做任何修改。"并以 0 结束。
 
 **尚未实现**（设计意图，不在当前二进制里；写在这里以免误读）：
-`config get|set|edit`、`tool install -i` 交互勾选（`bs init` 已经能勾选，`tool install` 还没接）、
-`tool upgrade --all`、`tool uninstall --allow-system`、`proxy remove`、`repo info`、
+`config get|set|edit`、`tool upgrade --all`、`tool uninstall --allow-system`、`proxy remove`、`repo info`、
 `shell snippet edit|show|remove`、`shell update`、
 跨工具并行的 `--jobs`/`--fail-fast`/`--keep-going`、全局 `--timeout`、
 Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
@@ -1272,7 +1271,9 @@ Windows 工具清单与 `repo.root` 的 Windows 约定（ADR-0014）。
   需要稳定消费面的用 `tool list` / `tool info` / `tool plan`。
 - `--json` 同时隐式进入非交互模式：不提问、不阻塞，`fallback` 默认关闭（ADR-0013）。
 
-**交互（ADR-0003）**：所有提问都经由 `internal/ui.Prompter`，`charmbracelet/huh` 是它唯一的
+**交互（ADR-0003）**：所有提问都经由 `internal/ui.Prompter`。今天有三处会提问：
+`bs init` 的"要不要生成配置 / 勾哪些工具 / 是否装 shell 块"、`bs tool install|upgrade|uninstall -i`
+的勾选、以及破坏性操作前的一句确认。，`charmbracelet/huh` 是它唯一的
 落点（`go.mod` 里 huh 只被这个包 import）。选择顺序：
 
 | 环境 | 实现 | 行为 |

@@ -157,6 +157,7 @@ type toolSelectFlags struct {
 	kind       string
 	tags       []string
 	missing    bool
+	select_    bool
 	via        string
 	fallback   bool
 	noFallback bool
@@ -169,6 +170,8 @@ func (f *toolSelectFlags) bind(cmd *cobra.Command) {
 	fl.StringVar(&f.kind, "kind", "", "按类型选择（runtime/versionmgr/...）")
 	fl.StringSliceVar(&f.tags, "tag", nil, "按标签选择（可重复）")
 	fl.BoolVar(&f.missing, "missing", false, "只安装当前缺失的工具")
+	fl.BoolVarP(&f.select_, "interactive", "i", false,
+		"先探测再用交互界面勾选要处理的工具（需要终端；候选范围由 --profile/--stack/--kind/--tag 决定）")
 	fl.StringVar(&f.via, "via", "", "强制使用某种安装方式（默认按清单顺序自动选择）")
 	fl.BoolVar(&f.fallback, "fallback", false, "失败后允许自动换用后面的安装方式")
 	fl.BoolVar(&f.noFallback, "no-fallback", false, "失败后不换方式，直接报错")
@@ -267,10 +270,20 @@ func (rt *Runtime) toolUninstallCmd() *cobra.Command {
 	return cmd
 }
 
-// planFor 计算计划：显式给了工具名就用它们，否则用手写的选择条件。
+// planFor 计算计划：-i 时先勾选；显式给了工具名就用它们；否则用手写的选择条件。
 func (rt *Runtime) planFor(cmd *cobra.Command, f toolSelectFlags, args []string, op install.Op) (install.Plan, error) {
 	ids := args
-	if len(ids) == 0 {
+	switch {
+	case f.select_:
+		if len(args) > 0 {
+			return install.Plan{}, usageErrf("--interactive 不能与显式工具名同时使用：用 --profile/--stack/--kind/--tag 缩小候选范围，再在界面里勾选")
+		}
+		picked, err := rt.pickIDs(cmd, f, op)
+		if err != nil {
+			return install.Plan{}, err
+		}
+		ids = picked
+	case len(ids) == 0:
 		selected, err := rt.selectIDs(cmd, f)
 		if err != nil {
 			return install.Plan{}, err
@@ -278,6 +291,51 @@ func (rt *Runtime) planFor(cmd *cobra.Command, f toolSelectFlags, args []string,
 		ids = selected
 	}
 	return rt.app().ToolPlan(cmd.Context(), ids, f.profile, op)
+}
+
+// pickIDs 用交互界面让用户勾选要处理的工具（`-i`）。
+//
+// 候选范围由过滤参数决定（都不给时=清单里所有适用工具），默认勾选"当前不满足目标状态"的那些，
+// 于是"看一遍再决定"与"直接回车照默认来"是同一个入口。
+func (rt *Runtime) pickIDs(cmd *cobra.Command, f toolSelectFlags, op install.Op) ([]string, error) {
+	if !rt.interactive() {
+		return nil, coded(ExitNeedsInteraction, errors.New(
+			"--interactive 需要终端才能勾选：换到终端里跑，或改用 --profile/--stack/--missing 等参数"))
+	}
+	ids, err := rt.app().PickTools(cmd.Context(), app.ToolListOptions{
+		Profile: f.profile, Stack: f.stack, Kind: f.kind, Tags: f.tags,
+		Missing: f.missing, Refresh: true,
+	}, rt.prompter(), app.PickOptions{
+		Title: fmt.Sprintf("选择要%s的工具（候选 %s）", install.OpLabel(op), selectionLabel(f)),
+	})
+	if err != nil {
+		return nil, toolErr(err)
+	}
+	return ids, nil
+}
+
+// selectionLabel 把过滤条件说成人话，让勾选界面的标题能自解释。
+func selectionLabel(f toolSelectFlags) string {
+	parts := make([]string, 0, 5)
+	if f.profile != "" {
+		parts = append(parts, "profile="+f.profile)
+	}
+	if f.stack != "" {
+		parts = append(parts, "stack="+f.stack)
+	}
+	if f.kind != "" {
+		parts = append(parts, "kind="+f.kind)
+	}
+	for _, t := range f.tags {
+		parts = append(parts, "tag="+t)
+	}
+	if f.missing {
+		parts = append(parts, "仅缺失")
+	}
+	if len(parts) == 0 {
+		return "全部适用工具"
+	}
+	return strings.Join(parts, " ")
 }
 
 // selectIDs 把 --stack/--kind/--tag/--missing/--profile 变成一组工具 id。

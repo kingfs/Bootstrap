@@ -2,9 +2,7 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/detect"
@@ -346,41 +344,10 @@ func (a *App) chooseInitTools(ctx context.Context, opt InitOptions, overview Ini
 
 // pickTools 让用户逐个勾选：缺失的默认勾上，已装的默认不勾（"补缺"而不是"全都重来"）。
 func (a *App) pickTools(ctx context.Context, opt InitOptions, overview InitOverview) ([]string, error) {
-	rows, err := a.ToolRows(ctx, ToolListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].Stack != rows[j].Stack {
-			return rows[i].Stack < rows[j].Stack
-		}
-		return rows[i].ID < rows[j].ID
-	})
-	options := make([]ui.Option, 0, len(rows))
-	for _, r := range rows {
-		hint := r.Stack
-		switch {
-		case r.Status == string(detect.StatusInstalled) && r.Version != "":
-			hint = "已装 " + r.Version
-		case r.Status == string(detect.StatusOutdated) && r.Version != "":
-			hint = "可升级 " + r.Version
-		}
-		options = append(options, ui.Option{
-			Value:    r.ID,
-			Label:    r.ID,
-			Hint:     hint,
-			Selected: r.Status != string(detect.StatusInstalled),
-		})
-	}
-	if len(options) == 0 {
-		return nil, errors.New("no applicable tool found in manifest")
-	}
-	return opt.Prompter.MultiSelect(ui.MultiSelect{
+	return a.PickTools(ctx, ToolListOptions{}, opt.Prompter, PickOptions{
 		Title: fmt.Sprintf("选择要安装/修复的工具（%d 个适用，%d 个缺失）",
 			overview.Tools.Applicable, overview.Tools.Missing),
-		Description: "缺失的已默认勾选；编号用逗号/空格分隔，a=全选，回车=用默认，q=取消",
-		Options:     options,
-		MinSelected: 1,
+		Question: "缺失的已默认勾选；编号用逗号/空格分隔，a=全选，回车=用默认，q=取消",
 	})
 }
 

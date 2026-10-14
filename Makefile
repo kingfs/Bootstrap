@@ -88,6 +88,11 @@ pty: build
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已取消" \
 		--keys ENTER -- tool install duf
+	@# 勾选式安装：-i 出复选框界面，回车＝用默认（缺失/可升级的已勾选），再 preview 干跑
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
+		--expect-code 0 --expect-text "x toggle" \
+		--expect-text "（dry-run：以下操作都不会被执行）" \
+		--keys ENTER -- tool install -i --dry-run
 	@echo "交互式界面 PTY 校验通过"
 
 # e2e 需要网络：真从 GitHub Release 下载并校验，产物只落在 .cache/e2e

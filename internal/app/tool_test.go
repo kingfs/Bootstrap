@@ -10,6 +10,7 @@ import (
 
 	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/internal/install"
+	"github.com/kingfs/Bootstrap/internal/ui"
 )
 
 // toolSandboxApp 构造一个"只从临时用户目录加载清单"的 App，让用例与内置清单内容解耦。
@@ -358,4 +359,130 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// pickTestManifest 覆盖勾选逻辑需要的形状：正常条目 + 仅某平台 + disabled。
+const pickTestManifest = `
+version: 1
+tools:
+  - id: g
+    stack: golang
+    kind: versionmgr
+    description: Go 版本管理器
+    verify: {command: g}
+    install: [{via: brew, params: {formula: g}}]
+  - id: golang
+    stack: golang
+    kind: runtime
+    description: Go 工具链
+    verify: {command: go}
+    install: [{via: manager, params: {action: install, version: "1.24.1"}}]
+  - id: helper
+    stack: base
+    kind: cli
+    description: 辅助工具
+    verify: {command: helper}
+    install: [{via: apt, params: {packages: [helper], allow_system: true}}]
+  - id: win-only
+    stack: base
+    kind: cli
+    description: 只在 Windows
+    when: {os: [windows]}
+    verify: {command: win-only}
+    install: [{via: brew, params: {formula: win-only}}]
+  - id: off
+    stack: base
+    kind: cli
+    description: 停用的条目
+    disabled: true
+    verify: {command: off}
+    install: [{via: brew, params: {formula: off}}]
+`
+
+// TestPickToolsPreselectsAndFilters：勾选列表的候选与默认勾选规则。
+//
+// 这里锁定三条：disabled / 本机不适用的条目不进候选；"非已安装"默认勾选；
+// 注入的 PreSelected 能覆盖默认规则（`-i` 与 `bs init` 共用同一实现）。
+func TestPickToolsPreselectsAndFilters(t *testing.T) {
+	a, bin := toolSandboxApp(t, pickTestManifest)
+	// 让 helper 已安装：它就不该被默认勾选。
+	addFakeBin(t, bin, "helper", "#!/bin/sh\necho helper 1.0\n")
+
+	f := &fakePrompter{interactive: true, multis: [][]string{{"golang", "g"}}}
+	got, err := a.PickTools(context.Background(), ToolListOptions{}, f, PickOptions{Title: "选点什么"})
+	if err != nil {
+		t.Fatalf("PickTools: %v", err)
+	}
+	if len(got) != 2 || got[0] != "golang" {
+		t.Errorf("PickTools = %v，期望原样返回勾选结果", got)
+	}
+	if len(f.multiSeen) != 1 {
+		t.Fatalf("应当只问一次，实际 %d 次", len(f.multiSeen))
+	}
+	seen := map[string]ui.Option{}
+	for _, o := range f.multiSeen[0].Options {
+		seen[o.Value] = o
+	}
+	for _, banned := range []string{"win-only", "off"} {
+		if _, ok := seen[banned]; ok {
+			t.Errorf("%s 不该出现在候选里（禁用/不适用）", banned)
+		}
+	}
+	if o := seen["golang"]; !o.Selected {
+		t.Error("缺失的工具应当默认勾选")
+	}
+	if o := seen["helper"]; o.Selected {
+		t.Error("已安装的工具不该默认勾选")
+	}
+	if !strings.Contains(f.multiSeen[0].Title, "选点什么") {
+		t.Errorf("标题没有被采用：%q", f.multiSeen[0].Title)
+	}
+	if f.multiSeen[0].MinSelected != 1 {
+		t.Errorf("MinSelected = %d，期望 1（不允许空选）", f.multiSeen[0].MinSelected)
+	}
+
+	// PreSelected 覆盖默认规则：这次只勾"已安装"的（升级场景）。
+	f2 := &fakePrompter{interactive: true, multis: [][]string{{"helper"}}}
+	if _, err := a.PickTools(context.Background(), ToolListOptions{}, f2, PickOptions{
+		PreSelected: func(r ToolRow) bool { return r.Status == "installed" },
+	}); err != nil {
+		t.Fatalf("PickTools: %v", err)
+	}
+	seen2 := map[string]ui.Option{}
+	for _, o := range f2.multiSeen[0].Options {
+		seen2[o.Value] = o
+	}
+	if !seen2["helper"].Selected || seen2["golang"].Selected {
+		t.Error("PreSelected 应当覆盖默认勾选规则")
+	}
+}
+
+// TestPickToolsNonInteractiveRefuses：非交互通道必须直接把"问不了"传上来，
+// 由命令层映射成退出码 5——绝不能返回空列表让上层以为"用户什么都没选"。
+func TestPickToolsNonInteractiveRefuses(t *testing.T) {
+	a, _ := toolSandboxApp(t, pickTestManifest)
+	if _, err := a.PickTools(context.Background(), ToolListOptions{}, ui.NonInteractive{}, PickOptions{}); err == nil {
+		t.Fatal("非交互时应当返回错误")
+	}
+}
+
+// TestPickToolsNoApplicable：候选为空时给出明确错误（而不是弹一个空列表）。
+func TestPickToolsNoApplicable(t *testing.T) {
+	a, _ := toolSandboxApp(t, `
+version: 1
+tools:
+  - id: win-only
+    stack: base
+    kind: cli
+    when: {os: [windows]}
+    verify: {command: win-only}
+    install: [{via: brew, params: {formula: win-only}}]
+`)
+	f := &fakePrompter{interactive: true}
+	if _, err := a.PickTools(context.Background(), ToolListOptions{}, f, PickOptions{}); err == nil {
+		t.Fatal("没有候选时应当报错")
+	}
+	if len(f.multiSeen) != 0 {
+		t.Error("没有候选时不该弹界面")
+	}
 }
