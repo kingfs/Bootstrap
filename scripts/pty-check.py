@@ -21,7 +21,8 @@
     python3 scripts/pty-check.py --expect-code 0 --expect-text 已取消 \
         --keys DOWN DOWN ENTER WAIT2 CTRLC -- init --dry-run
 
-按键名：DOWN / UP / ENTER / SPACE / TAB / ESC / CTRLC / WAIT<n>（等 n 秒）/ 其它按字面量发。
+按键名：DOWN / UP / ENTER / SPACE / TAB / SHIFTTAB / ESC / CTRLC / WAIT<n>（等 n 秒）/
+其它按字面量发。SHIFTTAB 是交互界面的"返回上一步"（见 internal/ui/huh.go 的 huhBackKey）。
 """
 
 import argparse
@@ -42,6 +43,7 @@ KEYMAP = {
     "ENTER": b"\r",
     "SPACE": b" ",
     "TAB": b"\t",
+    "SHIFTTAB": b"\x1b[Z",
     "ESC": b"\x1b",
     "CTRLC": b"\x03",
 }

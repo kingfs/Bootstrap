@@ -1447,6 +1447,25 @@ OSC 11（查背景色）与 DSR（查光标位置），然后从 stdin 读回应
 过滤器原样返回消息，huh 的语义不变。`scripts/pty-check.py --resize COLSxROWS`
 （配合 `--resize-after`）就是这条的回归测试：24 行终端里看不见的条目，拉到 50 行后必须出现。
 
+**返回上一级菜单**（同一处 filter 的第二个用途）：`bs init` 的"想怎么装？"下面挂着两个子菜单
+（选套装、手工挑选），用户在子菜单里发现选错了，以前除了 `Ctrl-C` 重跑整条命令没有别的出路
+（用户实测反馈）。现在子菜单可以按 **Shift+Tab** 退回"想怎么装？"重选，纯文本界面按 `b`：
+
+- 新增哨兵 `ui.ErrBack`（"回上一步"）与 `MultiSelect.Back` / `Question.Back`（只有 `Select` 认）；
+  `ErrBack` 与 `ErrCancelled` 必须分开——后者是"中止，未做任何修改"。
+- 键位选 Shift+Tab 而不是 Esc / ←：huh 自己把 `Prev` 绑成 shift+tab（帮助文案就叫 back），
+  但**单字段表单里 huh 会把它置成 disabled**（没有上一个字段可去），所以它是现成的空位；
+  Esc 在可过滤列表里是"清空过滤"、← 在 Select 里是"上一条"，都不能动（AGENTS §10）。
+- 实现仍走 `tea.WithFilter`：拦到 Shift+Tab 就置位并返回 `tea.QuitMsg{}` 让 bubbletea 收工，
+  huh 不会置 `aborted`，于是 `Form.Run()` 正常返回，我们把它翻译成 `ErrBack`。
+  huh 的语义一点没改，只是多了一个我们自己发起的出口。
+- 提示写在字段说明里（`Shift+Tab 返回上一步`）：huh 把 disabled 的 Prev 从帮助行里过滤掉了，
+  不自己说清楚用户根本不知道有这么个入口。纯文本版把 `b=返回上一步` 接在提示行里。
+- 只有"上面还有菜单可回"的地方才开：`bs init` 的两个子菜单开、最外层的"想怎么装？"不开、
+  `bs tool install -i` 不开（它上面没有菜单，给了入口只能得到一句"回不去了"）。
+  `make pty` 里有一条真回归：手工挑选 → Shift+Tab → 改选"先不装工具"，必须落到
+  "已跳过工具安装"（没有返回键的版本会一路走进计划表）。
+
 **日志**：`log/slog` 结构化日志，默认 stderr，级别取 `log.level`（`-v` debug、`-vv` trace）。
 外部命令的完整 argv 与退出码在 debug 级可见；`*_PROXY` 值一律脱敏（保留 host:port，
 userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`）由引擎按步骤写入
@@ -1621,7 +1640,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | 判据 | 验证方式 | 结果 |
 |---|---|---|
 | `bs init` 能一把梭 | `bs init --dry-run --yes --tools ripgrep` 零写入；`make pty` 里真勾选后落地 | ✅ |
-| init 向导形态（ADR-0015） | 单测：配置缺失时直接生成且不再问；仓库根/代理写回配置并立即生效；`--yes` 下一问都不问；未识别 shell 时跳过而不是报错。`make pty`：全屏表单走完三问；在 `ubuntu:26.04` 容器里（`$SHELL` 未设置）真实走完"仓库根 → 代理 → 不装工具 → 装 shell 受管块" | ✅ |
+| init 向导形态（ADR-0015） | 单测：配置缺失时直接生成且不再问；仓库根/代理写回配置并立即生效；`--yes` 下一问都不问；未识别 shell 时跳过而不是报错；子菜单返回（`ui.ErrBack`）后"想怎么装？"被重问且改选生效。`make pty`：全屏表单走完三问；手工挑选 → Shift+Tab → 改选"先不装工具"；在 `ubuntu:26.04` 容器里（`$SHELL` 未设置）真实走完"仓库根 → 代理 → 不装工具 → 装 shell 受管块" | ✅ |
 | 非交互不阻塞 | `init` / `self-update` 无 `--yes` → 退出码 5；`--json` 也走这条路 | ✅ |
 | 参数互斥/未知目标 | `--missing-only --profile`、`--with-shell --no-shell`、未知 profile/tool → 退出码 2 | ✅ |
 | 交互式勾选（huh） | `make pty`：多选勾选后干跑落地；勾选数回填正确（缺失项默认勾选） | ✅ |
@@ -1665,7 +1684,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0012 | **个人 shell 片段归宿** | **主要放仓库内置 `tools/snippets/`**（随二进制发布，换机器零同步，升级即带上）；`<config>/shell/` 仅作机器特定/临时覆盖 | 片段变更需提交；不再依赖 dotfiles 同步 |
 | ADR-0013 | **fallback 默认值** | 交互式终端默认**开**；非交互（管道/CI/`--json`/`--non-interactive`）默认**关**；降级必须在 Report 与 `--json` 中显式标注 | 自动化场景绝不静默换安装方式 |
 | ADR-0014 | **首批平台范围** | 首批清单（`base/golang/nodejs/python`）只覆盖 **linux + darwin**；Windows 首批仅保证 `bs` 本体 + `repo`/`proxy`/`shell(pwsh)` 可用，工具清单在 M5+ 单独补 | Go 用 `g` 管理的前提是其在各平台可用；Windows 不冒险 |
-| ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举 |
+| ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错；⑥工具选择是两级菜单（想怎么装 → 套装/手工勾选），子菜单里 Shift+Tab（纯文本 `b`）退回上一级，选错不必重跑命令 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举、进了勾选列表回不到上一级菜单 |
 | ADR-0016 | **补全的安装形态** | `bs completion install [shell]` 负责"打开 `shell.completion` + 幂等写入受管块"；补全片段由 `bs shell init` 现算，**不新增第二组受管块标记**；默认关（与 `auto_proxy` 同理，不擅自改变每个新 shell 的行为）；`bs completion bash\|zsh\|fish\|powershell` 保持"只打印脚本"的 cobra 契约 | 用户反馈"生成完不知道下一步该干什么"；沿用 ADR-0007 的单受管块可以一次卸载干净，代价是只想补全的人会连带装上代理包装/PATH 片段 |
 
 ### 18.2 已闭环

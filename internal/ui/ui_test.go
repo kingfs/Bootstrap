@@ -143,6 +143,64 @@ func TestTextSelectNoOptions(t *testing.T) {
 	}
 }
 
+// TestTextBack 锁住纯文本界面的"返回上一步"：开了 Back 才认 b，而且选项优先。
+//
+// 用户的实测反馈是"进了勾选就回不去上一级菜单"，所以这条不能只靠 huh 那边的按键。
+func TestTextBack(t *testing.T) {
+	t.Run("多选按 b 返回上一步", func(t *testing.T) {
+		var out bytes.Buffer
+		_, err := NewText(script("b"), &out).MultiSelect(MultiSelect{Title: "勾工具", Options: testOptions(), Back: true})
+		if !errors.Is(err, ErrBack) {
+			t.Fatalf("err = %v, want ErrBack（输出：%s）", err, out.String())
+		}
+		if !strings.Contains(out.String(), "b=返回上一步") {
+			t.Errorf("开了返回就该把键位写进提示行，实际：%s", out.String())
+		}
+	})
+
+	t.Run("单选按 b 返回上一步", func(t *testing.T) {
+		var out bytes.Buffer
+		_, err := NewText(script("b"), &out).Select(
+			Question{Title: "想怎么装", Back: true},
+			[]Option{{Value: "profile"}, {Value: "manual"}},
+		)
+		if !errors.Is(err, ErrBack) {
+			t.Fatalf("err = %v, want ErrBack（输出：%s）", err, out.String())
+		}
+		if !strings.Contains(out.String(), "b=返回上一步") {
+			t.Errorf("开了返回就该把键位写进提示行，实际：%s", out.String())
+		}
+	})
+
+	t.Run("没开 Back 时 b 只是看不懂的输入", func(t *testing.T) {
+		var out bytes.Buffer
+		got, err := NewText(script("b", "1"), &out).MultiSelect(MultiSelect{Title: "勾工具", Options: testOptions()})
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if strings.Join(got, ",") != "golang" {
+			t.Errorf("选中 = %v, want [golang]", got)
+		}
+		if strings.Contains(out.String(), "返回上一步") {
+			t.Errorf("没开 Back 就不该出现返回提示，实际：%s", out.String())
+		}
+	})
+
+	t.Run("选项值真的叫 b 时选项优先", func(t *testing.T) {
+		var out bytes.Buffer
+		got, err := NewText(script("b"), &out).Select(
+			Question{Title: "选个套装", Back: true},
+			[]Option{{Value: "base"}, {Value: "b"}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if got != "b" {
+			t.Errorf("got %q, want %q（返回键不该顶掉同名选项）", got, "b")
+		}
+	})
+}
+
 func TestTextConfirmDefaultsToNo(t *testing.T) {
 	cases := []struct {
 		name  string

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -475,49 +476,64 @@ func (a *App) chooseInitTools(ctx context.Context, opt InitOptions, overview Ini
 	if err != nil {
 		return nil, "", "", err
 	}
-	entry, err := opt.Prompter.Select(ui.Question{
-		Title: fmt.Sprintf("本机 %s/%s，适用工具 %d 个（已装 %d，缺失 %d）。想怎么装？",
-			overview.OS, overview.Arch, overview.Tools.Applicable, overview.Tools.Installed, overview.Tools.Missing),
-		Default: "profile",
-	}, []ui.Option{
-		{Value: "profile", Label: "按套装快速开始", Hint: "推荐；默认套装 " + a.Cfg.Tool.DefaultProfile},
-		{Value: "missing", Label: "只补缺失的工具", Hint: fmt.Sprintf("%d 个", overview.Tools.Missing)},
-		{Value: "manual", Label: "手工挑选", Hint: "逐个勾选"},
-		{Value: "none", Label: "先不装工具", Hint: "只配好环境，之后随时 bs tool install"},
-	})
-	if err != nil {
-		return nil, "", "", err
-	}
-	switch entry {
-	case "none":
-		return nil, "", SelectionSkipped, nil
-	case "missing":
-		missing, err := a.missingIDs(ctx)
+	// 这一层是"菜单套菜单"：手工勾选与选套装都是从"想怎么装？"进去的子菜单，
+	// 所以两者都允许返回上一步（ui.ErrBack）——回到"想怎么装？"重选，
+	// 而不是让用户除了 Ctrl-C 重跑整条命令就别无他法（用户实测反馈）。
+	for {
+		entry, err := opt.Prompter.Select(ui.Question{
+			Title: fmt.Sprintf("本机 %s/%s，适用工具 %d 个（已装 %d，缺失 %d）。想怎么装？",
+				overview.OS, overview.Arch, overview.Tools.Applicable, overview.Tools.Installed, overview.Tools.Missing),
+			Default: "profile",
+		}, []ui.Option{
+			{Value: "profile", Label: "按套装快速开始", Hint: "推荐；默认套装 " + a.Cfg.Tool.DefaultProfile},
+			{Value: "missing", Label: "只补缺失的工具", Hint: fmt.Sprintf("%d 个", overview.Tools.Missing)},
+			{Value: "manual", Label: "手工挑选", Hint: "逐个勾选"},
+			{Value: "none", Label: "先不装工具", Hint: "只配好环境，之后随时 bs tool install"},
+		})
 		if err != nil {
 			return nil, "", "", err
 		}
-		return missing, "", SelectionMissing, nil
-	case "manual":
-		ids, err := a.pickTools(ctx, opt, overview)
-		return ids, "", SelectionManual, err
-	default:
-		profile, err := opt.Prompter.Select(ui.Question{
-			Title:   "选一个套装",
-			Default: a.Cfg.Tool.DefaultProfile,
-		}, profileOptions(names))
-		if err != nil {
-			return nil, "", "", err
+		switch entry {
+		case "none":
+			return nil, "", SelectionSkipped, nil
+		case "missing":
+			missing, err := a.missingIDs(ctx)
+			if err != nil {
+				return nil, "", "", err
+			}
+			return missing, "", SelectionMissing, nil
+		case "manual":
+			ids, err := a.pickTools(ctx, opt, overview)
+			if errors.Is(err, ui.ErrBack) {
+				continue
+			}
+			return ids, "", SelectionManual, err
+		default:
+			profile, err := opt.Prompter.Select(ui.Question{
+				Title:   "选一个套装",
+				Default: a.Cfg.Tool.DefaultProfile,
+				Back:    true,
+			}, profileOptions(names))
+			if errors.Is(err, ui.ErrBack) {
+				continue
+			}
+			if err != nil {
+				return nil, "", "", err
+			}
+			return nil, profile, SelectionProfile, nil
 		}
-		return nil, profile, SelectionProfile, nil
 	}
 }
 
 // pickTools 让用户逐个勾选：缺失的默认勾上，已装的默认不勾（"补缺"而不是"全都重来"）。
+//
+// 允许"返回上一步"：勾选是从"想怎么装？"进来的，选错了（或发现该换套装）应当能退回去。
 func (a *App) pickTools(ctx context.Context, opt InitOptions, overview InitOverview) ([]string, error) {
 	return a.PickTools(ctx, ToolListOptions{}, opt.Prompter, PickOptions{
 		Title: fmt.Sprintf("选择要安装/修复的工具（%d 个适用，%d 个缺失）",
 			overview.Tools.Applicable, overview.Tools.Missing),
-		Question: "缺失的已默认勾选；编号用逗号/空格分隔，a=全选，回车=用默认，q=取消",
+		Question: "缺失的已默认勾选（已装的默认不勾）",
+		Back:     true,
 	})
 }
 

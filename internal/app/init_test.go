@@ -23,8 +23,14 @@ type fakePrompter struct {
 	// （这样只关心"问过没有"的用例不必给每一问都准备答案）。
 	inputs []string
 	calls  []string // 调用轨迹，例如 "select:..." 、"multiselect"、"confirm"
+	// 各提问方法可以按顺序注入错误（nil 表示正常返回）：用来驱动"返回上一步"这类分支。
+	// 每个错误占一个"错误位"，不消耗对应的答案脚本。
+	selectErrs []error
+	multiErrs  []error
 	// multiSeen 记录 MultiSelect 收到的选项，用来断言默认勾选是否符合预期。
 	multiSeen []ui.MultiSelect
+	// selectSeen 记录 Select 收到的提问内容（标题、默认值、有没有开返回）。
+	selectSeen []ui.Question
 	// inputSeen / confirmSeen 记录收到的提问内容，用来断言"问的是什么、顺序对不对"。
 	inputSeen   []ui.Question
 	confirmSeen []ui.Question
@@ -32,6 +38,14 @@ type fakePrompter struct {
 
 func (f *fakePrompter) nextSelect(q ui.Question) (string, error) {
 	f.calls = append(f.calls, "select:"+q.Title)
+	f.selectSeen = append(f.selectSeen, q)
+	if len(f.selectErrs) > 0 {
+		err := f.selectErrs[0]
+		f.selectErrs = f.selectErrs[1:]
+		if err != nil {
+			return "", err
+		}
+	}
 	if len(f.selects) == 0 {
 		return "", errors.New("fakePrompter: 没有为 Select 准备答案")
 	}
@@ -43,6 +57,13 @@ func (f *fakePrompter) nextSelect(q ui.Question) (string, error) {
 func (f *fakePrompter) nextMulti(q ui.MultiSelect) ([]string, error) {
 	f.calls = append(f.calls, "multiselect")
 	f.multiSeen = append(f.multiSeen, q)
+	if len(f.multiErrs) > 0 {
+		err := f.multiErrs[0]
+		f.multiErrs = f.multiErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(f.multis) == 0 {
 		return nil, errors.New("fakePrompter: 没有为 MultiSelect 准备答案")
 	}
@@ -275,6 +296,76 @@ func TestInitInteractiveManualSelectionPrefersMissing(t *testing.T) {
 	}
 	if p.multiSeen[0].MinSelected != 1 {
 		t.Errorf("MinSelected = %d, want 1（不能一个都不选）", p.multiSeen[0].MinSelected)
+	}
+}
+
+// TestInitWizardBackFromManualPick 锁住"进了勾选还能退回上一级菜单"。
+//
+// 用户实测：在「选择要安装/修复的工具」里发现选错了，除了 Ctrl-C 重跑整条命令没有别的出路。
+func TestInitWizardBackFromManualPick(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+
+	// 第一次进"手工挑选"就按了返回，回到"想怎么装？"后改选"先不装工具"。
+	p := &fakePrompter{
+		interactive: true,
+		selects:     []string{"manual", "none"},
+		multiErrs:   []error{ui.ErrBack},
+	}
+	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if res.Mode != SelectionSkipped || !res.SkipTools {
+		t.Fatalf("返回后改选「先不装工具」应当生效：mode=%s skip=%v", res.Mode, res.SkipTools)
+	}
+	if len(p.multiSeen) != 1 {
+		t.Fatalf("勾选应当只问一次（返回不该重问同一屏），实际 %d 次", len(p.multiSeen))
+	}
+	if !p.multiSeen[0].Back {
+		t.Error("init 的勾选列表必须开 Back，否则用户回不去上一级菜单")
+	}
+	if p.selectSeen[0].Back {
+		t.Error("「想怎么装？」是最外层的工具菜单（上面只有输入项），不该给返回入口")
+	}
+	// "想怎么装？"被问两次＝真的退回了上一级菜单。
+	modes := 0
+	for _, c := range p.calls {
+		if strings.Contains(c, "想怎么装") {
+			modes++
+		}
+	}
+	if modes != 2 {
+		t.Fatalf("「想怎么装？」应当问两次，实际 %d 次：%v", modes, p.calls)
+	}
+}
+
+// TestInitWizardBackFromProfilePick 里"选一个套装"是另一条子菜单，返回同样要回上一级。
+func TestInitWizardBackFromProfilePick(t *testing.T) {
+	a := initApp(t)
+	addFakeManager(t, a)
+
+	p := &fakePrompter{
+		interactive: true,
+		selects:     []string{"profile", "none"},
+		// 第 1 次（想怎么装）正常，第 2 次（选套装）按返回，第 3 次（想怎么装）正常。
+		selectErrs: []error{nil, ui.ErrBack},
+	}
+	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if res.Mode != SelectionSkipped {
+		t.Fatalf("返回后改选「先不装工具」应当生效：mode=%s", res.Mode)
+	}
+	if len(p.selectSeen) != 3 {
+		t.Fatalf("应当问 3 次单选（想怎么装 → 选套装 → 想怎么装），实际 %d 次", len(p.selectSeen))
+	}
+	if len(p.selects) != 0 {
+		t.Errorf("第 3 次单选应当用掉第二个答案，还剩 %v", p.selects)
+	}
+	if !p.selectSeen[1].Back {
+		t.Error("「选一个套装」是子菜单，必须开 Back")
 	}
 }
 

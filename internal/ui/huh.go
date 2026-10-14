@@ -26,6 +26,10 @@ type huhPrompter struct {
 	// 生产代码不走这里——我们的降级是 ui.Text；这个开关让单元测试能在没有 PTY 的情况下
 	// 覆盖"选项映射 / 回填 / 校验"这些我们自己写的逻辑。
 	accessible bool
+	// wentBack 记录当前这次表单运行里用户按了"返回上一步"。
+	// 表单是阻塞运行的、prompter 也不跨 goroutine 复用，所以一个布尔字段就够；
+	// 每次 runForm 开始时清零。
+	wentBack bool
 }
 
 // NewInteractive 在"输入输出都是交互式终端"时返回基于 huh 的实现。
@@ -66,10 +70,13 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 	}
 	// 用户主动取消（Ctrl-C / Esc）时返回 ErrCancelled，与 Text 版语义一致。
 	selected := make([]string, 0, len(values))
+	// 开了"返回上一步"就把键位提示写进说明：huh 的帮助行里没有它（单字段表单里
+	// huh 会把 Prev 置成 disabled，帮助行自然不会画）。
+	desc := withBackHint(q.Description, q.Back, huhBackHint)
 	// 工具清单动辄几十条：列表按当前终端高度撑满，窗口变大时还能再长（见 listField）。
 	field := huh.NewMultiSelect[string]().
 		Title(q.Title).
-		Description(q.Description).
+		Description(desc).
 		Options(options...).
 		Filterable(len(options) > 8).
 		Value(&selected).
@@ -81,15 +88,15 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 		})
 	list := &listField{
 		title:       q.Title,
-		description: q.Description,
+		description: desc,
 		fallback:    14,
 		total:       len(options),
 		set:         func(height int) { field.Height(height) },
 	}
 	width, height := h.termSize()
 	list.resize(width, height)
-	if err := h.form(field, list).Run(); err != nil {
-		return nil, mapHuhErr(err)
+	if err := h.runForm(h.form(field, formOptions{list: list, back: q.Back})); err != nil {
+		return nil, err
 	}
 	return selected, nil
 }
@@ -111,23 +118,24 @@ func (h *huhPrompter) Select(q Question, options []Option) (string, error) {
 		return "", errors.New("ui: no selectable options")
 	}
 	value := ""
+	desc := withBackHint(q.Description, q.Back, huhBackHint)
 	field := huh.NewSelect[string]().
 		Title(q.Title).
-		Description(q.Description).
+		Description(desc).
 		Options(choices...).
 		Value(&value)
 	// 选项不多时交给 huh 自己撑开（Height 是含标题的整段高度，写死个数会少一行）。
 	list := &listField{
 		title:       q.Title,
-		description: q.Description,
+		description: desc,
 		fallback:    12,
 		total:       len(choices),
 		set:         func(height int) { field.Height(height) },
 	}
 	width, height := h.termSize()
 	list.resize(width, height)
-	if err := h.form(field, list).Run(); err != nil {
-		return "", mapHuhErr(err)
+	if err := h.runForm(h.form(field, formOptions{list: list, back: q.Back})); err != nil {
+		return "", err
 	}
 	return value, nil
 }
@@ -135,16 +143,16 @@ func (h *huhPrompter) Select(q Question, options []Option) (string, error) {
 // Confirm 实现 Prompter：默认高亮"否"（破坏性操作的默认答案是拒绝）。
 func (h *huhPrompter) Confirm(q Question) (bool, error) {
 	ok := false
-	if err := h.form(
+	if err := h.runForm(h.form(
 		huh.NewConfirm().
 			Title(q.Title).
 			Description(q.Description).
 			Affirmative("继续").
 			Negative("取消").
 			Value(&ok),
-		nil,
-	).Run(); err != nil {
-		return false, mapHuhErr(err)
+		formOptions{},
+	)); err != nil {
+		return false, err
 	}
 	return ok, nil
 }
@@ -159,11 +167,31 @@ func (h *huhPrompter) Input(q Question) (string, error) {
 	if q.Secret {
 		field = field.EchoMode(huh.EchoModePassword)
 	}
-	if err := h.form(field, nil).Run(); err != nil {
-		return "", mapHuhErr(err)
+	if err := h.runForm(h.form(field, formOptions{})); err != nil {
+		return "", err
 	}
 	return value, nil
 }
+
+// formOptions 是单字段表单的两个可选行为（都靠同一个 tea.WithFilter 实现）。
+type formOptions struct {
+	// list 非 nil 时，它的高度跟着终端窗口走（见 listField）。
+	list *listField
+	// back 为真时 Shift+Tab 表示"返回上一步"，让 runForm 返回 ErrBack。
+	back bool
+}
+
+// huhBackKey 是 huh 界面里的"返回上一步"按键。
+//
+// 用 Shift+Tab 而不是 Esc / ←：huh 自己把 Prev 绑成 shift+tab（默认帮助文案就叫 back），
+// 而单字段表单里 huh 会把它置成 disabled（没有上一个字段可去），所以这个键本来什么都不做，
+// 我们接管它不会挤掉任何现有功能。Esc 在可过滤列表里是"退出/清空过滤"、← 在 Select 里是
+// "上一条"，两者都不能动（见 AGENTS.md §10）。
+const huhBackKey = "shift+tab"
+
+// huhBackHint 是写在字段说明里的键位提示：huh 不会把 disabled 的 Prev 画进帮助行，
+// 只能自己说清楚（不然用户根本不知道有这么个入口）。
+const huhBackHint = "Shift+Tab 返回上一步"
 
 // form 组装单字段表单；输入输出显式绑定，避免 huh 自己去开 /dev/tty
 // （那样在包装器/IDE 终端里会失败，而我们已经有可用的 in/out）。
@@ -173,17 +201,26 @@ func (h *huhPrompter) Input(q Question) (string, error) {
 // 注意 WithProgramOptions 是**替换**而不是追加，所以必须排在最前面，
 // 否则后面 WithInput/WithOutput 追加上去的选项会被它清空。
 //
-// list 非 nil 时它的高度会跟着终端窗口走：huh 自己会按新尺寸重排宽度与分组高度，
-// 但我们算出来的 Select/MultiSelect 高度是启动前的常量，只能在这里用
-// WindowSizeMsg 里的新尺寸重算（filter 在下游 Form.Update 之前跑，
-// 所以同一帧就能看到新行数；huh 接着按新的内容高度重算分组高度，不会截断）。
-func (h *huhPrompter) form(field huh.Field, list *listField) *huh.Form {
+// filter 在消息进 huh 的 Form.Update 之前跑，我们只用它做两件 huh 自己做不到的事：
+//   - WindowSizeMsg：重算列表高度（huh 会重排宽度与分组高度，但 Height 是我们算的常量）；
+//   - Shift+Tab：换来一个"返回上一步"（huh 在单字段表单里把这个键禁掉了）。
+//
+// 两件事都不改写 huh 的语义：消息原样转发，只有"返回"是我们自己发起的退出。
+func (h *huhPrompter) form(field huh.Field, opts formOptions) *huh.Form {
 	form := huh.NewForm(huh.NewGroup(field))
 	form.WithProgramOptions(
 		tea.WithAltScreen(),
 		tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
-			if ws, ok := msg.(tea.WindowSizeMsg); ok {
-				list.resize(ws.Width, ws.Height)
+			switch m := msg.(type) {
+			case tea.WindowSizeMsg:
+				opts.list.resize(m.Width, m.Height)
+			case tea.KeyMsg:
+				if opts.back && m.String() == huhBackKey {
+					h.wentBack = true
+					// 让 bubbletea 立刻收工：huh 不会因此置 aborted，
+					// Run 正常返回，runForm 再把"返回"翻译成 ErrBack。
+					return tea.QuitMsg{}
+				}
 			}
 			return msg
 		}),
@@ -193,6 +230,27 @@ func (h *huhPrompter) form(field huh.Field, list *listField) *huh.Form {
 		WithOutput(h.out).
 		WithAccessible(h.accessible).
 		WithShowHelp(true)
+}
+
+// runForm 跑一个单字段表单，并把结果翻译成统一的错误（取消 → ErrCancelled，
+// 返回 → ErrBack）。
+func (h *huhPrompter) runForm(form *huh.Form) error {
+	h.wentBack = false
+	if err := form.Run(); err != nil {
+		return mapHuhErr(err)
+	}
+	if h.wentBack {
+		return ErrBack
+	}
+	return nil
+}
+
+// withBackHint 在开了"返回上一步"时把键位提示接到说明后面（说明可以是空的）。
+func withBackHint(description string, back bool, hint string) string {
+	if !back {
+		return description
+	}
+	return appendHint(description, hint)
 }
 
 // listField 是"高度跟着终端走"的列表字段：窗口一变就按新尺寸重算 Height。

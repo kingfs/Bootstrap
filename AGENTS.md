@@ -236,6 +236,15 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   改动下载错误处理时别把这层提示弄丢。
 - 交互式取消只认 **Ctrl-C**：huh 的 ESC 在可过滤列表里用于"退出过滤/清空输入"，
   不会取消整个表单（纯文本路径按 `q` 取消）。非 TTY（管道/CI）一律走纯文本或直接拒绝。
+- **"返回上一步"是 `ui.ErrBack`，不是取消**：`bs init` 的"想怎么装？"下面挂着两个子菜单
+  （选套装 / 手工挑选），子菜单里按 **Shift+Tab**（纯文本 `b`）返回 `ErrBack`，调用方回到上一问
+  重问（`chooseInitTools` 的循环）；`ErrCancelled` 则是"中止，未做任何修改"，两者别混。
+  键位用 Shift+Tab 是因为 huh 在单字段表单里把 `Prev` 置成 disabled（现成的空位），
+  而 ESC/← 各有用途（清过滤 / 上一条）。实现还是 `tea.WithFilter`：拦到键就返回 `tea.QuitMsg{}`
+  收工，huh 不会置 aborted，`Form.Run()` 正常返回后由 `runForm` 翻成 `ErrBack`；
+  提示写在字段说明里（huh 不会把 disabled 的 Prev 画进帮助行）。
+  **只在上面真有菜单可回的地方开 `Back`**，否则用户按下去只能得到一句"回不去了"。
+  改这块跑 `make pty`：里面有一条"手工挑选 → Shift+Tab → 改选先不装"的回归。
 - 交互式界面**统一走备用屏幕**（huh 的 `tea.WithAltScreen()`，见 `internal/ui/huh.go` 的 `form()`）：
   表单铺满整屏、退出后终端恢复原样。注意 `WithProgramOptions` 是**替换**而非追加，
   必须排在 `WithInput`/`WithOutput` 之前。

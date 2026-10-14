@@ -24,6 +24,14 @@ import (
 // 取消**不是失败**：调用方应把它转成退出码 0 并提示"未做任何修改"。
 var ErrCancelled = errors.New("cancelled by user")
 
+// ErrBack 表示用户要求"返回上一步"（不是取消整个流程）。
+//
+// 与 ErrCancelled 的区别很关键：取消意味着中止并提示"未做任何修改"，
+// 而返回意味着调用方应当退回上一个问题重问（`bs init` 的工具菜单就是这么用的）。
+// 只有把提问标成 Back: true 的地方才可能返回它——第一步没有"上一步"，
+// 就不该给出这个入口（否则用户按下去只能得到一句"回不去了"）。
+var ErrBack = errors.New("back to previous step")
+
 // ErrNotInteractive 表示当前环境无法向用户提问。
 //
 // 上层把它映射为退出码 5（ExitNeedsInteraction）并提示加 --yes 或改用参数。
@@ -67,6 +75,9 @@ type MultiSelect struct {
 	Options     []Option
 	// MinSelected > 0 时要求至少选这么多个，否则重新提问。
 	MinSelected int
+	// Back 为真时提供"返回上一步"的入口（huh 界面 Shift+Tab、纯文本 b），
+	// 用户按下就返回 ErrBack。菜单套菜单的地方才该打开它。
+	Back bool
 }
 
 // Question 是单选 / 确认 / 文本输入的公共部分。
@@ -77,6 +88,9 @@ type Question struct {
 	Default string
 	// Secret 为真时输入不回显（纯文本实现下会打印一句提示，真正的隐藏由 huh 负责）。
 	Secret bool
+	// Back 为真时提供"返回上一步"的入口；只有 Select 认它（见 ErrBack）。
+	// Confirm / Input 不认：危险确认的"上一步"就是拒绝，文本输入里也没有不歧义的返回键。
+	Back bool
 }
 
 // Prompter 抽象"向用户提问"。
@@ -141,7 +155,7 @@ func (t *Text) MultiSelect(q MultiSelect) ([]string, error) {
 			}
 			fmt.Fprintf(t.Out, "  [%s] %d) %s\n", checkMark(o.Selected), i+1, name)
 		}
-		fmt.Fprint(t.Out, "选择（编号，逗号/空格分隔，可写 1-3；a=全选，回车=用默认，q=取消）: ")
+		fmt.Fprint(t.Out, "选择（编号，逗号/空格分隔，可写 1-3；a=全选，回车=用默认，q=取消"+backHint(q.Back)+"）: ")
 
 		line, err := t.readLine()
 		if err != nil {
@@ -158,6 +172,10 @@ func (t *Text) MultiSelect(q MultiSelect) ([]string, error) {
 		default:
 			parsed, perr := parseSelection(line, q.Options)
 			if perr != nil {
+				// 先试选项再认"返回"：万一哪个工具 id 真叫 b，选项优先。
+				if isBackAnswer(q.Back, line) {
+					return nil, ErrBack
+				}
 				fmt.Fprintf(t.Out, "%v，请重新选择。\n", perr)
 				continue
 			}
@@ -195,7 +213,7 @@ func (t *Text) Select(q Question, options []Option) (string, error) {
 			}
 			fmt.Fprintf(t.Out, "  [%s] %d) %s\n", checkMark(o.Value == fallback), i+1, name)
 		}
-		fmt.Fprintf(t.Out, "选择（编号或名字，回车=%s，q=取消）: ", fallback)
+		fmt.Fprintf(t.Out, "选择（编号或名字，回车=%s，q=取消%s）: ", fallback, backHint(q.Back))
 
 		line, err := t.readLine()
 		if err != nil {
@@ -215,6 +233,10 @@ func (t *Text) Select(q Question, options []Option) (string, error) {
 				}
 				return o.Value, nil
 			}
+		}
+		// 同样先试选项再认"返回"：值真的叫 b 的选项不会变得选不了。
+		if isBackAnswer(q.Back, line) {
+			return "", ErrBack
 		}
 		fmt.Fprintln(t.Out, "看不懂这个选择，请重新选择。")
 	}
@@ -314,6 +336,40 @@ func checkMark(selected bool) string {
 		return "x"
 	}
 	return " "
+}
+
+// textBackAnswer 是纯文本界面里"返回上一步"的答案。
+//
+// 纯文本没有按键这一说，只能挑一个短词；`b` 与 huh 界面的 Shift+Tab 一样是"back"的意思。
+const textBackAnswer = "b"
+
+// backHint 返回提示串里那一段"怎么返回"，没开 Back 时是空串（不占地方）。
+func backHint(back bool) string {
+	if !back {
+		return ""
+	}
+	return "，" + textBackAnswer + "=返回上一步"
+}
+
+// appendHint 把一句提示接到说明后面（说明可能是空的），两种界面共用。
+func appendHint(description, hint string) string {
+	if strings.TrimSpace(description) == "" {
+		return hint
+	}
+	return description + "；" + hint
+}
+
+// isBackAnswer 判断用户是不是在要"返回上一步"：只在提问开了 Back 时才认。
+// 调用方一律先尝试按选项解析，失败后才问它——这样"值恰好叫 b"的选项不会被顶掉。
+func isBackAnswer(back bool, line string) bool {
+	if !back {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case textBackAnswer, "back":
+		return true
+	}
+	return false
 }
 
 func defaultSelection(options []Option) []string {

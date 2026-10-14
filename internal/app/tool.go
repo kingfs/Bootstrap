@@ -336,10 +336,14 @@ func (e *UnknownToolError) Error() string {
 type PickOptions struct {
 	// Title 是提问标题；留空时由 PickTools 依据候选数量生成。
 	Title string
-	// Question 是纯文本实现里的提示行（huh 界面下不显示）。
+	// Question 是勾选列表的说明行（两种界面都会显示，所以只写"列表里有什么"，
+	// 按键提示留给各界面自己：huh 画帮助行，纯文本画自己的提示行）。
 	Question string
 	// PreSelected 决定默认勾选规则；为 nil 时"非已安装"默认勾选。
 	PreSelected func(ToolRow) bool
+	// Back 为真时允许"返回上一步"（ui.ErrBack）：只有上面还有菜单可回的地方才该打开
+	// （`bs init` 的"想怎么装？"），`tool install -i` 没有上一级。
+	Back bool
 }
 
 // PickTools 让用户从候选工具里勾选，返回选中的 id（`bs init` 与 `tool install -i` 共用）。
@@ -381,13 +385,14 @@ func (a *App) PickTools(ctx context.Context, opt ToolListOptions, p ui.Prompter,
 	}
 	question := pick.Question
 	if question == "" {
-		question = "缺失/可升级的已默认勾选；编号用逗号/空格分隔，a=全选，回车=用默认，q=取消"
+		question = "缺失/可升级的已默认勾选"
 	}
 	return p.MultiSelect(ui.MultiSelect{
 		Title:       title,
 		Description: question,
 		Options:     options,
 		MinSelected: 1,
+		Back:        pick.Back,
 	})
 }
 

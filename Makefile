@@ -172,6 +172,12 @@ pty: build
 		--resize 100x50 --resize-after 5.5 \
 		--expect-code 0 --expect-text "已取消" --expect-text "podman" \
 		--keys ENTER ENTER DOWN DOWN ENTER WAIT3 CTRLC -- init --dry-run
+	@# 子菜单必须能退回上一级菜单：手工挑选 → Shift+Tab 回"想怎么装？"→ 改选"先不装工具"。
+	@# "已跳过工具安装"是判别式：没有返回键的版本会在勾选列表里把 DOWN 吃掉、直接提交，
+	@# 于是走进计划表，绝不会打这句话（返回语义见 internal/ui/huh.go 的 ErrBack/runForm）。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
+		--expect-code 0 --expect-text "已跳过工具安装" --expect-text "Shift+Tab 返回上一步" \
+		--keys ENTER ENTER DOWN DOWN ENTER SHIFTTAB DOWN DOWN DOWN ENTER -- init --dry-run
 	@# 破坏性操作的确认框：只按回车必须走"默认拒绝"，绝不能悄悄开装
 	@# （duf 只是"多半没装"的普通 CLI，用来触发确认框；按 n/回车都不会真的安装）
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
