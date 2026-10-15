@@ -1202,6 +1202,37 @@ tools:
         when: {os: [linux], distro: [arch, manjaro]}
         params: {packages: [maven]}
 
+  # ─────────────────────── 构建 / 任务编排 ───────────────────────
+
+  - id: task
+    name: Task (go-task)
+    stack: base
+    kind: cli
+    description: 用 YAML 写任务书的任务编排器（Make 的现代替代）
+    homepage: https://github.com/go-task/task
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    # 版本号实测就是裸 `3.54.0`（可能带 `+<commit>` 后缀），没有前缀文案。
+    verify: {command: task, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      # macOS 上 homebrew 只有 cask（`task` 这个 formula 名不存在），必须写 cask。
+      - via: brew
+        when: {os: [darwin]}
+        params: {cask: go-task}
+      # 发行版里的 `task` 是 taskwarrior（另一个工具，Ubuntu/Debian 也没有 go-task 包），
+      # 所以 apt/dnf/pacman 一个都不写，只从官方 Release 装。
+      # 实测 v3.54.0：资产名 task_<os>_<arch>.tar.gz，根下直接是 task 二进制
+      # （另有 README/LICENSE/completion，没有外层目录），校验和文件叫
+      # task_checksums.txt——不在默认候选链里，必须显式写。
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: go-task/task
+          asset: "task_{{os}}_{{arch}}.tar.gz"
+          binary: task
+          dest: "~/.local/bin"
+          checksum_file: task_checksums.txt
+
   # ─────────────────────────── C/C++ 补充 ───────────────────────────
 
   - id: ccache

@@ -183,9 +183,9 @@ tools:
 profiles:
   # Linux 独有的成套定义：跨平台的 base/golang/... 在 profiles.yaml 里。
   cpp:
-    description: C/C++ 工具链（发行版包 + 构建缓存/格式化/语言服务器/包管理）
+    description: C/C++ 工具链（发行版包 + 构建缓存/格式化/语言服务器/包管理/任务编排）
     tools: [gcc, cmake, ninja, pkg-config, autoconf, clang, gdb, lldb,
-            ccache, clang-format, clangd, meson, mold, conan]
+            ccache, clang-format, clangd, meson, mold, conan, task]
   # monitor 与 darwin.yaml 里的同名成套故意分开写：macmon 只支持 Apple Silicon，
   # 而 profile 里的 id 必须在本平台的清单里存在（`bs tool manifest validate` 会查）。
   monitor:
