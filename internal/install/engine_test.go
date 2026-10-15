@@ -13,6 +13,7 @@ import (
 
 	"github.com/kingfs/Bootstrap/internal/detect"
 	"github.com/kingfs/Bootstrap/internal/manifest"
+	"github.com/kingfs/Bootstrap/pkg/cmdx"
 )
 
 const engineManifest = `
@@ -638,6 +639,20 @@ func TestOSEnvLookPathAndDryRun(t *testing.T) {
 	// 干跑下 Download 不下载
 	if _, err := env.Download(context.Background(), Download{URL: "https://x/y"}); !errors.Is(err, ErrDryRun) {
 		t.Errorf("dry-run Download err = %v", err)
+	}
+	// 命令名的解析与 LookPath 用同一套规则：只在 extra_path 里的命令也要能执行。
+	// 没有这一层，新机器上"刚装进 ~/.local/bin 的管理器"在同一次运行里跑不起来
+	// （子进程继承的是宿主 shell 的 PATH，cmdx 按 os.Getenv("PATH") 解析可执行文件）。
+	real := NewOSEnv(OSEnvOptions{
+		Env: map[string]string{"PATH": "/nonexistent"}, ExtraPath: []string{binDir},
+		HomeDir: dir, GOOS: "linux", Arch: "amd64", Runner: cmdx.New(nil),
+	})
+	if _, err := real.Run(context.Background(), Command{Name: "mytool"}); err != nil {
+		t.Errorf("Run 应能执行只存在于 extra_path 里的命令：%v", err)
+	}
+	// 找不到时保留原名，报错仍是用户认识的那个命令。
+	if _, err := real.Run(context.Background(), Command{Name: "definitely-not-here"}); err == nil {
+		t.Error("不存在的命令必须失败")
 	}
 	if env.DryRun() != true || env.OS() != "linux" || env.Arch() != "amd64" || env.HomeDir() != dir {
 		t.Error("OSEnv accessors are wrong")

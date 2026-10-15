@@ -115,11 +115,20 @@ func (e *OSEnv) lookupTimeout() time.Duration {
 // Run 实现 ExecEnv。
 func (e *OSEnv) Run(ctx context.Context, c Command) (Result, error) {
 	if e.dryRun {
-		e.log.Info("dry-run", "command", c.String())
+		e.log.Debug("dry-run", "command", c.String())
 		return Result{}, ErrDryRun
 	}
 	if e.runner == nil {
 		return Result{}, errors.New("install: no command runner configured")
+	}
+	// 命令名的解析必须和探测（LookPath）用同一套规则：新机器上刚装进 ~/.local/bin
+	// 的管理器，本次运行就要拿它去装 runtime（g → golang、uv → python），而子进程
+	// 的 PATH 继承自宿主 shell，未必包含这些目录，`exec` 于是报"找不到可执行文件"。
+	// 找不到时保留原名，让报错仍然是用户认识的那个命令。
+	if !strings.ContainsAny(c.Name, `/\`) {
+		if p, ok := e.LookPath(c.Name); ok {
+			c.Name = p
+		}
 	}
 	return e.runner.Run(ctx, c)
 }
@@ -238,7 +247,10 @@ func (e *OSEnv) searchDirs() []string {
 		dirs = append(dirs,
 			filepath.Join(e.home, ".local", "bin"),
 			filepath.Join(e.home, "bin"),
-			filepath.Join(e.home, ".g", "versions", "current", "bin"),
+			// g（Go 版本管理器）的布局：`~/.g/go` 是指向当前版本的软链，
+			// `go` 在 `~/.g/go/bin`；g 自己由官方脚本装时在 `~/.g/bin`。
+			filepath.Join(e.home, ".g", "bin"),
+			filepath.Join(e.home, ".g", "go", "bin"),
 		)
 	}
 	return dirs

@@ -692,7 +692,10 @@ func (a *App) extraPathDirs() []string {
 		out = append(out,
 			filepath.Join(home, ".local", "bin"),
 			filepath.Join(home, "bin"),
-			filepath.Join(home, ".g", "versions", "current", "bin"),
+			// 与 install.OSEnv.searchDirs 保持一致：g 的 Go 在 ~/.g/go/bin
+			// （~/.g/go 是指向当前版本的软链），g 自己在 ~/.g/bin。
+			filepath.Join(home, ".g", "bin"),
+			filepath.Join(home, ".g", "go", "bin"),
 		)
 	}
 	return out
