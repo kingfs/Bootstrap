@@ -14,6 +14,9 @@ func TestParse(t *testing.T) {
 		wantSCP    bool
 		wantScheme string
 	}{
+		{name: "gitlab keyword subgroup", in: "https://git.in.chaitin.net/core/tree/issues/project", wantHost: "git.in.chaitin.net", wantOwner: "core/tree/issues", wantRepo: "project", wantScheme: "https"},
+		{name: "gitlab keyword clone", in: "git@gitlab.com:core/sub/tree/repo.git", wantHost: "gitlab.com", wantOwner: "core/sub/tree", wantRepo: "repo", wantSCP: true, wantScheme: "ssh"},
+		{name: "gitlab keyword web", in: "https://gitlab.com/core/sub/tree/repo/-/tree/develop/src", wantHost: "gitlab.com", wantOwner: "core/sub/tree", wantRepo: "repo", wantRef: "develop", wantSub: "src", wantScheme: "https"},
 		{name: "shorthand", in: "kingfs/Bootstrap", wantHost: "github.com", wantOwner: "kingfs", wantRepo: "Bootstrap"},
 		{name: "https", in: "https://github.com/kingfs/Bootstrap", wantHost: "github.com", wantOwner: "kingfs", wantRepo: "Bootstrap", wantScheme: "https"},
 		{name: "https dot git", in: "https://github.com/kingfs/Bootstrap.git", wantHost: "github.com", wantOwner: "kingfs", wantRepo: "Bootstrap", wantScheme: "https"},

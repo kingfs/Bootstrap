@@ -1201,7 +1201,7 @@ eval "$(bs shell init bash)"
 需要精确指向含 `/` 的分支时用 `bs repo get <url> --ref feat/x` 显式覆盖。
 （备选方案"探测远端分支列表"会引入网络请求，破坏 `Plan` 阶段的无副作用特性，故不采用。）
 
-**未知 host 策略**：形状为 `<host>/<owner>/<repo>` 且 host 含 `.` 时宽松接受（写成 `<user_host>/...` 目录）；`repo.hosts` 白名单只用于"简写歧义"和 clone 协议选择。
+**未知 host 策略**：形状为 `<host>/<owner>/<repo>` 且 host 含 `.` 时宽松接受（写成 `<user_host>/...` 目录）；`repo.hosts` 是批量 sync 的联网白名单；scan/list 不过滤，显式 get 不受限制。
 
 ### 9.2 路径布局
 
@@ -1225,7 +1225,7 @@ eval "$(bs shell init bash)"
     git -C path status --porcelain        # 脏工作区？
         ├─ 干净 → git -C path pull --ff-only|--rebase|--merge
         └─ 脏   → 默认跳过并提示（--autostash 则 stash→pull→stash pop）
-    非默认分支：只 fetch + 报告落后/领先提交数，不自动切换
+    当前分支无 upstream 或 detached HEAD：只 fetch + 明确提示，不自动切换
 ```
 
 - 全程注入代理（见 §8），走 HTTPS 时复用系统 git 的 credential helper（用户已经配好的 PAT 继续有效）。
@@ -1235,7 +1235,7 @@ eval "$(bs shell init bash)"
 
 - 已实现：不存在→clone（含 `--depth`/`--branch`/`extra_args`）、存在且是 git 仓库→`fetch --all [--prune]` +
   `status --porcelain` + `pull --ff-only|--rebase|--merge`、脏工作区默认跳过、`--autostash` 走 stash→pull→pop、
-  `bs repo list`（分支/远端/脏状态）、`bs repo sync`（并发，单仓库失败不中断整体）、`--dry-run` 完全不执行命令。
+  `bs repo list`（索引快照：分支/默认分支/worktree/远端）、`bs repo sync`（并发，单仓库失败不中断整体）、`--dry-run` 完全不执行命令。
 - 已强化的安全语义：目标目录**非空且不是 git 仓库**时一律 `skip`（不删除、不覆盖任何已有文件），
   只有目录为空时才 clone 进去——这一条由单测锁定（`TestPlanSkipProtectsPreciousDirectory`）。
 - 推迟：`--print-path`、`--adopt`、`origin` 不一致的校验与 `--repair-origin`、非默认分支的落后/领先计数。
@@ -1246,7 +1246,8 @@ eval "$(bs shell init bash)"
 
 ```
 bs repo get kingfs/Bootstrap other/repo https://github.com/x/y   # 一次给多个 URL 即批量
-bs repo list [--root <path>] [--json]                            # 枚举 root 下所有仓库
+bs repo list [--json]                                          # 只读 SQLite 索引快照
+bs repo scan [--dry-run]                                       # 离线发现并重建索引
 bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull，汇总表格
 ```
 
@@ -1254,6 +1255,26 @@ bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull�
 > 需要批量时把 URL 写在命令行或 `xargs`（`bs repo get` 接受任意多个位置参数）。
 
 `bs repo sync` 是"换电脑/定期更新"的主力命令：并发 fetch+pull，输出 `仓库 | 分支 | 动作 | 结果 | 领先/落后`。
+
+### 9.5 索引、发现与分支边界（2026-10-14）
+
+- 索引位于 `<repo.root>/.bootstrap/repos.db`。list/cd 只读打开，不建库；缺失时提示 scan，
+  有效空索引不触发遍历。get 成功后保存实际分支，scan 原子事务替换全部记录。
+  旧表在写入时补充 default_branch/worktree 列，读取旧表不修改 schema。
+- scan 不联网、不依赖 layout/hosts；遍历所有目录（不跟随目录符号链接），
+  跳过 `.git`/`.bootstrap`，同时识别 `.git` 目录和 `gitdir:` 文件。
+  发现仓库后继续递归，包含子模块与嵌套 worktree；默认不设深度上限，以容纳 GitLab 多级子组。
+  取消或读取错误不覆盖旧库，dry-run 不写库。GitLab 网页路径只用 `/-/` 消除 namespace 歧义；
+  SSH/带 `.git` 后缀的克隆路径不按网页关键字截断。
+- sync 仍显式发现磁盘上的仓库；fetch --all 前核对所有 remote 的 URL。
+  任一远端不在 hosts 或无法识别为网络仓库时，整仓库 skip，避免隐式访问私网；
+  多个 worktree 按 common Git directory 加锁，避免并发操作共享 refs/stash。
+- clone 不猜分支名，使用远端 HEAD；pull 始终针对当前 upstream。
+  detached HEAD/无 upstream 时 fetch 后 skip；不自动 checkout，不替用户修改功能分支与默认分支关系。
+  默认分支信息来自本地 refs/remotes/origin/HEAD，无此 ref 则留空；它是离线快照，可能过期，
+  可由用户执行 `git remote set-head origin -a` 刷新。
+- 计数应统计 `.git` 标记本身（例如 `find <root> -name .git -prune -print`），
+  `ls */*/*/.git | wc -l` 统计的是目录内容和标题，不能与索引行数比较。
 
 ---
 

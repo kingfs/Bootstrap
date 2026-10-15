@@ -21,6 +21,12 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(_ context.Context, c cmdx.Command) (cmdx.Result, error) {
 	f.calls = append(f.calls, c)
+	if containsSeq(c.Args, "symbolic-ref") && containsSeq(c.Args, "HEAD") {
+		return cmdx.Result{Stdout: "trunk\n"}, nil
+	}
+	if containsSeq(c.Args, "@{upstream}") {
+		return cmdx.Result{Stdout: "origin/trunk\n"}, nil
+	}
 	if f.handler == nil {
 		return cmdx.Result{Command: c}, nil
 	}

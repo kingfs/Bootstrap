@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
@@ -114,19 +115,28 @@ func (a *App) RepoGet(ctx context.Context, inputs []string, opts RepoOptions) ([
 			results = append(results, res)
 			// 克隆/更新成功后立即写入轻量索引，后续 list 无需遍历整个目录。
 			if res.Status == "cloned" || res.Status == "updated" || res.Status == "up-to-date" {
-				idx, _ := gitrepo.LoadIndex(root)
+				idx, err := gitrepo.LoadIndex(root)
+				if err != nil && !errors.Is(err, gitrepo.ErrNoIndex) {
+					applyErr = fmt.Errorf("load repository index: %w", err)
+					return
+				}
+				st, _ := mgr.Inspect(ctx, plan.Path)
+				entry := gitrepo.IndexEntry{Path: plan.Path, Slug: plan.Ref.Slug(), Branch: st.Branch, DefaultBranch: st.DefaultBranch, Worktree: st.Worktree}
 				found := false
 				for i := range idx {
 					if idx[i].Path == plan.Path {
-						idx[i] = gitrepo.IndexEntry{Path: plan.Path, Slug: plan.Ref.Slug(), Branch: plan.Ref.Ref}
+						idx[i] = entry
 						found = true
 						break
 					}
 				}
 				if !found {
-					idx = append(idx, gitrepo.IndexEntry{Path: plan.Path, Slug: plan.Ref.Slug(), Branch: plan.Ref.Ref})
+					idx = append(idx, entry)
 				}
-				_ = gitrepo.SaveIndex(root, idx)
+				if err := gitrepo.SaveIndex(root, idx); err != nil {
+					applyErr = fmt.Errorf("save repository index: %w", err)
+					return
+				}
 			}
 		}
 	})
@@ -144,20 +154,9 @@ func (a *App) RepoList(ctx context.Context) ([]RepoStatusView, string, error) {
 	if err != nil {
 		return nil, root, err
 	}
-	if len(idx) == 0 {
-		paths, e := gitrepo.Discover(root, 0)
-		if e != nil {
-			return nil, root, e
-		}
-		idx = make([]gitrepo.IndexEntry, 0, len(paths))
-		for _, p := range paths {
-			idx = append(idx, gitrepo.IndexEntry{Path: p})
-		}
-		_ = gitrepo.SaveIndex(root, idx)
-	}
 	out := make([]RepoStatusView, 0, len(idx))
 	for _, e := range idx {
-		st := gitrepo.RepoStatus{Path: e.Path, Slug: e.Slug, Branch: e.Branch}
+		st := gitrepo.RepoStatus{Path: e.Path, Slug: e.Slug, Branch: e.Branch, DefaultBranch: e.DefaultBranch, Worktree: e.Worktree}
 		out = append(out, RepoStatusView{RepoStatus: st, RootSource: source})
 	}
 	return out, root, nil
@@ -167,16 +166,25 @@ func (a *App) RepoList(ctx context.Context) ([]RepoStatusView, string, error) {
 func (a *App) RepoScan(ctx context.Context) ([]RepoStatusView, string, error) {
 	mgr := a.RepoManager()
 	root, source := a.RepoRoot()
-	paths, err := gitrepo.Discover(root, 0)
+	paths, err := gitrepo.DiscoverContext(ctx, root, 0)
 	if err != nil {
 		return nil, root, err
 	}
 	entries := make([]gitrepo.IndexEntry, 0, len(paths))
 	out := make([]RepoStatusView, 0, len(paths))
 	for _, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, root, err
+		}
 		st, _ := mgr.Inspect(ctx, p)
-		entries = append(entries, gitrepo.IndexEntry{Path: p, Slug: st.Slug, Branch: st.Branch})
+		entries = append(entries, gitrepo.IndexEntry{Path: p, Slug: st.Slug, Branch: st.Branch, DefaultBranch: st.DefaultBranch, Worktree: st.Worktree})
 		out = append(out, RepoStatusView{RepoStatus: st, RootSource: source})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, root, err
+	}
+	if a.DryRun {
+		return out, root, nil
 	}
 	if err := gitrepo.SaveIndex(root, entries); err != nil {
 		return nil, root, err

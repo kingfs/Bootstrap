@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 
@@ -144,7 +145,7 @@ func (m *Manager) Plan(raw, root string, opts Options) (Plan, error) {
 		plan.Reason = "目标不存在，将克隆"
 		plan.Commands = []cmdx.Command{m.cloneCommand(cloneURL, path, ref.Ref, depth)}
 
-	case fsx.IsDir(filepath.Join(path, ".git")):
+	case isRepository(path):
 		plan.Existed = true
 		plan.Action = ActionPull
 		plan.Reason = "目标已是 git 仓库，将更新"
@@ -254,6 +255,19 @@ func (m *Manager) applyPull(ctx context.Context, plan Plan, opts Options) (Outco
 		return out, nil
 	}
 
+	// 不猜 main/master，也不把远端主分支合并进功能分支；没有 upstream 时明确跳过。
+	branch, err := m.Runner.Run(ctx, cmdx.Command{Name: "git", Args: []string{"-C", plan.Path, "symbolic-ref", "--quiet", "--short", "HEAD"}})
+	if err != nil || strings.TrimSpace(branch.Stdout) == "" {
+		out.Status = "skipped"
+		out.Message = "已 fetch；当前为 detached HEAD，未执行 pull"
+		return out, nil
+	}
+	upstream, err := m.Runner.Run(ctx, cmdx.Command{Name: "git", Args: []string{"-C", plan.Path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}})
+	if err != nil || strings.TrimSpace(upstream.Stdout) == "" {
+		out.Status = "skipped"
+		out.Message = "已 fetch；当前分支没有 upstream，未执行 pull"
+		return out, nil
+	}
 	before, _ := m.headCommit(ctx, plan.Path)
 
 	// 3) 必要时 stash
@@ -305,19 +319,23 @@ func (m *Manager) headCommit(ctx context.Context, path string) (string, error) {
 
 // RepoStatus 是一个本地仓库的状态快照。
 type RepoStatus struct {
-	Path    string `json:"path"`
-	Slug    string `json:"slug,omitempty"`
-	Branch  string `json:"branch,omitempty"`
-	Dirty   bool   `json:"dirty"`
-	Action  string `json:"action,omitempty"`
-	Message string `json:"message,omitempty"`
+	Path          string `json:"path"`
+	Slug          string `json:"slug,omitempty"`
+	Branch        string `json:"branch,omitempty"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+	Worktree      bool   `json:"worktree"`
+	Dirty         bool   `json:"dirty"`
+	Action        string `json:"action,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
-// Discover 在 root 下查找所有 git 仓库目录（不进入仓库内部继续递归）。
+// Discover 发现普通仓库、嵌套仓库和 worktree；maxDepth <= 0 时不限制 namespace 深度。
 func Discover(root string, maxDepth int) ([]string, error) {
-	if maxDepth <= 0 {
-		maxDepth = 6
-	}
+	return DiscoverContext(context.Background(), root, maxDepth)
+}
+
+// DiscoverContext 允许取消大目录扫描；读取失败时不以不完整结果覆盖原索引。
+func DiscoverContext(ctx context.Context, root string, maxDepth int) ([]string, error) {
 	if !fsx.IsDir(root) {
 		// 用 %w 包住哨兵错误，调用方（CLI）才能把它映射成"前置条件不满足"而不是一般失败。
 		return nil, fmt.Errorf("%w: %s", ErrNoRoot, root)
@@ -325,26 +343,24 @@ func Discover(root string, maxDepth int) ([]string, error) {
 	var found []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// 单个目录不可读不应中断整体发现。
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
+			return fmt.Errorf("scan %s: %w", path, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if !d.IsDir() {
 			return nil
 		}
 		base := filepath.Base(path)
-		if base == ".git" {
+		if base == ".git" || base == ".bootstrap" {
 			return fs.SkipDir
 		}
 		rel, relErr := filepath.Rel(root, path)
-		if relErr == nil && rel != "." && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
+		if relErr == nil && rel != "." && maxDepth > 0 && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
 			return fs.SkipDir
 		}
-		if fsx.IsDir(filepath.Join(path, ".git")) {
+		if isRepository(path) {
 			found = append(found, path)
-			return fs.SkipDir
 		}
 		return nil
 	})
@@ -358,12 +374,18 @@ func Discover(root string, maxDepth int) ([]string, error) {
 // Inspect 读取一个本地仓库的分支、远端与脏状态。
 func (m *Manager) Inspect(ctx context.Context, path string) (RepoStatus, error) {
 	st := RepoStatus{Path: path}
+	if info, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		st.Worktree = info.Mode().IsRegular() && fsx.Exists(filepath.Join(repositoryGitDir(path), "commondir"))
+	}
+	if res, err := m.Runner.Run(ctx, cmdx.Command{Name: "git", Args: []string{"-C", path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"}}); err == nil {
+		st.DefaultBranch = strings.TrimPrefix(strings.TrimSpace(res.Stdout), "origin/")
+	}
 	if res, err := m.Runner.Run(ctx, cmdx.Command{Name: "git", Args: []string{"-C", path, "rev-parse", "--abbrev-ref", "HEAD"}}); err == nil {
 		st.Branch = strings.TrimSpace(res.Stdout)
 	}
 	if res, err := m.Runner.Run(ctx, cmdx.Command{Name: "git", Args: []string{"-C", path, "remote", "get-url", "origin"}}); err == nil {
 		remote := strings.TrimSpace(res.Stdout)
-		if ref, perr := giturl.Parse(remote, m.Cfg.Repo.DefaultHost); perr == nil {
+		if ref, perr := parseRemote(remote); perr == nil {
 			st.Slug = ref.Slug()
 		}
 	}
@@ -375,7 +397,7 @@ func (m *Manager) Inspect(ctx context.Context, path string) (RepoStatus, error) 
 
 // Sync 并发更新 root 下的所有仓库。
 func (m *Manager) Sync(ctx context.Context, root string, jobs int, opts Options) ([]RepoStatus, error) {
-	paths, err := Discover(root, 0)
+	paths, err := DiscoverContext(ctx, root, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -389,9 +411,19 @@ func (m *Manager) Sync(ctx context.Context, root string, jobs int, opts Options)
 	results := make([]RepoStatus, len(paths))
 	g, gctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, jobs)
+	var locks sync.Map
 	for i, p := range paths {
 		g.Go(func() error {
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-gctx.Done():
+				return gctx.Err()
+			}
+			// 同一仓库的 worktree 共享 refs 和 stash，避免并发 fetch/stash 互相干扰。
+			value, _ := locks.LoadOrStore(commonGitDir(p), &sync.Mutex{})
+			lock := value.(*sync.Mutex)
+			lock.Lock()
+			defer lock.Unlock()
 			defer func() { <-sem }()
 			results[i] = m.syncOne(gctx, p, opts)
 			return nil // 单个仓库失败不中断整体，结果记录在结果集中
@@ -408,11 +440,42 @@ func (m *Manager) syncOne(ctx context.Context, path string, opts Options) RepoSt
 	if inspected, err := m.Inspect(ctx, path); err == nil {
 		st = inspected
 	}
+	// fetch --all 和 pull 可能访问不同远端，因此必须逐个检查，不能只检查 origin。
+	remotes, err := m.Runner.Run(ctx, cmdx.Command{Name: "git", Args: []string{"-C", path, "remote", "-v"}})
+	if err != nil {
+		st.Action = "failed"
+		st.Message = fmt.Sprintf("read remotes: %v", err)
+		return st
+	}
+	for _, line := range strings.Split(remotes.Stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ref, err := parseRemote(fields[1])
+		allowed := false
+		if err == nil {
+			for _, host := range m.Cfg.Repo.Hosts {
+				if strings.EqualFold(host, ref.Host) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			st.Action = "skipped"
+			st.Message = "远端不在 repo.hosts 中，未执行网络同步（可调整 hosts 后重试）"
+			return st
+		}
+	}
 	plan := Plan{Path: path, Action: ActionPull, Commands: m.pullCommands(path), Reason: "批量同步"}
 	out, err := m.Apply(ctx, plan, opts)
 	switch {
 	case err != nil:
 		st.Action = "failed"
+		st.Message = out.Message
+	case out.Status == "planned":
+		st.Action = "planned"
 		st.Message = out.Message
 	case out.Status == "skipped":
 		st.Action = "skipped"
@@ -436,4 +499,53 @@ func isDirEmpty(path string) bool {
 		return false
 	}
 	return len(entries) == 0
+}
+
+// isRepository 兼容 worktree/submodule 的 gitdir 文件，避免把普通同名文件当仓库。
+func isRepository(path string) bool {
+	marker := filepath.Join(path, ".git")
+	if fsx.IsDir(marker) {
+		return true
+	}
+	info, err := os.Stat(marker)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 65536 {
+		return false
+	}
+	data, err := os.ReadFile(marker)
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(data)), "gitdir: ")
+}
+
+func parseRemote(raw string) (giturl.Ref, error) {
+	prefix, _, colon := strings.Cut(raw, ":")
+	if !strings.Contains(raw, "://") && (!colon || strings.ContainsAny(prefix, `/\\`) || !strings.ContainsAny(prefix, ".@")) {
+		return giturl.Ref{}, fmt.Errorf("not a network repository URL")
+	}
+	return giturl.Parse(raw, "")
+}
+
+func repositoryGitDir(repo string) string {
+	dir := filepath.Join(repo, ".git")
+	if data, err := os.ReadFile(dir); err == nil && strings.HasPrefix(string(data), "gitdir: ") {
+		dir = strings.TrimSpace(strings.TrimPrefix(string(data), "gitdir: "))
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(repo, dir)
+		}
+	}
+	return filepath.Clean(dir)
+}
+
+func commonGitDir(repo string) string {
+	dir := repositoryGitDir(repo)
+	if data, err := os.ReadFile(filepath.Join(dir, "commondir")); err == nil {
+		common := strings.TrimSpace(string(data))
+		if filepath.IsAbs(common) {
+			dir = common
+		} else {
+			dir = filepath.Join(dir, common)
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return filepath.Clean(dir)
 }

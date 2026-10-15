@@ -64,11 +64,14 @@ func (rt *Runtime) repoGetCmd() *cobra.Command {
 func (rt *Runtime) repoListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "列出仓库根目录下已有的仓库",
+		Short: "只读仓库索引（首次使用请先 repo scan）",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			views, root, err := rt.app().RepoList(cmd.Context())
 			if err != nil {
+				if errors.Is(err, gitrepo.ErrNoIndex) {
+					return preconditionErrf("%v", err)
+				}
 				return failf("%v", err)
 			}
 			if rt.Opts.JSON {
@@ -79,13 +82,13 @@ func (rt *Runtime) repoListCmd() *cobra.Command {
 				return nil
 			}
 			w := rt.newTable()
-			fmt.Fprintln(w, "PATH\tBRANCH\tSLUG\tDIRTY")
+			fmt.Fprintln(w, "PATH\tBRANCH\tDEFAULT\tWORKTREE\tSLUG")
 			for _, v := range views {
-				dirty := ""
-				if v.Dirty {
-					dirty = "yes"
+				worktree := ""
+				if v.Worktree {
+					worktree = "yes"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Path, orDash(v.Branch), orDash(v.Slug), dirty)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", v.Path, orDash(v.Branch), orDash(v.DefaultBranch), worktree, orDash(v.Slug))
 			}
 			return w.Flush()
 		},
@@ -93,15 +96,19 @@ func (rt *Runtime) repoListCmd() *cobra.Command {
 }
 
 func (rt *Runtime) repoScanCmd() *cobra.Command {
-	return &cobra.Command{Use: "scan", Short: "全面扫描并重建仓库索引", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "scan", Short: "离线扫描仓库与 worktree，重建 SQLite 索引", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		views, root, err := rt.app().RepoScan(cmd.Context())
 		if err != nil {
 			return failf("%v", err)
 		}
 		if rt.Opts.JSON {
-			return rt.emit(map[string]any{"root": root, "count": len(views)})
+			return rt.emit(map[string]any{"root": root, "count": len(views), "dry_run": rt.Opts.DryRun})
 		}
-		fmt.Fprintf(rt.out(), "已扫描 %d 个仓库，索引已更新\n", len(views))
+		if rt.Opts.DryRun {
+			fmt.Fprintf(rt.out(), "dry-run：发现 %d 个仓库，未写入索引\n", len(views))
+		} else {
+			fmt.Fprintf(rt.out(), "已扫描 %d 个仓库，索引已更新\n", len(views))
+		}
 		return nil
 	}}
 }
@@ -110,6 +117,9 @@ func (rt *Runtime) repoCDCmd() *cobra.Command {
 	return &cobra.Command{Use: "cd <repo>", Short: "输出仓库目录（用于 shell 快速切换）", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		views, _, err := rt.app().RepoList(cmd.Context())
 		if err != nil {
+			if errors.Is(err, gitrepo.ErrNoIndex) {
+				return preconditionErrf("%v", err)
+			}
 			return failf("%v", err)
 		}
 		q := strings.ToLower(args[0])

@@ -325,3 +325,12 @@ bs config edit                  # 用 $EDITOR 打开（退出后立刻校验；�
 > 说明：`{{versions.*}}` 由引擎在选用方法前展开（"名字类"参数，见
 > [tool-schema.md](./tool-schema.md) §6），因此 `bs tool plan`/`--dry-run` 里看到的是
 > 真实版本号（例如 `g install 1.24.1`），而不是模板字面量。
+
+### 仓库主机与子组
+
+`repo.hosts` 限制 `repo sync` 的联网范围；所有远端均匹配（主机名忽略大小写）才执行同步，
+任一未知主机则跳过整个仓库。空列表不允许任何远端主机。它不限制离线 `repo scan/list`，
+也不限制显式 `repo get <url>`。例如私网主机 `git.yongzhen.wang` 可先扫描入库，
+回到可访问的网络后再加入 hosts。GitLab 自建主机同样需要显式加入。
+
+默认 layout 中 `.Owner` 可以是 `group/subgroup` 等多级 namespace，无需为 GitLab 更换模板。

@@ -5,7 +5,32 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kingfs/Bootstrap/internal/gitrepo"
 )
+
+func TestRepoListMissingAndEmptyIndex(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	repoRoot := filepath.Join(root, "home", "src")
+	if err := os.MkdirAll(repoRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"repo", "list"}, {"repo", "cd", "repo"}} {
+		code, _, stderr := run(t, rt, args...)
+		if code != ExitPrecondition || !strings.Contains(stderr, "bs repo scan") {
+			t.Fatalf("missing index: code=%d %s", code, stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".bootstrap")); !os.IsNotExist(err) {
+		t.Fatal("read created index")
+	}
+	if err := gitrepo.SaveIndex(repoRoot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := run(t, rt, "repo", "list"); code != ExitOK {
+		t.Fatalf("empty index: %d %s", code, stderr)
+	}
+}
 
 // TestRepoGetRejectsForce：`--force` 曾经是个**从不生效**的旗标（M1 起就没接到任何分支），
 // 摆在那里只会让人以为"能绕过不覆盖护栏"。它已删除，重新出现必须是有人刻意加回来。

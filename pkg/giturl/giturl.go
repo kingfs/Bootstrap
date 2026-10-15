@@ -145,7 +145,21 @@ func Parse(raw, defaultHost string) (Ref, error) {
 	}
 
 	// 3) 切出 owner/repo 与网页路径部分。
-	repoSegs, wp := splitAtWebKeyword(segs)
+	repoSegs, wp := segs, webPart{}
+	if !ref.SCP && ref.Scheme != "ssh" && ref.Scheme != "git" && !strings.HasSuffix(segs[len(segs)-1], ".git") {
+		if ref.Host == "github.com" || ref.Host == "gitee.com" || ref.Host == "codeberg.org" || ref.Host == "bitbucket.org" {
+			repoSegs, wp = splitAtWebKeyword(segs)
+		} else {
+			// GitLab 用 /-/ 分隔 namespace 和网页路径，不能把子组名 tree/issues 当关键字。
+			for i := 2; i+1 < len(segs); i++ {
+				if segs[i] == "-" && webPathKeywords[strings.ToLower(segs[i+1])] {
+					repoSegs = segs[:i]
+					wp = webPart{keyword: strings.ToLower(segs[i+1]), rest: segs[i+2:]}
+					break
+				}
+			}
+		}
+	}
 	if len(repoSegs) < 2 {
 		return Ref{}, fmt.Errorf("cannot parse repository reference %q: expected owner/repo, got %q", raw, strings.Join(segs, "/"))
 	}
