@@ -231,8 +231,34 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   npm/crates/PyPI 包名、GitHub Release 资产名与校验和文件、归档有没有外层目录），
   不要照抄记忆里的名字——design §6.4 记了这一轮用到的查询手段。
 - Windows 的 `repo.root` 默认值仍待细化（设计文档 §18.3）。
-- 内置清单未覆盖 `fd`/`bat`：Ubuntu 上二进制名是 `fdfind`/`batcat`，与其它平台不一致，
-  等"同一 id 在不同平台暴露不同命令名"的需求明确后再处理。
+- **`verify` 支持多条规则、按 `when` 挑一条**（`VerifySet`/`VerifyRule`，见 docs/tool-schema.md §3.1）：
+  动机是 Ubuntu 把 `bat`/`fd` 的二进制改成了 `batcat`/`fdfind`——同一个 id 在不同发行版上
+  探测命令不同（下面那条"等需求明确"已经落地）。三条硬约定：单条规则的写法与行为**不变**；
+  **多条时只有最后一条可以不写 `when`（兜底），前面的必须写**（校验期强制，否则要么某些机器
+  挑不出规则，要么后面的规则永远匹配不到）；`Tool.Verify` 仍是"本机适用的那一条"，
+  由 `App.LoadedManifest` 里的 `ResolveVerify` 统一挑好，下游谁都不用自己解析。
+  踩过的坑：`LoadedManifest` 必须**先挂缓存再解析**——`installEnv()→extraPathDirs()→PathEntries()`
+  会回头读清单，直接写 `a.loaded = Load(...).ResolveVerify(...)` 会无限递归（`tool list` 卡死）。
+  另外 `VerifySet.UnmarshalYAML` 是自己挡未知字段的（`Node.Decode` 会新建解码器，看不到外层的
+  `KnownFields`），加/删 `verify` 字段时这两处要一起改。
+- **按需套装 `search` / `diff` / `monitor` / `extras`**：动机是"常用，但没必要塞进 base"——
+  `bs init` 一把梭已经 70+ 个工具。`monitor` 因为 macmon 只支持 Apple Silicon 而**分平台**
+  写在 `linux.yaml`（bottom/witr）与 `darwin.yaml`（+macmon）里：profile 引用的 id 必须在本平台
+  清单里存在，`bs tool manifest validate` 会查这一点，所以不能只写一份。
+  这一批新条目里有几个**如实留着的缺口**（别当成漏写，`tool plan` 会明确报 "no usable install
+  method"，与 `rust-analyzer` 同样处理）：`duckdb` / `osquery`（Ubuntu/Debian 的稳定版都没打包
+  ——Debian sid 的 duckdb 要 glibc ≥ 2.43，noble 上用不了；官方 apt 仓又不在 `via: apt` 的支持
+  范围内；上游 Release 实测不发任何校验和，PyPI 的 duckdb 只有 Python 模块没有 CLI）；`herdr`（只有
+  brew——上游 Release 完全没校验和、官方 install.sh 属于 `via: script`）；
+  `clickhouse` 在发行版里只有 2018 年的 18.16（上游 `.tgz` 只配 sha512，引擎只认 sha256，
+  所以 release 走不通）。另外 `bat`/`fd` 那种"按 `distro` 挑 verify 规则"有个已知边角：
+  在 Ubuntu 上若用 **cargo/brew** 装出的是 `bat`/`fd`（没有 `batcat`/`fdfind`），探测会误报
+  missing——现有 schema 表达不了"哪个命令在 PATH 里就用哪个"。
+- `bs tool install -i` 的"想怎么选工具？"菜单（`app.PickToolsScoped`）：按套装（整套装安装 /
+  组内勾选）、按技术栈、全部、只补缺失。**只在"安装"且没给
+  `--profile/--stack/--kind/--tag/--missing` 时出现**——已经圈定范围还多问一层是噪音；
+  `upgrade`/`uninstall` 的默认勾选规则不同，也保持原来的扁平勾选器。子菜单都支持"返回上一步"
+  （`ui.ErrBack`），选错不必 Ctrl-C 重跑整条命令。
 - `via: release` 的卸载只覆盖"单个可执行文件 + 清单里的软链"：`params.extract: true`（整包解压型，
   如 uv/gradle）与含 `{{version}}` 的 dest/binary/软链路径会明确报「不支持」并给出要手工删的目录。
   根治要记录"安装时写了哪些文件"（design §18.3）；在那之前**不要**为了让某条清单能卸载而递归删目录。
@@ -277,7 +303,8 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   于是用户把窗口拉大后依然只看到原来那么多行。所以 `huhPrompter.form()` 挂了
   `tea.WithFilter`，在消息进 `Form.Update` 之前用新尺寸重算（`listField.resize`）；
   过滤器的返回值不变，huh 的语义一点没动。改这块必须跑 `make pty`，
-  里面有一条 `--resize` 回归断言（24 行终端看不见、拉到 50 行才露出来的那一条）。
+  里面有一条 `--resize` 回归断言（24 行终端看不见、拉到 100 行才露出来的那一条；
+  标记工具与行数要跟着清单长度调——清单涨到 90+ 个工具时就踩过一次）。
 - `scripts/pty-check.py` 会先把伪终端设成 `--cols × --rows`（默认 100×30）再 exec：
   0×0 的终端里 huh 会把整段表单渲染成空、只剩帮助行，于是"选项看不看得见"这类回归
   根本测不出来（改窗口尺寸的坑就是这么发现的）。它还支持 `--resize COLSxROWS`

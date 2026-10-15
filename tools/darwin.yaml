@@ -95,6 +95,28 @@ tools:
       - via: brew
         params: {formula: rsync}
 
+  # ─────────────────────── 系统监控（Apple Silicon） ───────────────────────
+
+  - id: macmon
+    name: macmon
+    stack: base
+    kind: cli
+    description: Apple Silicon 上免 sudo 的性能监控
+    homepage: https://github.com/vladkens/macmon
+    # 只支持 Apple Silicon（M1–M5）：上游 Release 里唯一的资产就是 arm64 的 Mach-O，
+    # brew 的 bottle 也只有 arm64。Intel Mac 上这条不会出现。
+    when: {os: [darwin], arch: [arm64]}
+    # ⚠️ 版本输出没能实测（发布物是 Mach-O，Linux 上跑不了；上游文档写的是 clap 风格的
+    # `-V, --version`）。第一次在真机上跑 `bs tool list` 时确认一下这条正则。
+    verify: {command: macmon, version_args: [--version], version_regex: 'macmon (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        params: {formula: macmon}
+      # brew 的 formula 落后于上游（0.9.x vs 0.10），要最新版就交给 cargo 现场编。
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: macmon}
+
 profiles:
   # macOS 独有的成套定义（cpp 少了 gcc/gdb：那两个是 Linux 侧的发行版包）。
   cpp:
@@ -103,6 +125,10 @@ profiles:
   containers:
     description: 容器运行时与镜像工具（brew）
     tools: [docker, podman, skopeo, dive, lazydocker, hadolint]
+  # 与 linux.yaml 的同名成套分开写：macmon 只支持 Apple Silicon（见上面的条目）。
+  monitor:
+    description: 系统与进程监控（bottom / macmon / witr）
+    tools: [bottom, macmon, witr]
   full:
     description: 这台机器上"该有都有"（macOS）
     extends: [base, golang, nodejs, python, rust, rust-dev, java, cpp, containers, infra, agent]

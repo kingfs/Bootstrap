@@ -76,3 +76,30 @@ profiles:
   managers:
     description: 全部版本管理器
     tools: [g, fnm, nvm, uv, rustup, mise]
+
+  # ─────────── 按需套装：都不进 base/full，想装才装 ───────────
+  #
+  # 用户实测反馈：常要用的搜索/对比/监控类工具清单里没有，但它们又**不该塞进 base**——
+  # `bs init` 一把梭已经要装 70+ 个。所以按用途各成一"套"，`--profile <名字>` 一步到位；
+  # `tool install -i` 的"想怎么选"菜单里也能直接选套装（见 README 的交互约定）。
+
+  search:
+    description: 搜索与文件查找（bat / fd / ag）
+    tools: [bat, fd, the_silver_searcher]
+
+  diff:
+    description: 差异对比与分页（delta / difftastic）
+    tools: [git-delta, difftastic]
+
+  extras:
+    description: 零散但好用的按需工具（基准测试 / 日志分析 / 数据库 / 代理工作区）
+    tools:
+      - hyperfine
+      - ctop
+      - goaccess
+      - netdata
+      - osquery
+      - duckdb
+      - clickhouse
+      - herdr
+      - codebase-memory-mcp

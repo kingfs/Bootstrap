@@ -344,6 +344,391 @@ tools:
         when: {has: [pipx]}
         params: {package: httpie}
 
+  # ─────────── 搜索 / 对比 / 监控 / 零散工具（成套定义见 profiles.yaml） ───────────
+  #
+  # 这些是"想装才装"的一类，**不进 base/full**：各自成套（search / diff / monitor / extras），
+  # `bs tool install --profile search` 就能一把装上。
+  #
+  # bat/fd 在 Debian 系被改了二进制名（bat → batcat、fd-find → fdfind），所以 verify 写两条
+  # 规则、按发行版挑（docs/tool-schema.md §3.1）。四个名字都实测过：Ubuntu 24.04 的
+  # bat/batcat 与 fd-find/fdfind，Fedora 的 bat（/usr/bin/bat）与 fd-find（/usr/bin/fd）。
+
+  - id: bat
+    name: bat
+    stack: base
+    kind: cli
+    description: 带语法高亮的 cat
+    homepage: https://github.com/sharkdp/bat
+    verify:
+      - when: {distro: [ubuntu, debian]}
+        command: batcat
+        version_args: [--version]
+        version_regex: 'bat (?P<v>\d+\.\d+\.\d+)'
+      - command: bat
+        version_args: [--version]
+        version_regex: 'bat (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: bat}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [bat]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [bat]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [bat]}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: bat}
+
+  - id: fd
+    name: fd
+    stack: base
+    kind: cli
+    description: 更快的 find（默认忽略 .gitignore）
+    homepage: https://github.com/sharkdp/fd
+    verify:
+      - when: {distro: [ubuntu, debian]}
+        command: fdfind
+        version_args: [--version]
+        version_regex: 'fdfind (?P<v>\d+\.\d+\.\d+)'
+      - command: fd
+        version_args: [--version]
+        version_regex: 'fd (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: fd}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [fd-find]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [fd-find]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [fd]}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: fd-find}
+
+  - id: the_silver_searcher
+    name: The Silver Searcher
+    stack: base
+    kind: cli
+    description: ag：老牌快速代码搜索
+    homepage: https://github.com/ggreer/the_silver_searcher
+    verify: {command: ag, version_args: [--version], version_regex: 'ag version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: the_silver_searcher}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [silversearcher-ag]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [the_silver_searcher]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [the_silver_searcher]}
+
+  - id: difftastic
+    name: difftastic
+    stack: base
+    kind: cli
+    description: 结构化 diff（按语法树比，而不是按行）
+    homepage: https://github.com/Wilfred/difftastic
+    # 实测：Ubuntu/Debian **没有**这个包（noble 的 universe+multiverse 索引里搜不到），
+    # 所以 Linux 侧只能靠发行版包（Fedora/Arch）或 cargo 现场编。
+    verify: {command: difft, version_args: [--version], version_regex: 'Difftastic (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: difftastic}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [difftastic]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [difftastic]}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: difftastic}
+
+  - id: bottom
+    name: bottom
+    stack: base
+    kind: cli
+    description: 图形化系统监控 TUI（命令叫 btm）
+    homepage: https://github.com/ClementTsang/bottom
+    # 实测：命令名 `btm`，但 `btm --version` 打印的是 "bottom 0.9.6"，正则按输出写。
+    verify: {command: btm, version_args: [--version], version_regex: 'bottom (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: bottom}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [btm]}   # Debian 系的包名是 btm（不是 bottom）
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [bottom]}
+      # Fedora 至今没打包 bottom（f40–f43/rawhide/el9/el10 都没有），所以没有 dnf 方式。
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: bottom}
+
+  - id: hyperfine
+    name: hyperfine
+    stack: base
+    kind: cli
+    description: 命令行基准测试（跑多少遍、热身、导出）
+    homepage: https://github.com/sharkdp/hyperfine
+    verify: {command: hyperfine, version_args: [--version], version_regex: 'hyperfine (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: hyperfine}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [hyperfine]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [hyperfine]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [hyperfine]}
+      - via: cargo
+        when: {has: [cargo]}
+        params: {crate: hyperfine}
+
+  - id: goaccess
+    name: GoAccess
+    stack: base
+    kind: cli
+    description: 终端里的 Web 日志实时分析
+    homepage: https://goaccess.io
+    verify: {command: goaccess, version_args: [--version], version_regex: 'GoAccess - (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: goaccess}
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [goaccess]}
+      - via: dnf
+        when: {os: [linux], distro: [fedora, rhel, centos]}
+        params: {packages: [goaccess]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [goaccess]}
+
+  - id: ctop
+    name: ctop
+    stack: base
+    kind: cli
+    description: 容器资源的 htop 式界面
+    homepage: https://github.com/bcicen/ctop
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: ctop, version_args: [-v], version_regex: 'ctop version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: ctop}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [ctop]}
+      - via: release
+        when: {os: [linux]}
+        params:
+          repo: bcicen/ctop
+          # 实测：资产是**裸二进制**（没有归档），必须显式写 binary；校验和文件叫
+          # sha256sums.txt（注意是 sha256sums，不在常见名字链里，得点名 checksum_file）。
+          asset: "ctop-{{version}}-linux-{{arch}}"
+          checksum_file: sha256sums.txt
+          binary: ctop
+          dest: "~/.local/bin"
+
+  - id: witr
+    name: witr
+    stack: base
+    kind: cli
+    description: 追一个进程/端口/文件是谁拉起来的
+    homepage: https://github.com/pranshuparmar/witr
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: witr, version_args: [--version], version_regex: 'witr v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: witr}
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: pranshuparmar/witr
+          # 实测：Linux/macOS 的资产是**裸二进制**（不是归档），asset 名里没有版本号，
+          # {{os}}/{{arch}} 正好对上；因为不是归档，不能写 strip_components，
+          # 也必须显式写 binary（否则默认会按资产名去找 "witr-linux-amd64"）。
+          asset: "witr-{{os}}-{{arch}}"
+          binary: witr
+          dest: "~/.local/bin"
+      - via: goinstall
+        when: {has: [go]}
+        params: {module: "github.com/pranshuparmar/witr/cmd/witr@latest"}
+
+  - id: herdr
+    name: herdr
+    stack: agent
+    kind: agent
+    description: 编码代理的终端工作区管理器
+    homepage: https://herdr.dev
+    when: {os: [linux, darwin]}
+    verify: {command: herdr, version_args: [--version], version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      # ⚠️ 上游 Release 的裸二进制**完全不带校验和**（asset 列表里没有 checksums 文件，
+      # `<asset>.sha256` 也实测 404），所以按 §9.2 不能用 via: release；官方 install.sh 属于
+      # via: script（内置清单不用）。于是只剩 brew（homebrew/core 0.9.5，Linuxbrew 也有
+      # arm64_linux/x86_64_linux bottle）——**没有 brew 的 Linux 机器上没有任何可用方式**，
+      # `bs tool plan herdr` 会明确报出来，这是有意留下的缺口。
+      - via: brew
+        when: {has: [brew]}
+        params: {formula: herdr}
+
+  - id: codebase-memory-mcp
+    name: codebase-memory-mcp
+    stack: agent
+    kind: agent
+    description: 代码库知识图谱 MCP 服务
+    homepage: https://github.com/DeusData/codebase-memory-mcp
+    when: {os: [linux, darwin]}
+    path_dirs: ["~/.local/bin"]
+    verify: {command: codebase-memory-mcp, version_args: [--version], version_regex: 'codebase-memory-mcp (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: release
+        when: {os: [linux]}
+        params:
+          repo: DeusData/codebase-memory-mcp
+          # 实测：checksums.txt 逐字节命中，归档根下直接是二进制 + install.sh，**没有**外层
+          # 目录（不能写 strip_components）；-portable 版是静态链接（musl/Alpine 也能跑）。
+          asset: "codebase-memory-mcp-linux-{{arch}}-portable.tar.gz"
+          binary: codebase-memory-mcp
+          dest: "~/.local/bin"
+      - via: release
+        when: {os: [darwin]}
+        params:
+          repo: DeusData/codebase-memory-mcp
+          asset: "codebase-memory-mcp-darwin-{{arch}}.tar.gz"
+          binary: codebase-memory-mcp
+          dest: "~/.local/bin"
+      # npm/PyPI 上的同名包是"下载器 + postinstall 校验"，能用，作为 release 之外的兜底。
+      - via: npm
+        when: {has: [npm]}
+        params: {package: codebase-memory-mcp, global: true}
+      - via: pipx
+        when: {has: [pipx]}
+        params: {package: codebase-memory-mcp}
+
+  # ── 监控 / 数据 / 端点可见性（低频；extras 套装） ──
+
+  - id: netdata
+    name: Netdata
+    stack: base
+    kind: service
+    description: 实时系统监控（装完就是一个常驻服务，默认 19999 端口）
+    homepage: https://www.netdata.cloud
+    when: {os: [linux, darwin]}
+    # 实测：`netdata -v` 打印 "netdata v1.43.2"（apt 1.43.2 与 Arch 2.x 同一格式）。
+    # 注意命令在 /usr/sbin（默认 PATH 里有它，但非常规 PATH 的非 root 环境可能探测不到）。
+    verify: {command: netdata, version_args: [-v], version_regex: 'netdata v(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: netdata}
+      # Ubuntu/Debian 的 netdata 是个元包（依赖 netdata-core/web/plugins），
+      # kind=service 正好让系统包管理器过护栏：装完就是"系统服务"的语义。
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [netdata]}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [netdata]}
+
+  - id: duckdb
+    name: DuckDB
+    stack: base
+    kind: cli
+    description: 单文件分析型 SQL 数据库 CLI
+    homepage: https://duckdb.org
+    when: {os: [linux, darwin]}
+    verify: {command: duckdb, version_args: [--version], version_regex: '(?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {formula: duckdb}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [duckdb]}
+      # 已知缺口（别当成漏写）：Ubuntu/Debian 的**稳定版**都没打包 duckdb（Debian sid 有 1.5.5，
+      # 但它要求 glibc ≥ 2.43，在 noble 上连 libicui18n.so.78 都加载不了），Fedora 也没有；
+      # 上游 Release 只有 zip/tar.gz 而**不发任何校验和**（`<asset>.sha256`、checksums.txt、
+      # install.duckdb.org 的 .sha256 实测全 404），按 §9.2 不能用 via: release；PyPI 的 `duckdb`
+      # 也只提供 Python 模块（解包看过，没有 console script）。所以这些机器上
+      # `bs tool plan duckdb` 会明确报"没有可用方式"。
+
+  - id: clickhouse
+    name: ClickHouse
+    stack: base
+    kind: cli
+    description: 列式数据库客户端 / 本地查询
+    homepage: https://clickhouse.com
+    when: {os: [linux, darwin]}
+    verify:
+      # 发行版包给的命令叫 clickhouse-client（版本 18.16，很老）；官方单文件二进制/brew cask
+      # 给的是 clickhouse（26.x，`clickhouse --version` 打印 "ClickHouse local version …"）。
+      - when: {distro: [ubuntu, debian]}
+        command: clickhouse-client
+        version_args: [--version]
+        version_regex: 'ClickHouse client version (?P<v>\d+\.\d+\.\d+)'
+      - command: clickhouse
+        version_args: [--version]
+        version_regex: 'ClickHouse (?:client|local) version (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        params: {cask: clickhouse}   # 实测：cask 只落一个 clickhouse 二进制（不要 sudo）
+      # ⚠️ Ubuntu/Debian 里的 clickhouse-client 是 2018 年的 18.16（实测 `--version` 打印
+      # "ClickHouse client version 18.16.1."），上游早已 26.x。之所以只能用发行版包：官方
+      # Release 的 `.tgz` 只配 **sha512**（没有 sha256），引擎只认 sha256，所以 release 走不通。
+      - via: apt
+        when: {os: [linux], distro: [ubuntu, debian]}
+        params: {packages: [clickhouse-client]}
+
+  - id: osquery
+    name: osquery
+    stack: base
+    kind: service
+    description: 用 SQL 查系统状态（osqueryi；osqueryd 是常驻采集服务）
+    homepage: https://osquery.io
+    when: {os: [linux, darwin]}
+    # 实测：官方 tar 包里 osqueryi 是指向 osqueryd 的软链，输出随 argv[0] 变
+    # （`osqueryd --version` → "osqueryd version 5.23.1"，以 osqueryi 调用 → "osqueryi version 5.23.1"），
+    # 所以正则把两个名字都收进来。
+    verify: {command: osqueryi, version_args: [--version], version_regex: 'osquery[di]? version (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: brew
+        when: {os: [darwin]}
+        # 这个 cask 装的是官方 .pkg（含 launchd 服务），因此 brew 内部会要一次 sudo。
+        params: {cask: osquery}
+      - via: pacman
+        when: {os: [linux], distro: [arch, manjaro]}
+        params: {packages: [osquery]}
+      # 已知缺口：Ubuntu/Debian/Fedora 都没打包 osquery，上游 Release 不发校验和 → 无可用方式。
+
   # ─────────────────────── 版本管理器（先装它们） ───────────────────────
 
   - id: g

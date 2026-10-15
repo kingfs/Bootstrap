@@ -260,7 +260,8 @@ eval "$(bs shell init bash)"
 ```sh
 bs tool list --missing                 # 这台机器上还缺什么
 bs tool install --profile golang        # 装整套：g → golang → gopls/dlv/staticcheck
-bs tool install -i --stack base         # 在 base 里勾着装（先问默认勾哪些：缺失的 / 一个都不勾）
+bs tool install -i                      # 先问"想怎么选"：按套装（可整套装安装）/按技术栈/全部/只补缺失
+bs tool install -i --stack base         # 已经用参数圈定范围时直接进勾选器（先问默认勾哪些：缺失的 / 一个都不勾）
 bs tool uninstall -i                    # 反过来，从已装的中勾着卸载
 bs tool install uv --via brew           # 只对 uv 强制用 brew
 bs tool plan --tag monitor --json       # 计划也能机读（没有可做的事也会给一份计划文档）
@@ -268,6 +269,9 @@ bs tool plan --tag monitor --json       # 计划也能机读（没有可做的�
 
 常用 profile：`base`（日常 CLI）、`golang`、`nodejs`、`python`、`rust`、`rust-dev`、`java`、`cpp`、
 `containers`、`infra`、`agent`、`full`、`managers`（只装全部版本管理器）。
+另有四个**按需套装**（都不在 `base`/`full` 里，想用才装）：`search`（bat / fd / ag）、
+`diff`（delta / difftastic）、`monitor`（bottom / macmon / witr）、`extras`（hyperfine / ctop /
+goaccess / netdata / osquery / duckdb / clickhouse / herdr / codebase-memory-mcp）。
 用 `bs tool manifest show` 查看当前平台实际有哪些。
 
 清单来源（后者覆盖前者，同名 id 按字段合并）：
@@ -325,6 +329,10 @@ bs tool manifest validate --os darwin
 - 工具勾选列表里 **`ctrl+a` 全选/全不选切换、`ctrl+x` 一键全不选**（纯文本界面用 `a` / `n`）；
   不想默认全装就选"一个都不勾"，再空格挑必要的几个：`bs init` 的"手工挑选"与
   `bs tool install -i` 进列表前会先问一句"先勾上哪些"（缺失的默认勾 / 一个都不勾）；
+- `bs tool install -i` **不带范围参数**时会先问一句"想怎么选工具？"：按套装（可以整套装直接装，
+  也可以只在套装里挑几个）/ 按技术栈勾选 / 全部工具里勾选 / 只补缺失的。
+  已经写了 `--profile`/`--stack`/`--kind`/`--tag`/`--missing` 就直接进勾选器，不再多问一层
+  （`upgrade`/`uninstall` 的默认勾选规则不同，也保持原来的扁平勾选）；
 - 取消（Ctrl-C，或回答 no）不是失败：退出码 0 + "未做任何修改"；
 - 非交互（管道、CI、`--json`、`--non-interactive`）**绝不阻塞等待输入**：
   没有 `--yes` 就直接以退出码 5 结束，并提示加 `--yes`；
