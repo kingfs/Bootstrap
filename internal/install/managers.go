@@ -163,6 +163,14 @@ func (m *managerInstaller) Available(_ context.Context, e ExecEnv, _ manifest.To
 	if !ok {
 		return false
 	}
+	return managerRunnable(e, spec)
+}
+
+// managerRunnable 报告管理器**现在**就能跑。
+//
+// 注意它和 `Plan` 里那个"稍后会就绪"的判断是两件事：`Available` 允许被 planEnv
+// 覆盖（管理器可能就在本次计划的更早一步），而 Plan 只看真实环境。
+func managerRunnable(e ExecEnv, spec ManagerSpec) bool {
 	if spec.NeedsShell {
 		// shell 函数型管理器：要求 source 脚本存在，且有 shell 可用。
 		if _, ok := e.LookPath("sh"); !ok {
@@ -173,12 +181,21 @@ func (m *managerInstaller) Available(_ context.Context, e ExecEnv, _ manifest.To
 	if spec.Bin == "" {
 		return false
 	}
-	_, ok = e.LookPath(spec.Bin)
+	_, ok := e.LookPath(spec.Bin)
 	return ok
 }
 
 // Plan 渲染命令模板。
 func (m *managerInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool, method manifest.Method, op Op) (Action, error) {
+	return m.plan(ctx, e, t, method, op, true)
+}
+
+// plan 是 Plan 的实现；allowDefer 允许把"解析 latest"推迟到执行前。
+//
+// 为什么要推迟：依赖是"先装管理器、再用管理器装 runtime"，而 `g ls-remote` 这样的
+// 解析命令在计划期根本跑不了（g 还没装）。以前这里直接失败，于是新机器上
+// `bs init` 里 golang/nodejs/python 全都会掉到发行版包或干脆报"没有可用方式"。
+func (m *managerInstaller) plan(ctx context.Context, e ExecEnv, t manifest.Tool, method manifest.Method, op Op, allowDefer bool) (Action, error) {
 	spec, ok := m.reg.Manager(method.Params.Manager)
 	if !ok {
 		return Action{}, fmt.Errorf("tool %q: via=manager needs params.manager (or tool.managers.%s)", t.ID, t.Stack)
@@ -192,12 +209,20 @@ func (m *managerInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 	if ver == "" {
 		ver = "latest"
 	}
+	deferResolve := false
 	if (op == OpInstall || op == OpUpgrade) && (ver == "latest" || strings.EqualFold(ver, "lts")) {
-		// 只有真正要装的时候才去解析 latest；干跑时留占位符，避免"预览也打网络"。
-		if resolved, err := m.resolveLatest(ctx, e, spec, method, ver); err == nil && resolved != "" {
-			ver = resolved
-		} else if !e.DryRun() && err != nil {
-			return Action{}, err
+		switch {
+		case allowDefer && !e.DryRun() && !managerRunnable(realEnv(e), spec):
+			// 管理器还没就绪（本次计划的更早一步会装它）。现在去跑 list-remote 只会
+			// 拿到"命令不存在"，所以保留 latest 占位，执行到这一步时再解析。
+			deferResolve = true
+		default:
+			// 只有真正要装的时候才去解析 latest；干跑时留占位符，避免"预览也打网络"。
+			if resolved, err := m.resolveLatest(ctx, e, spec, method, ver); err == nil && resolved != "" {
+				ver = resolved
+			} else if !e.DryRun() && err != nil {
+				return Action{}, err
+			}
 		}
 	}
 	data := RenderData{Version: ver, Tag: ver, OS: e.OS(), Arch: e.Arch(), Versions: e.Versions()}
@@ -220,6 +245,11 @@ func (m *managerInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 		Network:  true,
 		Summary:  strings.Join(notes, " "),
 		Reason:   fmt.Sprintf("via=manager: %s %s", spec.Name, op),
+	}
+	if deferResolve {
+		action.Resolve = func(ctx context.Context, e ExecEnv) (Action, error) {
+			return m.plan(ctx, e, t, method, op, false)
+		}
 	}
 	return action, nil
 }

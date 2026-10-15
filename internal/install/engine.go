@@ -173,7 +173,7 @@ func (r Report) Changed() bool {
 
 // PlanTools 计算安装计划（前四步，无副作用）。
 func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, error) {
-	tools, explicit, err := e.selectTools(ids)
+	tools, explicit, err := e.selectTools(ctx, op, ids)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -228,7 +228,20 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		detections = results
 	}
 
+	// provided 记录"本次计划里更早的步骤会装出来的命令"（见 providers.go 的 planEnv）：
+	// 链解析必须在那之前完成，所以只能计划期先把它们当成"会有"。
+	provided := map[string]string{}
 	for _, t := range tools {
+		// 先登记本工具会提供的命令，后面的工具就能依赖它（顺序即拓扑序）。
+		if cmd := t.Verify.Command; cmd != "" {
+			if _, ok := provided[cmd]; !ok {
+				provided[cmd] = t.ID
+			}
+		}
+		stepEnv := e.env
+		if len(provided) > 0 {
+			stepEnv = planEnv{ExecEnv: e.env, provided: provided}
+		}
 		step := Step{ToolID: t.ID, Name: t.Name, Stack: t.Stack.String(), Kind: string(t.Kind)}
 		if d, ok := detections[t.ID]; ok {
 			dd := d
@@ -266,7 +279,7 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		// （多数安装器能从 op 推导出对应命令，例如 brew install ↔ brew uninstall）。
 		chainTool := t
 		chainTool.Install = methodsForOp(t, op)
-		chain, cerr := ResolveChain(ctx, e.reg, e.env, chainTool, ChainOptions{Via: via, Managers: e.opt.Managers})
+		chain, cerr := ResolveChain(ctx, e.reg, stepEnv, chainTool, ChainOptions{Via: via, Managers: e.opt.Managers})
 		step.Chain = chain
 		step.Skipped = chain.Skipped()
 		// --via / tool.default_via 指定错了属于用户输入问题，必须整体失败，
@@ -289,7 +302,7 @@ func (e *Engine) PlanTools(ctx context.Context, ids []string, op Op) (Plan, erro
 		step.Via = cand.Via
 		step.Manager = cand.Method.Params.Manager
 		in, _ := e.reg.Get(cand.Via)
-		action, aerr := in.Plan(ctx, e.env, chainTool, cand.Method, op)
+		action, aerr := in.Plan(ctx, stepEnv, chainTool, cand.Method, op)
 		if aerr != nil {
 			var unsupported *ErrUnsupported
 			if errors.As(aerr, &unsupported) {
@@ -426,6 +439,17 @@ func (e *Engine) stepEnv(toolID string) (ExecEnv, func() string) {
 }
 
 // applyStep 执行一个步骤并做安装后验证。
+// resolveAction 在执行前展开"计划期解析不了的"占位动作。
+//
+// 当前只有一种来源：`via: manager` 的 latest/lts 解析需要管理器已经装好，而管理器
+// 可能正是本次计划里更早的一步（g → golang，见 providers.go 的 planEnv）。
+func resolveAction(ctx context.Context, a Action, e ExecEnv) (Action, error) {
+	if a.Resolve == nil {
+		return a, nil
+	}
+	return a.Resolve(ctx, e)
+}
+
 func (e *Engine) applyStep(ctx context.Context, s Step, op Op) (Step, error) {
 	out := s
 	if s.Action == nil {
@@ -436,11 +460,28 @@ func (e *Engine) applyStep(ctx context.Context, s Step, op Op) (Step, error) {
 		return out, &UnknownViaError{Via: s.Via}
 	}
 	log := e.env.Log()
-	log.Info("apply", "tool", s.ToolID, "via", s.Via, "op", string(op))
+	// 例行步骤信息走 Debug：安装进度由 ui.progress 的进度行与结果表负责呈现，
+	// Info 会把 `time=… level=INFO msg=apply …` 插进用户可见的输出里（实测反馈）。
+	log.Debug("apply", "tool", s.ToolID, "via", s.Via, "op", string(op))
 
 	// 每条命令的完整输出留一份日志（无副作用路径：干跑不写）。
 	env, finishLog := e.stepEnv(s.ToolID)
-	err := in.Execute(ctx, *s.Action, env)
+	// 计划期解析不了的动作在这里补齐：依赖已经按拓扑序装好，现在能跑
+	// `g ls-remote` 这类"要先有管理器"的解析了（见 providers.go）。
+	action, rerr := resolveAction(ctx, *s.Action, env)
+	if rerr != nil {
+		out.LogPath = finishLog()
+		out.Status = StepFailed
+		out.Error = rerr.Error()
+		return out, rerr
+	}
+	if s.Action.Resolve != nil {
+		out.Action = &action
+		if action.Summary != "" {
+			out.Summary = action.Summary
+		}
+	}
+	err := in.Execute(ctx, action, env)
 	out.LogPath = finishLog()
 	if err != nil {
 		out.Status = StepFailed
@@ -501,6 +542,9 @@ func (e *Engine) tryFallbacks(ctx context.Context, s Step, op Op) (Step, error) 
 			continue
 		}
 		action, err := in.Plan(ctx, e.env, tool, cand.Method, op)
+		if err == nil {
+			action, err = resolveAction(ctx, action, e.env)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", cand.Via, err))
 			out.TriedMethods = append(out.TriedMethods, cand.Via)
@@ -660,7 +704,10 @@ func fillManager(methods []manifest.Method, mgr string, changed *bool) []manifes
 // selectTools 按 id 选取并拓扑排序（含依赖自动补全）。
 //
 // 第二个返回值是"用户显式点名的 id"集合，用来决定 --via 的作用范围。
-func (e *Engine) selectTools(ids []string) ([]manifest.Tool, map[string]bool, error) {
+//
+// 只对 OpInstall 做"缺命令"推断：装的时候才需要把提供者补进来；卸载/升级按清单里
+// 已经写死的 depends_on 走，不能因为"机器上恰好缺某个命令"就多卸/多升一个工具。
+func (e *Engine) selectTools(ctx context.Context, op Op, ids []string) ([]manifest.Tool, map[string]bool, error) {
 	explicit := map[string]bool{}
 	for _, id := range ids {
 		explicit[id] = true
@@ -672,9 +719,61 @@ func (e *Engine) selectTools(ids []string) ([]manifest.Tool, map[string]bool, er
 	if err != nil {
 		return nil, explicit, err
 	}
-	tools, err := manifest.ExpandDeps(normalized, ids)
+	// 两轮补全迭代到不动点：
+	//  1. `depends_on` 的传递闭包（ExpandDeps，写在清单里的静态依赖）；
+	//  2. "缺命令"推断出的提供者（providersForMissing）——gopls 缺 go 就补 golang，
+	//     而 golang 自己又缺 g，所以要一轮一轮来，直到没有新东西可补。
+	requested := append([]string{}, ids...)
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	work := normalized
+	var out []manifest.Tool
+	for round := 0; ; round++ {
+		tools, xerr := e.expandApplicable(work, requested)
+		if xerr != nil {
+			return nil, explicit, xerr
+		}
+		out = tools
+		if op != OpInstall || round >= maxProviderRounds {
+			break
+		}
+		extra := e.providersForMissing(ctx, work, tools, explicit)
+		if len(extra) == 0 {
+			break
+		}
+		// 推断出的提供者既要加进集合，也要变成真正的依赖边（顺序）。
+		progress := false
+		for _, providers := range extra {
+			for _, id := range providers {
+				if want[id] {
+					continue
+				}
+				want[id] = true
+				requested = append(requested, id)
+				progress = true
+			}
+		}
+		next, changed := addInferredDeps(work, extra)
+		work = next
+		// 注意 providersForMissing 只看真实环境，补过边的工具下一轮仍会被报成
+		// "缺命令"（提供者确实还没装出来）：靠 want/changed 去重，什么都不再变时收尾。
+		if !progress && !changed {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil, explicit, fmt.Errorf("no applicable tools for %v on %s/%s", ids, e.env.OS(), e.env.Arch())
+	}
+	return out, explicit, nil
+}
+
+// expandApplicable 展开依赖闭包，并剔除 disabled / 本机不适用的工具。
+func (e *Engine) expandApplicable(l *manifest.Loaded, ids []string) ([]manifest.Tool, error) {
+	tools, err := manifest.ExpandDeps(l, ids)
 	if err != nil {
-		return nil, explicit, err
+		return nil, err
 	}
 	out := make([]manifest.Tool, 0, len(tools))
 	for _, t := range tools {
@@ -687,10 +786,7 @@ func (e *Engine) selectTools(ids []string) ([]manifest.Tool, map[string]bool, er
 		}
 		out = append(out, t)
 	}
-	if len(out) == 0 {
-		return nil, explicit, fmt.Errorf("no applicable tools for %v on %s/%s", ids, e.env.OS(), e.env.Arch())
-	}
-	return out, explicit, nil
+	return out, nil
 }
 
 // ViaLabel 返回给人和脚本看的方式名（via=manager 时带上管理器名）。

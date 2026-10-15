@@ -189,6 +189,33 @@ func (w When) Matches(env MatchEnv) (bool, string) {
 	return true, ""
 }
 
+// MissingHas 报告"只差 has 条件"时缺的那些命令；失败原因不止 has 时返回 nil。
+//
+// 用途是依赖推断（install 引擎）：某工具在本机一条可用方式都没有、而卡点只是缺一个
+// 命令时，可以去找清单里"正是靠这个命令验收"的工具先装上（gopls 缺 go → 先装 golang）。
+// os/arch/distro/has_not 不匹配是作者明确的排除，补一个工具也变不出来，所以那种情况
+// 一律不返回——避免为了装一个工具把"本机不适用"的东西硬塞进来。
+func (w When) MissingHas(env MatchEnv) []string {
+	if ok, _ := w.Matches(env); ok {
+		return nil
+	}
+	if len(w.Has) == 0 {
+		return nil
+	}
+	rest := w
+	rest.Has = nil
+	if ok, _ := rest.Matches(env); !ok {
+		return nil
+	}
+	var out []string
+	for _, bin := range w.Has {
+		if env.Has == nil || !env.Has(bin) {
+			out = append(out, bin)
+		}
+	}
+	return out
+}
+
 // Verify 描述"如何判断这个工具装好了、版本是多少"。
 type Verify struct {
 	Command string `yaml:"command"`

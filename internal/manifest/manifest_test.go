@@ -501,6 +501,45 @@ func TestWhenMatches(t *testing.T) {
 	}
 }
 
+// TestWhenMissingHas 锁定依赖推断用的"只差某个命令"判断。
+func TestWhenMissingHas(t *testing.T) {
+	env := MatchEnv{
+		OS: "linux", Arch: "amd64", Distro: "ubuntu",
+		Has: func(bin string) bool { return bin == "bun" },
+	}
+	tests := []struct {
+		name string
+		when When
+		want []string
+	}{
+		{"已满足", When{Has: []string{"bun"}}, nil},
+		{"空条件", When{}, nil},
+		{"只缺 has", When{Has: []string{"go"}}, []string{"go"}},
+		{"缺多个 has", When{Has: []string{"go", "cargo"}}, []string{"go", "cargo"}},
+		{"部分满足", When{Has: []string{"bun", "go"}}, []string{"go"}},
+		// 作者明确的排除（os/distro/has_not）不该被"补一个提供者"绕过去。
+		{"os 不匹配", When{OS: []string{"darwin"}, Has: []string{"go"}}, nil},
+		{"distro 不匹配", When{Distro: []string{"fedora"}, Has: []string{"go"}}, nil},
+		{"has_not 冲突", When{HasNot: []string{"bun"}, Has: []string{"go"}}, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.when.MissingHas(env)
+			if len(got) != len(tc.want) {
+				t.Fatalf("MissingHas = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("MissingHas = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+	if got := (When{Has: []string{"go"}}).MissingHas(MatchEnv{OS: "linux"}); len(got) != 1 {
+		t.Errorf("nil Has 时应报告缺命令：%v", got)
+	}
+}
+
 func ids(tools []Tool) []string {
 	out := make([]string, 0, len(tools))
 	for _, t := range tools {

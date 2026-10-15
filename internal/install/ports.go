@@ -70,6 +70,14 @@ type Action struct {
 	// Summary 是一行人类可读的"将用方式"（表格里显示）。
 	Summary string `json:"summary,omitempty"`
 
+	// Resolve 非空时，执行前必须先用**当时的**环境把它展开成最终动作。
+	//
+	// 为什么需要：`via: manager` 会在计划期执行管理器的 `list-remote` 把 "latest"
+	// 解析成具体版本，而拓扑序决定了"管理器自己"可能要等到更早的一步才装出来
+	// （g 先于 golang）。计划期跑不了那个命令，就先留一个占位动作，等执行到这一步
+	// 再用真实环境解析（见 internal/install/providers.go）。
+	Resolve func(ctx context.Context, e ExecEnv) (Action, error) `json:"-"`
+
 	// resolved 保存 Installer 私有数据（解析出的版本、解压参数等）。
 	// 它不参与序列化：Action 的导出字段才是对外的稳定契约。
 	resolved any
