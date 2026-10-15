@@ -84,14 +84,41 @@ func Validate(l *Loaded, opts ValidateOptions) error {
 			continue // 禁用条目只做 id/枚举检查，其余允许"半成品"
 		}
 
-		// verify
-		if t.Verify.Command == "" && t.Verify.File == "" && t.Verify.VersionRegex == "" {
-			p.Add("%s: verify.command, verify.file or verify.version_regex is required", where)
+		// verify：单条规则（绝大多数）或多条按 when 挑选的规则。
+		rules := t.VerifyRules
+		if len(rules) == 0 {
+			// 程序化构造的条目只填了单条 Verify，按同一条规则校验。
+			rules = VerifySet{{Verify: t.Verify}}
 		}
-		if t.Verify.File != "" && t.Verify.Command != "" {
-			p.Add("%s: verify.file and verify.command are mutually exclusive (command wins)", where)
+		hasProbe := false
+		for i, r := range rules {
+			ruleWhere := where + " verify"
+			if len(rules) > 1 {
+				ruleWhere = fmt.Sprintf("%s verify[%d]", where, i)
+			}
+			if r.Command == "" && r.File == "" && r.VersionRegex == "" {
+				p.Add("%s: verify.command, verify.file or verify.version_regex is required", ruleWhere)
+			}
+			if r.File != "" && r.Command != "" {
+				p.Add("%s: verify.file and verify.command are mutually exclusive (command wins)", ruleWhere)
+			}
+			if r.Command != "" || r.File != "" {
+				hasProbe = true
+			}
+			// 多条规则靠 when 分流：中间那条不能不带 when（否则后面的规则永远匹配不到），
+			// 最后一条必须不带 when（兜底），否则某些机器上会挑不出任何规则。
+			if len(rules) > 1 {
+				switch {
+				case i < len(rules)-1 && r.When.IsZero():
+					p.Add("%s: only the last verify rule may omit `when` "+
+						"(an earlier catch-all shadows the rest)", ruleWhere)
+				case i == len(rules)-1 && !r.When.IsZero():
+					p.Add("%s: the last verify rule must omit `when` "+
+						"(it is the fallback for machines no other rule matches)", ruleWhere)
+				}
+			}
 		}
-		if t.Kind == config.KindVersionMgr && t.Verify.Command == "" && t.Verify.File == "" {
+		if t.Kind == config.KindVersionMgr && !hasProbe {
 			p.Add("%s: a versionmgr must declare verify.command or verify.file "+
 				"(depends_on/manager 委托都靠它探测)", where)
 		}

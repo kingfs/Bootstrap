@@ -167,11 +167,12 @@ pty: build
 		--keys ENTER ENTER DOWN DOWN DOWN ENTER -- init --dry-run
 	@# 终端变大后列表必须跟着变长：huh 自己会按新尺寸重排，但我们算出来的 Height 是
 	@# 表单启动前的常量，只能靠 WindowSizeMsg 重算（见 internal/ui/huh.go 的 listField）。
-	@# podman 排在第 30 位：24 行终端只看得见 18 个，窗口拉到 50 行后才露出来。
+	@# 清单现在有 90+ 个可勾选工具（按 stack+id 排序），24 行终端只看得见前 18 个，
+	@# 窗口拉到 100 行才够看到靠后的 sccache（第 90 个）——清单越长，这里的行数越要给足。
 	@# 手工挑选现在先问一句"先勾上哪些"（AskDefault），所以要两个 ENTER 才进列表。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet --cols 100 --rows 24 \
-		--resize 100x50 --resize-after 5.5 \
-		--expect-code 0 --expect-text "已取消" --expect-text "podman" \
+		--resize 100x100 --resize-after 5.5 \
+		--expect-code 0 --expect-text "已取消" --expect-text "sccache" \
 		--keys ENTER ENTER DOWN DOWN ENTER ENTER WAIT3 CTRLC -- init --dry-run
 	@# 子菜单必须能退回上一级菜单：手工挑选 → 先勾上哪些（回车用默认）→ 勾选列表里
 	@# Shift+Tab 回"想怎么装？"→ 改选"先不装工具"。
@@ -185,11 +186,24 @@ pty: build
 	@# CTRLX 清空后直接回车必须报"至少需要选择 1 个"——这句话就是"真的清空了"的判别式；
 	@# 再用空格勾回光标所在那一行并提交，证明清空后照样能只装挑中的那几个。
 	@# 说明行也要把键位写清楚（huh 的帮助行只画得出其中一个绑定）。
+	@# 开头三个键是新的范围菜单：DOWN DOWN ENTER = "全部工具里勾选"（这一条要的是勾选器本身）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "先勾上哪些" --expect-text "全部取消 ctrl+x" \
 		--expect-text "至少需要选择 1 个" \
 		--expect-text "（dry-run：以下操作都不会被执行）" \
-		--keys ENTER WAIT4 CTRLX ENTER WAIT1 SPACE WAIT1 ENTER -- tool install -i --dry-run
+		--keys DOWN DOWN ENTER ENTER WAIT4 CTRLX ENTER WAIT1 SPACE WAIT1 ENTER -- tool install -i --dry-run
+	@# `tool install -i` 的范围菜单：不带任何范围参数时先问"想怎么选工具？"，
+	@# 选"按套装→整套装安装"（三次回车＝三个默认项）就不再进勾选器，直接出整套装的计划。
+	@# 这条也是"菜单没把老路径堵死"的判别式：老版本根本不问这一句。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
+		--expect-code 0 --expect-text "想怎么选" --expect-text "整套装安装" \
+		--expect-text "（dry-run：以下操作都不会被执行）" \
+		--keys ENTER ENTER ENTER -- tool install -i --dry-run
+	@# 已用参数圈定范围时不该再问"想怎么选"：--stack base 直接进勾选器（两个回车提交默认）。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
+		--expect-code 0 --expect-text "先勾上哪些" \
+		--expect-text "（dry-run：以下操作都不会被执行）" \
+		--keys ENTER WAIT4 ENTER -- tool install -i --stack base --dry-run
 	@# 收尾一步：shell 受管块**不再问一句**，直接写进 rc 并只提示"怎么让它生效"。
 	@# 这条特意不加 --dry-run（干跑会跳过写 rc）：老版本会弹确认框、回车＝默认拒绝，
 	@# 于是既不会出现"已把 bs 受管块写进"，也就暴露不了"到底写没写"的区别。
@@ -203,12 +217,13 @@ pty: build
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已取消" \
 		--keys ENTER -- tool install duf
-	@# 勾选式安装：-i 先问默认勾选状态（回车＝缺失/可升级的已勾选），再出复选框界面，
-	@# 第二个回车＝用默认提交，随后 preview 干跑（探测 77 个工具要等一会儿）。
+	@# 勾选式安装：-i 先问"想怎么选"（DOWN DOWN ENTER＝全部工具里勾选），再问默认勾选状态
+	@# （回车＝缺失/可升级的已勾选），然后出复选框界面，回车＝用默认提交，
+	@# 随后 preview 干跑（探测 77 个工具要等一会儿）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "x toggle" \
 		--expect-text "（dry-run：以下操作都不会被执行）" \
-		--keys ENTER WAIT4 ENTER -- tool install -i --dry-run
+		--keys DOWN DOWN ENTER ENTER WAIT4 ENTER -- tool install -i --dry-run
 	@echo "交互式界面 PTY 校验通过"
 
 # e2e 需要网络：真从 GitHub Release 下载并校验，产物只落在 .cache/e2e

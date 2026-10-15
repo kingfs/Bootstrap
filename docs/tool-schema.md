@@ -91,6 +91,32 @@ verify:
 - 探测四态：`installed` / `outdated` / `missing` / `unknown`。
   `--refresh` 忽略缓存；`--dry-run` 既不写缓存也不留任何磁盘痕迹。
 
+### 3.1 按平台声明不同的探测方式（多条规则）
+
+同一个工具在不同平台上"装出来叫什么名字"可能不一样，而 Debian/Ubuntu 的改名尤其多
+（`bat` 包里是 `batcat`，`fd-find` 包里是 `fdfind`）。这时 `verify` 可以写**规则列表**，
+每条规则用 `when` 声明它适用于哪些机器：
+
+```yaml
+verify:
+  - when: {distro: [ubuntu, debian]}   # Debian 系：包里的命令叫 batcat
+    command: batcat
+    version_args: [--version]
+    version_regex: 'bat (?P<v>\d+\.\d+\.\d+)'
+  - command: bat                        # 兜底：其它平台（brew/Fedora/Arch）叫 bat
+    version_args: [--version]
+    version_regex: 'bat (?P<v>\d+\.\d+\.\d+)'
+```
+
+- 单条规则的写法（`verify: {command: go, ...}`）完全不变，仍然是最常用的形态。
+- 规则按**声明顺序**取第一条 `when` 命中的；挑规则的时机是加载清单之后、探测之前
+  （`Loaded.ResolveVerify`），所以 `tool list`/`plan`/`install` 读到的都是同一条。
+- **多条规则时最后一条必须不带 `when`**（兜底），前面几条必须带 `when`：
+  否则要么有些机器一条都挑不出来，要么后面的规则永远匹配不到。校验期会直接报错。
+- 每条规则各自校验 `command`/`file` 互斥，以及"必须有一个"。
+- 用户目录里的覆盖清单按**序号**逐条合并（第 i 条覆盖第 i 条），多出来的规则追加在后面；
+  只写一条 `verify` 时行为和以前一样是字段级合并。
+
 ## 4. `provides` 与 `path_dirs`
 
 ```yaml

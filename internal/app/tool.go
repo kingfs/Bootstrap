@@ -69,6 +69,14 @@ type ToolRow struct {
 }
 
 // LoadedManifest 装载清单（进程内缓存一次）。
+//
+// 返回前按当前机器挑好探测规则（ResolveVerify）：清单里一个工具可以针对不同发行版/
+// 系统声明不同的探测命令，挑的动作只在这一个地方发生，下游（探测、计划、展示）读到的
+// 都是同一条规则，不需要各自记得解析。
+//
+// 注意先把**未解析**的清单挂进缓存再解析：installEnv 会反过来读清单里的 path_dirs
+// （extraPathDirs → PathEntries），不先挂上缓存就会一路递归下去。
+// path_dirs 与探测规则无关，所以递归那一层拿到未解析的清单不影响结果。
 func (a *App) LoadedManifest() (*manifest.Loaded, error) {
 	if a.loaded != nil {
 		return a.loaded, nil
@@ -78,7 +86,8 @@ func (a *App) LoadedManifest() (*manifest.Loaded, error) {
 		return nil, err
 	}
 	a.loaded = loaded
-	return loaded, nil
+	a.loaded = loaded.ResolveVerify(manifestEnv(a.installEnv()))
+	return a.loaded, nil
 }
 
 func (a *App) manifestOptions() manifest.LoadOptions {
@@ -349,6 +358,133 @@ type PickOptions struct {
 	// 用户实测反馈：默认全勾时想只装几个，得先想办法取消全选；这一问把两种
 	// 状态摆到明面上，交互列表里另有 ctrl+x 随时清空。
 	AskDefault bool
+}
+
+// toolScope* 是"想怎么选工具？"这一问的四个答案。
+const (
+	toolScopeProfile = "profile"
+	toolScopeStack   = "stack"
+	toolScopeAll     = "all"
+	toolScopeMissing = "missing"
+)
+
+// PickToolsScoped 先问"想怎么选"，再按选中的范围勾工具。
+//
+// 返回的 profile 非空表示"按套装整体安装"（此时 ids 为空，由 ToolPlan 自己展开套装）；
+// 否则按 ids 处理。
+//
+// 为什么要有这一问：`bs init` 的向导里一直有"按套装快速开始"这个入口，而
+// `bs tool install -i` 只有一张 77 行的大列表——想整组装得先记住 `--profile` 怎么拼，
+// 想只装几个又得先把默认勾选清掉（用户实测反馈）。命令行已经用
+// `--profile/--stack/--kind/--tag/--missing` 圈定范围时不会走到这里（见 cli 的 pickIDs）。
+func (a *App) PickToolsScoped(ctx context.Context, p ui.Prompter, opt ToolListOptions, pick PickOptions) ([]string, string, error) {
+	if p == nil {
+		p = ui.NonInteractive{}
+	}
+	names, err := a.ProfileNames()
+	if err != nil {
+		return nil, "", err
+	}
+	// 子菜单都能"返回上一步"（Shift+Tab / b）回到这一问重选——与 init 的
+	// "想怎么装？"同一个套路，用户选错了不必 Ctrl-C 重跑整条命令。
+	for {
+		choice, err := p.Select(ui.Question{
+			Title:   "想怎么选工具？",
+			Default: toolScopeProfile,
+		}, []ui.Option{
+			{Value: toolScopeProfile, Label: "按套装", Hint: "推荐；整套装安装，或只在套装里挑几个"},
+			{Value: toolScopeStack, Label: "按技术栈勾选", Hint: "golang / cpp / containers ..."},
+			{Value: toolScopeAll, Label: "全部工具里勾选", Hint: "挨个挑"},
+			{Value: toolScopeMissing, Label: "只补缺失的", Hint: "已装的不进候选"},
+		})
+		if err != nil {
+			return nil, "", err
+		}
+		switch choice {
+		case toolScopeMissing:
+			scope := opt
+			scope.Missing = true
+			ids, err := a.PickTools(ctx, scope, p, pick)
+			return ids, "", err
+		case toolScopeAll:
+			ids, err := a.PickTools(ctx, opt, p, pick)
+			return ids, "", err
+		case toolScopeStack:
+			stacks, err := a.stackOptions(ctx, opt)
+			if err != nil {
+				return nil, "", err
+			}
+			stack, err := p.Select(ui.Question{Title: "按哪个技术栈？", Back: true}, stacks)
+			if errors.Is(err, ui.ErrBack) {
+				continue
+			}
+			if err != nil {
+				return nil, "", err
+			}
+			scope := opt
+			scope.Stack = stack
+			ids, err := a.PickTools(ctx, scope, p, pick)
+			return ids, "", err
+		default: // 按套装
+			name, err := p.Select(ui.Question{
+				Title:   "选一个套装",
+				Default: a.Cfg.Tool.DefaultProfile,
+				Back:    true,
+			}, profileOptions(names))
+			if errors.Is(err, ui.ErrBack) {
+				continue
+			}
+			if err != nil {
+				return nil, "", err
+			}
+			how, err := p.Select(ui.Question{Title: "「" + name + "」怎么装？", Back: true}, []ui.Option{
+				{Value: "whole", Label: "整套装安装", Hint: "按套装一次装齐"},
+				{Value: "pick", Label: "在里面挑几个", Hint: "进勾选列表"},
+			})
+			if errors.Is(err, ui.ErrBack) {
+				continue
+			}
+			if err != nil {
+				return nil, "", err
+			}
+			if how == "whole" {
+				return nil, name, nil
+			}
+			scope := opt
+			scope.Profile = name
+			ids, err := a.PickTools(ctx, scope, p, pick)
+			return ids, "", err
+		}
+	}
+}
+
+// stackOptions 列出"有适用工具的技术栈"及其数量，供"按技术栈勾选"选范围。
+//
+// 用 NoProbe 只问清单层面的适用性（不发任何外部命令）：这里只是选范围、
+// 显示个数量，没必要为了这个先探测一遍机器。
+func (a *App) stackOptions(ctx context.Context, base ToolListOptions) ([]ui.Option, error) {
+	opt := base
+	opt.NoProbe = true
+	rows, err := a.ToolRows(ctx, opt)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, r := range rows {
+		if r.Disabled || r.NotMatching {
+			continue
+		}
+		counts[r.Stack]++
+	}
+	stacks := slices.Sorted(maps.Keys(counts))
+	out := make([]ui.Option, 0, len(stacks))
+	for _, s := range stacks {
+		out = append(out, ui.Option{Value: s, Label: s, Hint: fmt.Sprintf("%d 个", counts[s])})
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no applicable tool found in manifest")
+	}
+	return out, nil
 }
 
 // pickDefaultMissing / pickDefaultNone 是"先勾上哪些"的两个答案。

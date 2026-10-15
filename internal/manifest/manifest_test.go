@@ -556,3 +556,152 @@ tools:
 		t.Errorf("file-only verify must be accepted:\n%s", msg)
 	}
 }
+
+// TestVerifyRulesPickByWhen：verify 支持写多条规则，加载后由 ResolveVerify 按当前
+// 机器挑一条。这条能力是为"同一个工具在不同发行版上命令名不同"加的（Ubuntu 的
+// bat/fd 装出来叫 batcat/fdfind），必须有回归保护，否则探测会静默用错规则。
+func TestVerifyRulesPickByWhen(t *testing.T) {
+	l := loadFor(t, map[string]string{"bat.yaml": `
+version: 1
+tools:
+  - id: bat
+    name: bat
+    stack: base
+    kind: cli
+    verify:
+      - when: {distro: [ubuntu, debian]}
+        command: batcat
+        version_args: [--version]
+        version_regex: 'bat (?P<v>\d+\.\d+\.\d+)'
+      - command: bat
+        version_args: [--version]
+        version_regex: 'bat (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: apt
+        params: {packages: [bat]}
+`}, "linux")
+	if err := Validate(l, ValidateOptions{}); err != nil {
+		t.Fatalf("multi-rule verify must validate: %v", err)
+	}
+
+	tool, _ := l.ByID("bat")
+	if len(tool.VerifyRules) != 2 {
+		t.Fatalf("verify rules = %d, want 2", len(tool.VerifyRules))
+	}
+	// 加载期先把第一条填进 Verify；真正生效的要等 ResolveVerify 按机器挑。
+	if tool.Verify.Command != "batcat" {
+		t.Errorf("pre-resolve command = %q, want batcat (first rule)", tool.Verify.Command)
+	}
+
+	ubuntu := l.ResolveVerify(MatchEnv{OS: "linux", Arch: "amd64", Distro: "ubuntu"})
+	if got := mustTool(t, ubuntu, "bat").Verify.Command; got != "batcat" {
+		t.Errorf("ubuntu command = %q, want batcat", got)
+	}
+	fedora := l.ResolveVerify(MatchEnv{OS: "linux", Arch: "amd64", Distro: "fedora"})
+	if got := mustTool(t, fedora, "bat").Verify; got.Command != "bat" || got.Regex() == nil {
+		t.Errorf("fedora verify = %+v, want command=bat with compiled regex", got)
+	}
+	// 兜底规则生效时，正则也必须是编译好的那条（ResolveVerify 换的是整条规则）。
+	if got := mustTool(t, fedora, "bat").Verify.Regex(); got == nil || got.String() != `bat (?P<v>\d+\.\d+\.\d+)` {
+		t.Errorf("regex = %v", got)
+	}
+	// 没有多条规则时原样返回同一份清单（不做无谓的复制）。
+	if l.ResolveVerify(MatchEnv{OS: "linux"}) == nil {
+		t.Error("ResolveVerify must not return nil")
+	}
+}
+
+// TestVerifyRulesValidation：多条规则的两条硬约束——中间那条不能是兜底（会遮蔽后面的），
+// 最后一条必须是兜底（否则有些机器一条都匹配不上）。
+func TestVerifyRulesValidation(t *testing.T) {
+	l := loadFor(t, map[string]string{"bad.yaml": `
+version: 1
+tools:
+  - id: shadow
+    stack: base
+    kind: cli
+    verify:
+      - command: shadow
+      - when: {distro: [fedora]}
+        command: shadow-fedora
+    install:
+      - via: brew
+        params: {formula: shadow}
+  - id: nogeneric
+    stack: base
+    kind: cli
+    verify:
+      - when: {distro: [ubuntu]}
+        command: ubuntu-only
+      - when: {distro: [fedora]}
+        command: fedora-only
+    install:
+      - via: brew
+        params: {formula: nogeneric}
+`}, "linux")
+	err := Validate(l, ValidateOptions{})
+	if err == nil {
+		t.Fatal("expected validation problems")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "only the last verify rule may omit") {
+		t.Errorf("missing shadowing problem:\n%s", msg)
+	}
+	if !strings.Contains(msg, "the last verify rule must omit") {
+		t.Errorf("missing fallback problem:\n%s", msg)
+	}
+}
+
+// TestVerifyRulesStrictFields：Node.Decode 会新建解码器，看不到外层的 KnownFields，
+// 所以 verify 的字段名必须由我们手工挡——拼错字段名要被报出来，而不是静默忽略。
+func TestVerifyRulesStrictFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir+"/bad.yaml", `
+version: 1
+tools:
+  - id: typo
+    stack: base
+    kind: cli
+    verify:
+      - command: typo
+        version_regexp: 'x'
+    install:
+      - via: brew
+        params: {formula: typo}
+`)
+	_, err := Load(LoadOptions{UserDirs: []string{dir}})
+	if err == nil {
+		t.Fatal("expected unknown verify field to fail the load")
+	}
+	if !strings.Contains(err.Error(), "unknown verify field") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// TestVerifyRulesOverrideMerge：用户覆盖按序号合并——既能只改字段（不丢 command），
+// 也能整条替换（写 when 就换 when）。
+func TestVerifyRulesOverrideMerge(t *testing.T) {
+	l := loadFor(t, map[string]string{"10-local.yaml": `
+version: 1
+tools:
+  - id: btop
+    verify:
+      - command: btop-custom
+`}, "linux")
+	tool, _ := l.ByID("btop")
+	if got := tool.VerifyRules[0].Verify.Command; got != "btop-custom" {
+		t.Errorf("command = %q, want btop-custom", got)
+	}
+	if got := tool.Verify.Command; got != "btop-custom" {
+		t.Errorf("resolved command = %q, want btop-custom", got)
+	}
+}
+
+func mustTool(t *testing.T, l *Loaded, id string) Tool {
+	t.Helper()
+	tool, ok := l.ByID(id)
+	if !ok {
+		t.Fatalf("tool %q missing", id)
+	}
+	return tool
+}

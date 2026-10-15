@@ -7,7 +7,11 @@
 package manifest
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/kingfs/Bootstrap/internal/config"
 	"github.com/kingfs/Bootstrap/pkg/version"
@@ -86,7 +90,11 @@ type Tool struct {
 	// 比在代码里猜"这个路径是文件还是目录"可靠得多。
 	PathDirs []string `yaml:"path_dirs"`
 
-	Verify Verify `yaml:"verify"`
+	VerifyRules VerifySet `yaml:"verify" json:"-"`
+	// Verify 是**本机适用**的那条探测规则：加载期先用第一条填好，
+	// 声明了多条时再由 Loaded.ResolveVerify 按当前机器重挑（YAML 里不直接写这个字段，
+	// 但 --json 仍然是它，键名保持改动前的 "Verify"，避免动到机读输出）。
+	Verify Verify `yaml:"-"`
 
 	Install   []Method `yaml:"install"`
 	Update    *Method  `yaml:"update"`
@@ -206,6 +214,112 @@ func (v Verify) Min() *version.Version { return v.min }
 
 // Exact 返回解析好的精确版本（未声明则为 nil）。
 func (v Verify) Exact() *version.Version { return v.exact }
+
+// IsZero 报告这条规则是不是"什么都没写"（用于合并与校验）。
+func (v Verify) IsZero() bool {
+	return v.Command == "" && v.File == "" && len(v.VersionArgs) == 0 &&
+		v.VersionRegex == "" && v.MinVersion == "" && v.ExactVersion == ""
+}
+
+// VerifyRule 是一条探测规则：when 说清它适用于哪台机器，其余字段与单条 verify 相同。
+//
+// 绝大多数工具只有一条规则（`verify: {command: go, ...}`）——那时 when 为空，
+// 也就是"哪台机器都适用"。只有**同一个工具在不同平台上命令名/版本参数不同**时才需要
+// 多条：Ubuntu 的 bat 装出来叫 batcat、fd 叫 fdfind，macOS/Fedora 上才叫 bat/fd。
+//
+// 约定：多条规则时，**最后一条必须不带 when** 当兜底（校验期强制），
+// 于是"前面的都不匹配"永远有一条可用的规则，不会退化成"探测不出结论"。
+type VerifyRule struct {
+	When   When `yaml:"when,omitempty"`
+	Verify `yaml:",inline"`
+}
+
+// VerifySet 是工具的探测规则集合：YAML 里既能写单条映射，也能写规则列表。
+type VerifySet []VerifyRule
+
+// For 返回 env 下适用的那条规则（按声明顺序取第一条 when 匹配的）。
+//
+// 规则集合经过校验，最后一条是兜底，所以只要集合非空就一定返回得出一条。
+func (s VerifySet) For(env MatchEnv) Verify {
+	for _, r := range s {
+		if ok, _ := r.When.Matches(env); ok {
+			return r.Verify
+		}
+	}
+	return Verify{}
+}
+
+// UnmarshalYAML 让 `verify:` 同时接受两种写法：
+//
+//	verify: {command: go, version_args: [version]}            # 单条，最常用
+//	verify:                                                    # 多条，按机器挑
+//	  - when: {distro: [ubuntu, debian]}
+//	    command: batcat
+//	  - command: bat
+//
+// KnownFields 只在最外层解码器上生效，内层 Node.Decode 会新建解码器；所以这里
+// 自己把未知字段挡下来，保住"清单里拼错字段名必须报错"的约定。
+func (s *VerifySet) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		// `verify:` 后面什么都没有（null）：当成"没写"，由校验期报"必填"。
+		*s = nil
+		return nil
+	case yaml.MappingNode:
+		var r VerifyRule
+		if err := decodeVerifyNode(node, &r); err != nil {
+			return err
+		}
+		*s = VerifySet{r}
+		return nil
+	case yaml.SequenceNode:
+		if len(node.Content) == 0 {
+			*s = nil
+			return nil
+		}
+		rules := make(VerifySet, 0, len(node.Content))
+		for i, child := range node.Content {
+			var r VerifyRule
+			if err := decodeVerifyNode(child, &r); err != nil {
+				return fmt.Errorf("verify[%d]: %w", i, err)
+			}
+			rules = append(rules, r)
+		}
+		*s = rules
+		return nil
+	default:
+		return fmt.Errorf("verify must be a mapping or a list of rules")
+	}
+}
+
+// verifyRuleFields 是 verify 规则允许出现的键；用法见 UnmarshalYAML。
+var verifyRuleFields = map[string]bool{
+	"when": true, "command": true, "file": true, "version_args": true,
+	"version_regex": true, "min_version": true, "exact_version": true,
+}
+
+// decodeVerifyNode 解码一条 verify 规则，并手工补上严格字段检查。
+func decodeVerifyNode(node *yaml.Node, out *VerifyRule) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("verify rule must be a mapping")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !verifyRuleFields[key] {
+			return fmt.Errorf("unknown verify field %q", key)
+		}
+	}
+	return node.Decode(out)
+}
+
+// MarshalYAML 让"单条且不带 when"的规则仍然输出成原来的映射形态，
+// 这样 `bs tool manifest show` 对既有工具的输出一个字节都不变。
+func (s VerifySet) MarshalYAML() (any, error) {
+	if len(s) == 1 && s[0].When.IsZero() {
+		return s[0].Verify, nil
+	}
+	return []VerifyRule(s), nil
+}
 
 // Params 是方法参数。不同 via 用到的字段不同，
 // 每个 Installer 负责校验自己关心的字段（见 install.Installer.Validate）。

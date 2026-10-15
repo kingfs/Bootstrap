@@ -324,7 +324,17 @@ func mergeTool(base, over Tool) Tool {
 	if len(over.PathDirs) > 0 {
 		out.PathDirs = over.PathDirs
 	}
-	out.Verify = mergeVerify(out.Verify, over.Verify)
+	// verify：按序号逐条合并。既有行为（两边都只有一条）就是原来的字段级合并，
+	// 多条规则时这个语义自然推广到"第 i 条覆盖第 i 条"，多出来的条目追加在后面。
+	if len(over.VerifyRules) > 0 {
+		out.VerifyRules = mergeVerifyRules(out.VerifyRules, over.VerifyRules)
+		out.Verify = out.VerifyRules[0].Verify
+	} else {
+		out.Verify = mergeVerify(out.Verify, over.Verify)
+		if len(out.VerifyRules) > 0 {
+			out.VerifyRules[0].Verify = out.Verify
+		}
+	}
 	if len(over.Install) > 0 {
 		out.Install = over.Install
 	}
@@ -406,31 +416,97 @@ func mergeVerify(base, over Verify) Verify {
 	return base
 }
 
+// mergeVerifyRules 按序号把 over 的规则合并进 base（语义见 mergeTool 里的说明）。
+func mergeVerifyRules(base, over VerifySet) VerifySet {
+	out := append(VerifySet(nil), base...)
+	for i, r := range over {
+		if i >= len(out) {
+			out = append(out, r)
+			continue
+		}
+		out[i].When = mergeWhen(out[i].When, r.When)
+		out[i].Verify = mergeVerify(out[i].Verify, r.Verify)
+	}
+	return out
+}
+
 // compileTool 预编译版本正则与版本号：清单加载期就报错，而不是探测时才发现写错。
 func compileTool(t *Tool) error {
-	if t.Verify.VersionRegex != "" {
-		re, err := regexp.Compile(t.Verify.VersionRegex)
+	if len(t.VerifyRules) == 0 {
+		// 程序化构造的条目（测试、极少数内部路径）只填了单条 Verify。
+		return compileVerify(&t.Verify, "verify")
+	}
+	for i := range t.VerifyRules {
+		// 单条规则保持原来的报错前缀（"verify.version_regex: ..."），
+		// 多条才带上序号，便于定位是哪一条写错了。
+		where := "verify"
+		if len(t.VerifyRules) > 1 {
+			where = fmt.Sprintf("verify[%d]", i)
+		}
+		if err := compileVerify(&t.VerifyRules[i].Verify, where); err != nil {
+			return err
+		}
+	}
+	// 先拿第一条填上；声明了多条时由 ResolveVerify 按当前机器重挑。
+	t.Verify = t.VerifyRules[0].Verify
+	return nil
+}
+
+// compileVerify 预编译一条探测规则里的正则与版本号。
+func compileVerify(v *Verify, where string) error {
+	if v.VersionRegex != "" {
+		re, err := regexp.Compile(v.VersionRegex)
 		if err != nil {
-			return fmt.Errorf("verify.version_regex: %w", err)
+			return fmt.Errorf("%s.version_regex: %w", where, err)
 		}
 		if re.SubexpIndex("v") < 0 {
-			return fmt.Errorf("verify.version_regex %q must contain a named group (?P<v>...)", t.Verify.VersionRegex)
+			return fmt.Errorf("%s.version_regex %q must contain a named group (?P<v>...)", where, v.VersionRegex)
 		}
-		t.Verify.re = re
+		v.re = re
 	}
-	if t.Verify.MinVersion != "" {
-		min, err := version.Parse(t.Verify.MinVersion)
+	if v.MinVersion != "" {
+		min, err := version.Parse(v.MinVersion)
 		if err != nil {
-			return fmt.Errorf("verify.min_version %q: %w", t.Verify.MinVersion, err)
+			return fmt.Errorf("%s.min_version %q: %w", where, v.MinVersion, err)
 		}
-		t.Verify.min = &min
+		v.min = &min
 	}
-	if t.Verify.ExactVersion != "" {
-		exact, err := version.Parse(t.Verify.ExactVersion)
+	if v.ExactVersion != "" {
+		exact, err := version.Parse(v.ExactVersion)
 		if err != nil {
-			return fmt.Errorf("verify.exact_version %q: %w", t.Verify.ExactVersion, err)
+			return fmt.Errorf("%s.exact_version %q: %w", where, v.ExactVersion, err)
 		}
-		t.Verify.exact = &exact
+		v.exact = &exact
 	}
 	return nil
+}
+
+// ResolveVerify 返回"按当前机器挑好探测规则"的清单。
+//
+// 只有声明了多条 verify 规则的条目才需要在运行时再挑一次：其余条目在加载期
+// 就已经把唯一的那条规则填进了 Tool.Verify，此时原样返回同一份清单（不复制）。
+// 调用方（App）只在这一个地方落地，探测/引擎/展示读到的都是挑好的那条规则。
+func (l *Loaded) ResolveVerify(env MatchEnv) *Loaded {
+	if l == nil {
+		return nil
+	}
+	multi := false
+	for _, t := range l.Tools {
+		if len(t.VerifyRules) > 1 {
+			multi = true
+			break
+		}
+	}
+	if !multi {
+		return l
+	}
+	out := *l
+	out.Tools = make([]Tool, len(l.Tools))
+	copy(out.Tools, l.Tools)
+	for i := range out.Tools {
+		if len(out.Tools[i].VerifyRules) > 1 {
+			out.Tools[i].Verify = out.Tools[i].VerifyRules.For(env)
+		}
+	}
+	return &out
 }

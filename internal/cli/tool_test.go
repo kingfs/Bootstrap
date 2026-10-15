@@ -791,9 +791,9 @@ func TestToolInstallInteractiveSelectionDrivesPlan(t *testing.T) {
 	rt, out, errBuf, _ := sandboxWithManifest(t)
 	yes := true
 	rt.interactiveOverride = &yes
-	// 纯文本问答依次是：默认勾选状态（回车＝缺失的默认勾上）、多选（按 id 勾 golang）、
-	// 破坏性操作确认 y。裸编号依赖清单里的排序，名字更稳。
-	rt.Opts.In = strings.NewReader("\ngolang\ny\n")
+	// 纯文本问答依次是：想怎么选（3=全部工具里勾选）、默认勾选状态（回车＝缺失的默认勾上）、
+	// 多选（按 id 勾 golang）、破坏性操作确认 y。裸编号依赖清单里的排序，名字更稳。
+	rt.Opts.In = strings.NewReader("3\n\ngolang\ny\n")
 
 	code, stdout, stderr := run(t, rt, "tool", "install", "-i", "--dry-run")
 	if code != ExitOK {
@@ -807,6 +807,50 @@ func TestToolInstallInteractiveSelectionDrivesPlan(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "btop") {
 		t.Errorf("没勾的工具不该进计划：\n%s", out.String())
+	}
+}
+
+// TestToolInstallInteractiveProfileScopeInstallsWholeProfile：`-i` 里选"按套装→整套装安装"
+// 时不再逐个勾选，直接按套装出计划（用户实测反馈：想整组装却得先记住 --profile 怎么拼）。
+func TestToolInstallInteractiveProfileScopeInstallsWholeProfile(t *testing.T) {
+	rt, out, errBuf, _ := sandboxWithManifest(t)
+	yes := true
+	rt.interactiveOverride = &yes
+	// 想怎么选（1=按套装）→ 选一个套装（extra，extends base）→ 怎么装（1=整套装安装）
+	rt.Opts.In = strings.NewReader("1\nextra\n1\n")
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "-i", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if !strings.Contains(errBuf.String(), "想怎么选工具？") {
+		t.Errorf("没给范围参数时应当先问想怎么选：\n%s", errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "选择要安装的工具") {
+		t.Errorf("整套装安装不该再进勾选列表：\n%s", errBuf.String())
+	}
+	if !strings.Contains(out.String(), "btop") {
+		t.Errorf("extra 套装里的 btop 应当进计划：\n%s", out.String())
+	}
+}
+
+// TestToolInstallInteractiveScopedSkipsScopeMenu：命令行已经用参数圈定范围时不再问
+// "想怎么选"——`-i --stack` 与改动前一样直接进勾选器。
+func TestToolInstallInteractiveScopedSkipsScopeMenu(t *testing.T) {
+	rt, _, errBuf, _ := sandboxWithManifest(t)
+	yes := true
+	rt.interactiveOverride = &yes
+	rt.Opts.In = strings.NewReader("\n\n\ny\n")
+
+	code, stdout, stderr := run(t, rt, "tool", "install", "-i", "--stack", "golang", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if strings.Contains(errBuf.String(), "想怎么选工具？") {
+		t.Errorf("给了 --stack 就不该再问想怎么选：\n%s", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "选择要安装的工具") {
+		t.Errorf("应当直接进勾选器：\n%s", errBuf.String())
 	}
 }
 

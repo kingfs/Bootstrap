@@ -358,16 +358,17 @@ func (rt *Runtime) renderSkipped(skipped []install.Step) {
 // planFor 计算计划：-i 时先勾选；显式给了工具名就用它们；否则用手写的选择条件。
 func (rt *Runtime) planFor(cmd *cobra.Command, f toolSelectFlags, args []string, op install.Op) (install.Plan, error) {
 	ids := args
+	profile := f.profile
 	switch {
 	case f.select_:
 		if len(args) > 0 {
 			return install.Plan{}, usageErrf("--interactive 不能与显式工具名同时使用：用 --profile/--stack/--kind/--tag 缩小候选范围，再在界面里勾选")
 		}
-		picked, err := rt.pickIDs(cmd, f, op)
+		picked, pickedProfile, err := rt.pickIDs(cmd, f, op)
 		if err != nil {
 			return install.Plan{}, err
 		}
-		ids = picked
+		ids, profile = picked, pickedProfile
 	case len(ids) == 0:
 		selected, err := rt.selectIDs(cmd, f)
 		if err != nil {
@@ -375,7 +376,7 @@ func (rt *Runtime) planFor(cmd *cobra.Command, f toolSelectFlags, args []string,
 		}
 		ids = selected
 	}
-	return rt.app().ToolPlan(cmd.Context(), ids, f.profile, op)
+	return rt.app().ToolPlan(cmd.Context(), ids, profile, op)
 }
 
 // pickIDs 用交互界面让用户勾选要处理的工具（`-i`）。
@@ -384,22 +385,40 @@ func (rt *Runtime) planFor(cmd *cobra.Command, f toolSelectFlags, args []string,
 // 于是"看一遍再决定"与"直接回车照默认来"是同一个入口。
 // "安装"额外先问一句默认勾上哪些：用户实测反馈默认全勾时想只装几个，缺少一个"先都不勾"的入口
 // （upgrade/uninstall 的默认勾选规则不同，没开这一问；它们照样能按 ctrl+x 清空）。
-func (rt *Runtime) pickIDs(cmd *cobra.Command, f toolSelectFlags, op install.Op) ([]string, error) {
+//
+// 安装且**没有**用参数圈定范围时，还会先问一句"想怎么选"（见 app.PickToolsScoped）：
+// init 的向导里一直有"按套装"的入口，tool install -i 只有一张大列表，想整组装得先记住
+// --profile 怎么拼（用户实测反馈）。返回值里的 profile 非空 = 用户选了"整套装安装"。
+func (rt *Runtime) pickIDs(cmd *cobra.Command, f toolSelectFlags, op install.Op) ([]string, string, error) {
 	if !rt.interactive() {
-		return nil, coded(ExitNeedsInteraction, errors.New(
+		return nil, "", coded(ExitNeedsInteraction, errors.New(
 			"--interactive 需要终端才能勾选：换到终端里跑，或改用 --profile/--stack/--missing 等参数"))
 	}
-	ids, err := rt.app().PickTools(cmd.Context(), app.ToolListOptions{
+	opt := app.ToolListOptions{
 		Profile: f.profile, Stack: f.stack, Kind: f.kind, Tags: f.tags,
 		Missing: f.missing, Refresh: true,
-	}, rt.prompter(), app.PickOptions{
+	}
+	pick := app.PickOptions{
 		Title:      fmt.Sprintf("选择要%s的工具（候选 %s）", install.OpLabel(op), selectionLabel(f)),
 		AskDefault: op == install.OpInstall,
-	})
-	if err != nil {
-		return nil, toolErr(err)
 	}
-	return ids, nil
+	if op == install.OpInstall && !f.scoped() {
+		ids, profile, err := rt.app().PickToolsScoped(cmd.Context(), rt.prompter(), opt, pick)
+		if err != nil {
+			return nil, "", toolErr(err)
+		}
+		return ids, profile, nil
+	}
+	ids, err := rt.app().PickTools(cmd.Context(), opt, rt.prompter(), pick)
+	if err != nil {
+		return nil, "", toolErr(err)
+	}
+	return ids, f.profile, nil
+}
+
+// scoped 报告用户是否已经用参数圈定了候选范围（圈定了就直接进勾选器，不再问"想怎么选"）。
+func (f toolSelectFlags) scoped() bool {
+	return f.profile != "" || f.stack != "" || f.kind != "" || len(f.tags) > 0 || f.missing
 }
 
 // selectionLabel 把过滤条件说成人话，让勾选界面的标题能自解释。
