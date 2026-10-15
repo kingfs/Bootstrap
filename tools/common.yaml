@@ -590,14 +590,23 @@ tools:
     when: {os: [linux, darwin]}
     verify: {command: herdr, version_args: [--version], version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'}
     install:
-      # ⚠️ 上游 Release 的裸二进制**完全不带校验和**（asset 列表里没有 checksums 文件，
-      # `<asset>.sha256` 也实测 404），所以按 §9.2 不能用 via: release；官方 install.sh 属于
-      # via: script（内置清单不用）。于是只剩 brew（homebrew/core 0.9.5，Linuxbrew 也有
-      # arm64_linux/x86_64_linux bottle）——**没有 brew 的 Linux 机器上没有任何可用方式**，
-      # `bs tool plan herdr` 会明确报出来，这是有意留下的缺口。
+      # 上游的安装渠道：brew（macOS 与 Linuxbrew）、官方 install.sh（属于 via: script，
+      # 内置清单不用）、以及 Release 里的裸二进制。Release 页**确实没有** checksums 文件，
+      # 但 release 是 immutable 的，GitHub API 会给每个资产一个 sha256 digest，
+      # 引擎在所有校验和文件都拿不到时会退回到它（docs/tool-schema.md §7）——
+      # 所以"没有 brew 的 Linux 机器装不了"这个老缺口已经补上。
       - via: brew
         when: {has: [brew]}
         params: {formula: herdr}
+      - via: release
+        when: {os: [linux, darwin]}
+        params:
+          repo: herdrdev/herdr
+          # 资产名用 x86_64/aarch64（不是 {{arch}} 的 amd64/arm64），macOS 写成 macos；
+          # 产物是**裸二进制**，没有外层目录，因此不写 strip_components。
+          asset: "herdr-{{os|osmap:darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}"
+          binary: herdr
+          dest: "~/.local/bin"
 
   - id: codebase-memory-mcp
     name: codebase-memory-mcp

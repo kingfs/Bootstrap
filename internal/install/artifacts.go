@@ -432,7 +432,7 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 
 // checksumFor 解析产物的 sha256。
 //
-// 顺序：显式固化 → 显式文件名 → 常见文件名 → `<asset>.sha256`。
+// 顺序：显式固化 → 显式文件名 → 常见文件名 → `<asset>.sha256` → GitHub API 的 asset digest。
 // 拿不到校验和就报错（AGENTS.md §8.3：宁可失败，也不装一个来路不明的东西）。
 func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, src releaseSource) (string, error) {
 	if m.Params.Checksum == "none" {
@@ -483,6 +483,23 @@ func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifes
 			if sha, ok := ghrelease.BareChecksum(text); ok {
 				return validateSHA256(t.ID, sha)
 			}
+		}
+	}
+	// 再最后试 GitHub API 的 asset digest。
+	//
+	// 上游只发裸二进制、不发任何校验和文件时（herdr 就是），不可变 release 的 digest
+	// 是唯一可信的来源——**这是多一个校验和来源，不是放弃校验**：拿不到它照样中止。
+	// 放在整条链的最末尾有两个理由：①它要多打一次 API（匿名限流 60 次/小时），
+	// ②清单作者显式写的 params.sha256 / checksum_file 更能表达"我确认过这个来源"。
+	if m.Params.Repo != "" {
+		switch sha, ok, derr := e.AssetDigest(ctx, m.Params.Repo, tag, asset); {
+		case derr != nil:
+			// 与校验和文件一样区分"没有"和"取不到"：限流/断网时别说成"上游没发校验和"。
+			tried = append(tried, "api digest (fetch failed: "+firstLineOf(derr.Error())+")")
+		case ok:
+			return validateSHA256(t.ID, sha)
+		default:
+			tried = append(tried, "api digest(无 "+asset+" 的 sha256)")
 		}
 	}
 	return "", fmt.Errorf("tool %q: cannot find a sha256 for %s in %s@%s (tried %s); "+

@@ -293,13 +293,22 @@ params:
     - {from: "~/.local/share/uv/uv", to: "~/.local/bin/uv"}
     - {from: "~/.local/share/uv/uvx", to: "~/.local/bin/uvx"}
   checksum_file: SHASUMS256.txt         # 指定校验和文件名（默认按候选链找）
-  sha256: "..."                         # 或直接固化下载物的哈希
+  sha256: "..."                         # 或直接固化下载物的哈希（字面量，不做模板渲染：
+                                        # 多平台要各写一条 when，各配自己那份哈希）
   checksum: sha256                      # `none` 显式放弃校验（逃生口，内置清单不用）
 ```
 
 - **校验和是硬要求**：候选链为 `checksums.txt` → `sha256sum.txt` → `checksums.sha256` →
-  `SHA256SUMS` → `<asset>.sha256`，都拿不到就**中止**（`params.sha256` 可以完全免联网校验）。
-  因此清单里不要给"不发布校验和的仓库"写 `via: release`。
+  `SHA256SUMS` → `<asset>.sha256` → **GitHub API 的 asset digest**，都拿不到就**中止**
+  （`params.sha256` 可以完全免联网校验）。
+- 最后那个来源是为"只发裸二进制、不发任何校验和文件"的仓库准备的（实测：herdr）。
+  GitHub 从 2025 年起给**不可变 release**（immutable release）的每个资产附带
+  `digest: sha256:<hex>`，引擎在前几个来源都拿不到时自动回退到它——这仍然是**真校验**，
+  不是 `checksum: none` 那种放弃。它排在最后有两个理由：①要多打一次 API（匿名限流
+  60 次/小时）；②清单显式写的 `checksum_file`/`sha256` 更能表达"我确认过这个来源"。
+  清单**不需要**为它写任何字段；非不可变 release 没有 digest，行为与以前完全一致（中止）。
+  注意 digest 查询只在 `repo` + `asset` 模式生效（直链模式仍按 URL 的兄弟文件找），
+  而且资产名必须逐字相等。
 - `asset` 支持模板；`symlink`/`symlinks` 里的 `from`/`to` **同样支持模板**
   （gradle 要写 `~/.local/share/gradle/gradle-{{version}}/bin/gradle`）。
 - 没写 `binary` 时：`repo` 模式取仓库名，直链模式取产物名去掉归档后缀。

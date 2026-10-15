@@ -221,6 +221,22 @@ func (e *OSEnv) LatestRelease(ctx context.Context, repo string) (string, error) 
 	return tag, err
 }
 
+// AssetDigest 实现 ExecEnv。
+//
+// 与 FetchText 同类：只读请求，干跑时也照常进行——plan 要拿到真实校验和才能在预览里
+// 说明"将下载什么、校验什么"。这里**不**复用 LatestRelease 的 dry-run 拒绝，
+// 因为只有版本已经确定（固定 version_source 或已解析出 tag）时才会走到这一步。
+func (e *OSEnv) AssetDigest(ctx context.Context, repo, tag, asset string) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.lookupTimeout())
+	defer cancel()
+	start := time.Now()
+	sha, ok, err := ghrelease.AssetDigest(ctx, e.client, repo, tag, asset)
+	// 记一条日志：校验和"来源换了"这件事必须留痕，排查失败时才知道走过的哪条路。
+	e.log.Debug("http", "asset-digest", repo+"@"+tag, "asset", asset,
+		"elapsed", time.Since(start).Round(time.Millisecond), "found", ok, "err", err)
+	return sha, ok, err
+}
+
 // LookPath 实现 ExecEnv：先在注入的 PATH 里找，再看 extra_path。
 func (e *OSEnv) LookPath(name string) (string, bool) {
 	if name == "" {

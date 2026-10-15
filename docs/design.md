@@ -895,10 +895,13 @@ type ExecEnv interface {
 
 - **`release` 拿不到校验和就中止**（AGENTS.md §8.3）。查找顺序：`params.sha256` 固化 →
   `params.checksum_file` 指定的文件名 → 常见文件名 `checksums.txt` / `sha256sum.txt` /
-  `checksums.sha256` / `SHA256SUMS` → `<asset>.sha256`（Rust 生态习惯，文件里通常只有一个裸哈希）。
+  `checksums.sha256` / `SHA256SUMS` → `<asset>.sha256`（Rust 生态习惯，文件里通常只有一个裸哈希）
+  → **GitHub API 的 asset digest**（不可变 release 的 `digest: sha256:<hex>` 字段，ADR-0017）。
   `params.checksum: none` 是唯一的显式放弃开关。实测各家习惯不同（g 用 `sha256sum.txt`、
   k9s 用 `checksums.sha256`、uv/ripgrep 每个产物配 `<asset>.sha256`），逐个试比强制清单作者
-  记住某个项目的习惯更可靠。
+  记住某个项目的习惯更可靠；最后一个来源专治"只发裸二进制、不发校验和文件"的仓库
+  （herdr 就是：Releases 页没有任何 checksums 文件，但 release 不可变、API 给 digest），
+  它排在最后是因为要多打一次 API（匿名限流 60 次/小时），而且清单显式声明的来源优先级更高。
   这些"元数据查询"（最新 tag、校验和文件、版本文本）共用 `install.LookupTimeout = 60s`
   的单次上限，而真正的下载用 `httpx.DefaultDownloadTimeout = 15min`（通用 GET 是 60s）——
   **下载慢是正常的，查元数据慢不是**；把两者绑在同一个 60s 上，会出现"能下完却永远装不上"。
@@ -1684,7 +1687,9 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 ## 16. 安全边界
 
 1. **下载物必须校验 sha256**：`via: release` 固化了 `params.sha256`、指定了 `params.checksum_file`，
-   或能从常见校验和文件里查到才继续，查不到就中止（`params.checksum: none` 是唯一的显式放弃开关）；
+   或能从常见校验和文件（含 `<asset>.sha256`）里查到才继续，查不到就中止
+   （`params.checksum: none` 是唯一的显式放弃开关）；不可变 release 的
+   **GitHub API asset digest** 是同一性质的校验和来源，只是来得晚一步（ADR-0017）。
    `via: script` 必须有 `params.sha256`，除非清单显式写 `params.insecure: true`。
    内置清单里**不使用** `via: script`（AGENTS.md §9 的清单纪律）。没有 `--insecure-script` 这类 CLI 开关——
    放弃校验必须写进清单并被 review。
@@ -1782,6 +1787,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0014 | **首批平台范围** | 首批清单（`base/golang/nodejs/python`）只覆盖 **linux + darwin**；Windows 首批仅保证 `bs` 本体 + `repo`/`proxy`/`shell(pwsh)` 可用，工具清单在 M5+ 单独补 | Go 用 `g` 管理的前提是其在各平台可用；Windows 不冒险 |
 | ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错；⑥工具选择是两级菜单（想怎么装 → 套装/手工勾选），子菜单里 Shift+Tab（纯文本 `b`）退回上一级，选错不必重跑命令；⑦收尾的 shell 受管块**不再问一句**（有终端或 `--yes` 就直接写；非交互没授权则跳过并说明），成功后只提示"已写进哪份 rc + 执行 `source` 让它生效"，不再打印备份路径之类的内部细节 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举、进了勾选列表回不到上一级菜单、"要不要写受管块"同样多此一举、收尾信息太吵（只要一句 `source` 就好） |
 | ADR-0016 | **补全的安装形态** | `bs completion install [shell]` 负责"打开 `shell.completion` + 幂等写入受管块"；补全片段由 `bs shell init` 现算，**不新增第二组受管块标记**；默认关（与 `auto_proxy` 同理，不擅自改变每个新 shell 的行为）；`bs completion bash\|zsh\|fish\|powershell` 保持"只打印脚本"的 cobra 契约 | 用户反馈"生成完不知道下一步该干什么"；沿用 ADR-0007 的单受管块可以一次卸载干净，代价是只想补全的人会连带装上代理包装/PATH 片段 |
+| ADR-0017 | **校验和的最后一个来源** | `via: release` 的前几个来源（`params.sha256` / `checksum_file` / 常见文件名 / `<asset>.sha256`）都拿不到时，回退到 **GitHub API 的 asset digest**（不可变 release 的 `digest: sha256:<hex>`）；清单无需声明，非不可变 release 行为不变；digest 仍是**真校验**，`params.checksum: none` 依然是唯一的放弃开关 | 起因：herdr 只发裸二进制、Releases 页没有任何校验和文件，于是清单里只剩 brew 一条路——"官方支持 Ubuntu 却没 brew 就装不了"。API 与产物同源，信任级别与 `checksums.txt` 相同（§16 第 7 条的镜像语义也一并适用）；代价是多打一次 API（匿名限流 60 次/小时），所以排在最后 |
 
 ### 18.2 已闭环
 

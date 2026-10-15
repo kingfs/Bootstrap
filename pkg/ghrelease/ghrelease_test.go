@@ -2,6 +2,7 @@ package ghrelease
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -116,5 +117,78 @@ func TestLatestTagFallsBackToRedirect(t *testing.T) {
 	tag, err := LatestTag(context.Background(), c, "voidint/g")
 	if err != nil || tag != "v9.9.9" {
 		t.Fatalf("LatestTag = %q, %v", tag, err)
+	}
+}
+
+// TestReleaseAPIURL：tag 里的 `/`（kustomize 那种 `kustomize/v5.8.3`）必须转义成 %2F，
+// 否则会被当成路径分隔符、请求打到不存在的路由上。
+func TestReleaseAPIURL(t *testing.T) {
+	old := APIBaseURL
+	APIBaseURL = "https://api.github.com/"
+	defer func() { APIBaseURL = old }()
+
+	if got, want := ReleaseAPIURL("herdrdev/herdr", "v0.9.5"), "https://api.github.com/repos/herdrdev/herdr/releases/tags/v0.9.5"; got != want {
+		t.Errorf("ReleaseAPIURL = %q，期望 %q", got, want)
+	}
+	if got, want := ReleaseAPIURL("/o/r/", "kustomize/v5.8.3"), "https://api.github.com/repos/o/r/releases/tags/kustomize%2Fv5.8.3"; got != want {
+		t.Errorf("带斜杠的 tag = %q，期望 %q", got, want)
+	}
+}
+
+// TestParseAssetDigest：不可变 release 的 digest 解析，以及各种"没有"的形态。
+//
+// 关键约定：**资产名逐字相等**，哈希小写归一；算法不对/长度不对一律当作"没有"，
+// 宁可让上层报"找不到校验和"，也不能拿一个来路不明的哈希去校验。
+func TestParseAssetDigest(t *testing.T) {
+	const want = "17d7536f2da50859523680ef279dffcac8e4a235f4e46fe8da6c2ec44141897c"
+	good := `{"tag_name":"v0.9.5","assets":[` +
+		`{"name":"other","digest":"sha256:1111"},` +
+		`{"name":"herdr-linux-aarch64","digest":"sha256:` + strings.ToUpper(want) + `"}]}`
+
+	if sha, ok := ParseAssetDigest(good, "herdr-linux-aarch64"); !ok || sha != want {
+		t.Errorf("ParseAssetDigest = %q, %v，期望 %q, true", sha, ok, want)
+	}
+	tests := []struct{ name, body, asset string }{
+		{"资产不存在", good, "missing"},
+		{"没有 digest 字段（非不可变 release）", `{"assets":[{"name":"a"}]}`, "a"},
+		{"算法不是 sha256", `{"assets":[{"name":"a","digest":"sha512:abcd"}]}`, "a"},
+		{"哈希长度不对", `{"assets":[{"name":"a","digest":"sha256:abcd"}]}`, "a"},
+		{"不是 JSON", `<!doctype html>`, "a"},
+	}
+	for _, tc := range tests {
+		if sha, ok := ParseAssetDigest(tc.body, tc.asset); ok {
+			t.Errorf("%s：不该解析出校验和，得到 %q", tc.name, sha)
+		}
+	}
+}
+
+// TestAssetDigestViaAPI：URL 拼装 + 真实 HTTP + 解析接得上（httptest 冒充 API）。
+func TestAssetDigestViaAPI(t *testing.T) {
+	const want = "17d7536f2da50859523680ef279dffcac8e4a235f4e46fe8da6c2ec44141897c"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/herdrdev/herdr/releases/tags/v0.9.5" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintf(w, `{"assets":[{"name":"herdr-linux-aarch64","digest":"sha256:%s"}]}`, want)
+	}))
+	defer srv.Close()
+
+	oldAPI := APIBaseURL
+	APIBaseURL = srv.URL
+	defer func() { APIBaseURL = oldAPI }()
+
+	c := httpx.New(5*time.Second, nil)
+	sha, ok, err := AssetDigest(context.Background(), c, "herdrdev/herdr", "v0.9.5", "herdr-linux-aarch64")
+	if err != nil || !ok || sha != want {
+		t.Fatalf("AssetDigest = %q, %v, %v", sha, ok, err)
+	}
+	// 资产名对不上时是"没有"，不是错误（上层据此继续走"拿不到校验和就中止"）。
+	if _, ok, err := AssetDigest(context.Background(), c, "herdrdev/herdr", "v0.9.5", "nope"); err != nil || ok {
+		t.Fatalf("未知资产应当返回 ok=false / err=nil，得到 ok=%v err=%v", ok, err)
+	}
+	// API 不通时必须是错误：不能把"取不到"说成"上游没发校验和"。
+	if _, _, err := AssetDigest(context.Background(), c, "herdrdev/herdr", "v0.0.1", "x"); err == nil {
+		t.Error("404 应当是错误")
 	}
 }

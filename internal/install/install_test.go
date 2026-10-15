@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kingfs/Bootstrap/internal/manifest"
+	"github.com/kingfs/Bootstrap/pkg/ghrelease"
 	"github.com/kingfs/Bootstrap/pkg/httpx"
 )
 
@@ -938,5 +939,93 @@ func TestReleaseURLHelpers(t *testing.T) {
 		if got := defaultBinary(tc.src); got != tc.want {
 			t.Errorf("defaultBinary(%+v) = %q, want %q", tc.src, got, tc.want)
 		}
+	}
+}
+
+// 复现 herdr 的形态：上游只发裸二进制、没有任何校验和文件，
+// 但 release 是不可变的、GitHub API 给出了每个资产的 sha256 digest。
+const digestFallbackManifest = `
+version: 1
+tools:
+  - id: herdr
+    stack: agent
+    kind: agent
+    verify: {command: herdr, version_args: [--version], version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: release
+        params:
+          repo: herdrdev/herdr
+          version_source: v0.9.5
+          asset: "herdr-linux-amd64"
+          binary: herdr
+          dest: "~/.local/bin"
+`
+
+// TestReleaseChecksumFallbackToAPIDigest 锁定校验和的来源优先级：
+// `params.sha256` → 校验和文件 → `<asset>.sha256` → GitHub API 的 asset digest；
+// 全都没有仍然必须中止（digest 是**多一个可信来源**，不是放宽校验）。
+func TestReleaseChecksumFallbackToAPIDigest(t *testing.T) {
+	const (
+		repo    = "herdrdev/herdr"
+		tag     = "v0.9.5"
+		asset   = "herdr-linux-amd64"
+		fileSum = "1111111111111111111111111111111111111111111111111111111111111111"
+		apiSum  = "2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	tests := []struct {
+		name         string
+		checksumFile bool
+		apiDigest    bool
+		want         string
+		wantErr      string
+	}{
+		{name: "校验和文件优先于 digest", checksumFile: true, apiDigest: true, want: fileSum},
+		{name: "没有校验和文件时回退到 API digest", apiDigest: true, want: apiSum},
+		{name: "两个来源都没有就中止", wantErr: "api digest"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFakeEnv(t)
+			if tc.checksumFile {
+				env.files[ghrelease.AssetURL(repo, tag, "checksums.txt")] = fileSum + "  " + asset + "\n"
+			}
+			if tc.apiDigest {
+				env.digests[digestKey(repo, tag, asset)] = apiSum
+			}
+			loaded := loadManifest(t, digestFallbackManifest)
+			tool, _ := loaded.ByID("herdr")
+			in, ok := NewRegistry().Get("release")
+			if !ok {
+				t.Fatal("no release installer registered")
+			}
+
+			action, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+				}
+				// 新来源失败时，错误信息仍要说清"就是没找到校验和"，别把人引向"网络问题"。
+				if !strings.Contains(err.Error(), "cannot find a sha256") {
+					t.Errorf("错误信息应当仍然是 cannot find a sha256：%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Plan: %v", err)
+			}
+			if len(action.Downloads) != 1 {
+				t.Fatalf("downloads = %+v", action.Downloads)
+			}
+			if got := action.Downloads[0].SHA256; got != tc.want {
+				t.Errorf("sha256 = %q, want %q", got, tc.want)
+			}
+			// 校验和文件已经命中时不该再问 API：来源确定就别多花一次匿名配额。
+			if tc.checksumFile && env.digestCalls != 0 {
+				t.Errorf("校验和文件已命中，却还查了 %d 次 API digest", env.digestCalls)
+			}
+			if !tc.checksumFile && env.digestCalls != 1 {
+				t.Errorf("digest 查询次数 = %d, want 1", env.digestCalls)
+			}
+		})
 	}
 }

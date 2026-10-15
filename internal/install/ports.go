@@ -102,6 +102,9 @@ type ExecEnv interface {
 	FetchText(ctx context.Context, url string) (string, error)
 	// LatestRelease 解析 GitHub 仓库最新 release tag。
 	LatestRelease(ctx context.Context, repo string) (string, error)
+	// AssetDigest 查 GitHub Release API 里某个资产的 sha256（不可变 release 的 digest 字段）。
+	// ok=false 表示该 release/资产没有提供 sha256 digest（例如非不可变 release），不是错误。
+	AssetDigest(ctx context.Context, repo, tag, asset string) (string, bool, error)
 	// LookPath 在"已装配的 PATH"里查找可执行文件。
 	LookPath(name string) (string, bool)
 	// Env 是注入给子进程的环境（已含代理）。

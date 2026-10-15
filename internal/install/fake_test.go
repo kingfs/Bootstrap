@@ -36,6 +36,8 @@ type fakeEnv struct {
 	bins        map[string]string // 命令名 → 路径（等价于 PATH 里有它）
 	files       map[string]string // URL → 内容（FetchText/Download 用）
 	tags        map[string]string // repo → latest tag
+	digests     map[string]string // "repo@tag/asset" → sha256（AssetDigest 用）
+	digestCalls int               // AssetDigest 被调用了几次（断言"能少问一次就少问一次"）
 	commands    []Command
 	downloads   []Download
 	runErr      map[string]error // 命令名 → 故意失败
@@ -52,7 +54,8 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 		home: filepath.Join(work, "home"), work: work,
 		env:  map[string]string{"PATH": "/usr/bin:/bin", "HOME": filepath.Join(work, "home")},
 		bins: map[string]string{}, files: map[string]string{}, tags: map[string]string{},
-		runErr: map[string]error{}, runOut: map[string]string{},
+		digests: map[string]string{},
+		runErr:  map[string]error{}, runOut: map[string]string{},
 		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
@@ -119,6 +122,18 @@ func (f *fakeEnv) LatestRelease(_ context.Context, repo string) (string, error) 
 	}
 	return "", fmt.Errorf("fake release: no tag for %s", repo)
 }
+
+// AssetDigest：只有登记过的资产才有 digest，其余一律 ok=false
+// （等价于"这个 release 不是不可变的 / 没有 digest 字段"）。
+func (f *fakeEnv) AssetDigest(_ context.Context, repo, tag, asset string) (string, bool, error) {
+	f.mu.Lock()
+	f.digestCalls++
+	f.mu.Unlock()
+	sha, ok := f.digests[digestKey(repo, tag, asset)]
+	return sha, ok, nil
+}
+
+func digestKey(repo, tag, asset string) string { return repo + "@" + tag + "/" + asset }
 
 func (f *fakeEnv) LookPath(name string) (string, bool) {
 	p, ok := f.bins[name]

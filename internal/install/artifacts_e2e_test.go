@@ -809,3 +809,115 @@ tools:
 		t.Errorf("extract 没把整包解开：%v", err)
 	}
 }
+
+// TestReleaseInstallFromAPIDigest：上游只发裸二进制、**不发任何校验和文件**的仓库
+// （herdr 就是这样）。校验和只能来自 GitHub API 的 asset digest——这条测试把
+// "API JSON → digest → 下载 → 校验 → 落盘 → 复核"整条路径跑真，
+// 只有网络端点被 httptest 换掉。
+func TestReleaseInstallFromAPIDigest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	// 宿主机上真的装了 herdr（~/.local/bin/herdr）时，探测会看到它、计划直接变成 skip，
+	// 这条测试就什么都验证不到（design §18.4 第 12 条踩过同一个坑）。
+	// 把进程 PATH 收敛到最小集合，假二进制只需要 /bin/sh。
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	const (
+		repo  = "herdrdev/herdr"
+		tag   = "v0.9.5"
+		ver   = "0.9.5"
+		asset = "herdr-linux-amd64"
+	)
+	payload := []byte("#!/bin/sh\necho \"herdr " + ver + "\"\n")
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/" + repo + "/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tag})
+		case "/repos/" + repo + "/releases/tags/" + tag:
+			// 不可变 release 的 API 响应：每个资产带一个 sha256 digest。
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": tag,
+				"assets": []map[string]string{
+					{"name": asset, "digest": "sha256:" + digest},
+				},
+			})
+		case "/" + repo + "/releases/download/" + tag + "/" + asset:
+			_, _ = w.Write(payload)
+		default:
+			// 所有校验和文件都在这里 404：逼着引擎走 digest 兜底。
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	oldAPI, oldAsset := ghrelease.APIBaseURL, ghrelease.AssetBaseURL
+	ghrelease.APIBaseURL, ghrelease.AssetBaseURL = api.URL, api.URL
+	defer func() { ghrelease.APIBaseURL, ghrelease.AssetBaseURL = oldAPI, oldAsset }()
+
+	home := t.TempDir()
+	dest := filepath.Join(home, "bin")
+	env := NewOSEnv(OSEnvOptions{
+		Env:       map[string]string{"PATH": os.Getenv("PATH"), "HOME": home},
+		ExtraPath: []string{dest},
+		HomeDir:   home,
+		GOOS:      "linux",
+		Arch:      "amd64",
+		Client:    httpx.New(30e9, nil),
+		WorkRoot:  t.TempDir(),
+	})
+	runner := cmdx.New(nil)
+
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: herdr
+    stack: agent
+    kind: agent
+    verify:
+      command: herdr
+      version_args: [--version]
+      version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: release
+        params:
+          repo: `+repo+`
+          asset: "`+asset+`"
+          binary: herdr
+          dest: `+dest+`
+`)
+	det := &detect.Detector{Executor: runner, LookPath: env, HomeDir: home,
+		Timeout: detect.ProbeTimeout, Concurrency: 2}
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	plan, err := eng.PlanTools(context.Background(), []string{"herdr"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	if len(plan.Steps) != 1 || plan.Steps[0].Status != StepInstall {
+		t.Fatalf("plan = %+v", plan.Steps)
+	}
+	// 计划期就该拿到 API 给的哈希：下载时按它校验整份文件，而不是"下完再说"。
+	if got := plan.Steps[0].Action.Downloads[0].SHA256; got != digest {
+		t.Fatalf("计划里的 sha256 = %q，期望 API digest %q", got, digest)
+	}
+
+	report, err := eng.Apply(context.Background(), plan, OpInstall)
+	if err != nil {
+		t.Fatalf("Apply: %v (steps=%+v)", err, report.Steps)
+	}
+	if report.Steps[0].Status != StepDone {
+		t.Fatalf("step = %+v", report.Steps[0])
+	}
+	bin := filepath.Join(dest, "herdr")
+	res, err := runner.Run(context.Background(), cmdx.Command{Name: bin, Args: []string{"--version"}})
+	if err != nil || !strings.Contains(res.Stdout, ver) {
+		t.Fatalf("装出来的二进制不可用：%v / %q", err, res.Stdout)
+	}
+}

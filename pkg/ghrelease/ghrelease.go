@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -96,6 +97,63 @@ func latestTagViaRedirect(ctx context.Context, c *httpx.Client, repo string) (st
 		return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	return "", fmt.Errorf("could not determine latest tag from %s", final)
+}
+
+// ReleaseAPIURL 拼出某个 tag 的 Release API 地址。
+//
+// tag 里的 `/`（kustomize 那种 `kustomize/v5.8.3`）必须转义成 %2F：
+// 不转义会被当成路径分隔符，请求打到不存在的路由上。
+func ReleaseAPIURL(repo, tag string) string {
+	return fmt.Sprintf("%s/repos/%s/releases/tags/%s",
+		strings.TrimRight(APIBaseURL, "/"), strings.Trim(repo, "/"), url.PathEscape(tag))
+}
+
+// AssetDigest 查询某个 release 资产的 sha256（GitHub API 的 digest 字段）。
+//
+// 2025 年起 GitHub 给**不可变 release**（immutable release）的每个资产附带
+// `digest: sha256:<hex>`。像 herdr 这种只发裸二进制、不发任何校验和文件的仓库，
+// 这是唯一可信的校验和来源。ok=false 表示"这份响应里没有可用的 sha256"
+// （该资产不存在 / release 不是不可变的 / 算法不是 sha256），它**不是**错误——
+// 调用方应当把它当成"这个来源没有"，继续按"拿不到校验和就中止"处理。
+func AssetDigest(ctx context.Context, c *httpx.Client, repo, tag, asset string) (string, bool, error) {
+	data, err := c.GetBytes(ctx, ReleaseAPIURL(repo, tag))
+	if err != nil {
+		return "", false, err
+	}
+	sha, ok := ParseAssetDigest(string(data), asset)
+	return sha, ok, nil
+}
+
+// ParseAssetDigest 从 Release API 的 JSON 里取出某个资产的 sha256。
+//
+// 资产名必须**逐字相等**：这里不做模糊匹配——取错资产的哈希去校验另一个文件，
+// 只会得到一次莫名其妙的 checksum mismatch。
+func ParseAssetDigest(releaseJSON, asset string) (string, bool) {
+	var payload struct {
+		Assets []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal([]byte(releaseJSON), &payload); err != nil {
+		return "", false
+	}
+	want := strings.TrimPrefix(strings.TrimSpace(asset), "./")
+	for _, a := range payload.Assets {
+		if a.Name != want {
+			continue
+		}
+		algo, hex, found := strings.Cut(a.Digest, ":")
+		if !found || !strings.EqualFold(strings.TrimSpace(algo), "sha256") {
+			return "", false
+		}
+		hex = strings.ToLower(strings.TrimSpace(hex))
+		if !bareSHA256.MatchString(hex) {
+			return "", false
+		}
+		return hex, true
+	}
+	return "", false
 }
 
 // AssetURL 拼出某个 tag 下资产的下载地址。
