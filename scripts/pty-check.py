@@ -21,8 +21,10 @@
     python3 scripts/pty-check.py --expect-code 0 --expect-text 已取消 \
         --keys DOWN DOWN ENTER WAIT2 CTRLC -- init --dry-run
 
-按键名：DOWN / UP / ENTER / SPACE / TAB / SHIFTTAB / ESC / CTRLC / WAIT<n>（等 n 秒）/
-其它按字面量发。SHIFTTAB 是交互界面的"返回上一步"（见 internal/ui/huh.go 的 huhBackKey）。
+按键名：DOWN / UP / ENTER / SPACE / TAB / SHIFTTAB / ESC / CTRLC / CTRLA / CTRLX /
+WAIT<n>（等 n 秒）/ 其它按字面量发。SHIFTTAB 是交互界面的"返回上一步"（见 internal/ui/huh.go
+的 huhBackKey）；CTRLA 是 huh 的"全选/全不选"切换，CTRLX 是我们接管的"一键全不选"
+（见 internal/ui/huh.go 的 huhSelectNoneKey）。
 
 沙箱（--root，默认 .cache/pty）默认**跨次调用保留**（跑得快、也便于复现）。要断言
 "第一次写入"这类输出（例：受管块是新建还是"已是最新"）时加 `--fresh`：脚本会先清空沙箱，
@@ -51,6 +53,8 @@ KEYMAP = {
     "SHIFTTAB": b"\x1b[Z",
     "ESC": b"\x1b",
     "CTRLC": b"\x03",
+    "CTRLA": b"\x01",
+    "CTRLX": b"\x18",
 }
 
 STRIP_OSC = re.compile(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)")

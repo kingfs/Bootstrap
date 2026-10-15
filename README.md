@@ -260,7 +260,7 @@ eval "$(bs shell init bash)"
 ```sh
 bs tool list --missing                 # 这台机器上还缺什么
 bs tool install --profile golang        # 装整套：g → golang → gopls/dlv/staticcheck
-bs tool install -i --stack base         # 在 base 里勾着装（缺失项已默认勾选）
+bs tool install -i --stack base         # 在 base 里勾着装（先问默认勾哪些：缺失的 / 一个都不勾）
 bs tool uninstall -i                    # 反过来，从已装的中勾着卸载
 bs tool install uv --via brew           # 只对 uv 强制用 brew
 bs tool plan --tag monitor --json       # 计划也能机读（没有可做的事也会给一份计划文档）
@@ -322,6 +322,9 @@ bs tool manifest validate --os darwin
 - 终端里：打印计划后问一句，按钮上写着"继续 / 取消"，**回车＝取消**（默认拒绝）；
 - 在真终端上，多选/单选/确认用交互式界面（方向键、空格勾选、`y`/`n`、回车提交），
   想用朴素问答就加 `--plain-ui`；`--interactive` 可强制开启提问，`--non-interactive` 强制关闭；
+- 工具勾选列表里 **`ctrl+a` 全选/全不选切换、`ctrl+x` 一键全不选**（纯文本界面用 `a` / `n`）；
+  不想默认全装就选"一个都不勾"，再空格挑必要的几个：`bs init` 的"手工挑选"与
+  `bs tool install -i` 进列表前会先问一句"先勾上哪些"（缺失的默认勾 / 一个都不勾）；
 - 取消（Ctrl-C，或回答 no）不是失败：退出码 0 + "未做任何修改"；
 - 非交互（管道、CI、`--json`、`--non-interactive`）**绝不阻塞等待输入**：
   没有 `--yes` 就直接以退出码 5 结束，并提示加 `--yes`；

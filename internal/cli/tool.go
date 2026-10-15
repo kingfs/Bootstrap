@@ -382,6 +382,8 @@ func (rt *Runtime) planFor(cmd *cobra.Command, f toolSelectFlags, args []string,
 //
 // 候选范围由过滤参数决定（都不给时=清单里所有适用工具），默认勾选"当前不满足目标状态"的那些，
 // 于是"看一遍再决定"与"直接回车照默认来"是同一个入口。
+// "安装"额外先问一句默认勾上哪些：用户实测反馈默认全勾时想只装几个，缺少一个"先都不勾"的入口
+// （upgrade/uninstall 的默认勾选规则不同，没开这一问；它们照样能按 ctrl+x 清空）。
 func (rt *Runtime) pickIDs(cmd *cobra.Command, f toolSelectFlags, op install.Op) ([]string, error) {
 	if !rt.interactive() {
 		return nil, coded(ExitNeedsInteraction, errors.New(
@@ -391,7 +393,8 @@ func (rt *Runtime) pickIDs(cmd *cobra.Command, f toolSelectFlags, op install.Op)
 		Profile: f.profile, Stack: f.stack, Kind: f.kind, Tags: f.tags,
 		Missing: f.missing, Refresh: true,
 	}, rt.prompter(), app.PickOptions{
-		Title: fmt.Sprintf("选择要%s的工具（候选 %s）", install.OpLabel(op), selectionLabel(f)),
+		Title:      fmt.Sprintf("选择要%s的工具（候选 %s）", install.OpLabel(op), selectionLabel(f)),
+		AskDefault: op == install.OpInstall,
 	})
 	if err != nil {
 		return nil, toolErr(err)

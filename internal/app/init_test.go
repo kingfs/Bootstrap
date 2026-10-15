@@ -271,7 +271,7 @@ func TestInitInteractiveManualSelectionPrefersMissing(t *testing.T) {
 
 	p := &fakePrompter{
 		interactive: true,
-		selects:     []string{"manual"},
+		selects:     []string{"manual", pickDefaultMissing},
 		multis:      [][]string{{"runtime-a"}},
 	}
 	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true})
@@ -280,6 +280,17 @@ func TestInitInteractiveManualSelectionPrefersMissing(t *testing.T) {
 	}
 	if res.Mode != SelectionManual || strings.Join(res.Tools, ",") != "runtime-a" {
 		t.Fatalf("手工选择结果不对：mode=%s tools=%v", res.Mode, res.Tools)
+	}
+	// 手工挑选会先问一次"先勾上哪些"（两种默认状态），再进勾选列表。
+	if len(p.selectSeen) != 2 || !strings.Contains(p.selectSeen[1].Title, "先勾上哪些") {
+		t.Fatalf("进勾选前应当先问默认状态，实际问过：%+v", p.selectSeen)
+	}
+	if p.selectSeen[1].Default != pickDefaultMissing {
+		t.Errorf("默认状态 = %q，期望 %q（回车＝保持现有的「补缺」行为）",
+			p.selectSeen[1].Default, pickDefaultMissing)
+	}
+	if !p.selectSeen[1].Back {
+		t.Error("「先勾上哪些」也应当能返回上一级菜单")
 	}
 	if len(p.multiSeen) != 1 {
 		t.Fatalf("应当只问一次多选，实际 %d 次", len(p.multiSeen))
@@ -307,9 +318,11 @@ func TestInitWizardBackFromManualPick(t *testing.T) {
 	addFakeManager(t, a)
 
 	// 第一次进"手工挑选"就按了返回，回到"想怎么装？"后改选"先不装工具"。
+	// 现在"手工挑选"下面多了一问"先勾上哪些"（AskDefault），所以要先把那一问答掉，
+	// 再在勾选列表里按返回——两条子路径都必须能退回最外层菜单。
 	p := &fakePrompter{
 		interactive: true,
-		selects:     []string{"manual", "none"},
+		selects:     []string{"manual", pickDefaultMissing, "none"},
 		multiErrs:   []error{ui.ErrBack},
 	}
 	res, err := a.Init(context.Background(), InitOptions{Prompter: p, AssumeYes: true})

@@ -155,7 +155,7 @@ func (t *Text) MultiSelect(q MultiSelect) ([]string, error) {
 			}
 			fmt.Fprintf(t.Out, "  [%s] %d) %s\n", checkMark(o.Selected), i+1, name)
 		}
-		fmt.Fprint(t.Out, "选择（编号，逗号/空格分隔，可写 1-3；a=全选，回车=用默认，q=取消"+backHint(q.Back)+"）: ")
+		fmt.Fprint(t.Out, "选择（编号，逗号/空格分隔，可写 1-3；a=全选，n=全不选，回车=用默认，q=取消"+backHint(q.Back)+"）: ")
 
 		line, err := t.readLine()
 		if err != nil {
@@ -169,6 +169,10 @@ func (t *Text) MultiSelect(q MultiSelect) ([]string, error) {
 			values = defaultSelection(q.Options)
 		case "a", "all", "*":
 			values = enabledValues(q.Options)
+		case "n", "none":
+			// "全不选"与 huh 界面的 Ctrl+X 对应（见 huh.go 的 huhSelectNoneKey）：
+			// 先把默认勾选清掉，用户再按编号挑几个。MinSelected 仍会拦"一个都没选"。
+			values = nil
 		default:
 			parsed, perr := parseSelection(line, q.Options)
 			if perr != nil {

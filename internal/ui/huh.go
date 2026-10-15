@@ -52,8 +52,17 @@ func NewInteractive(in io.Reader, out io.Writer) (Prompter, bool) {
 func (h *huhPrompter) Interactive() bool { return true }
 
 // MultiSelect 实现 Prompter：空格勾选、/ 过滤、回车确认。
+//
+// 关于"全选/全不选"：huh 自带的 ctrl+a 是**二态切换**，而且它只在"已经全选"时才启用
+// SelectNone（见 huh 的 setSelectAllHelp）——默认状态（缺失项勾了一部分）下按 ctrl+a
+// 只会变成"全选"，用户看完以为"没法反选"（用户实测反馈）。所以这里额外接管 ctrl+x 做
+// "一键全不选"，并把两个键位都写进说明行：huh 的帮助行同一时刻只画得出其中一个绑定，
+// 靠它没法把两种动作讲清楚。
 func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
+	// values/labels 与 options 一一对应：Ctrl+X 清空后要用同样的展示名把选项重建出来
+	// （见 clearSelection）。Disabled 的条目从头到尾不参与，重建时也不该冒出来。
 	values := make([]string, 0, len(q.Options))
+	labels := make([]string, 0, len(q.Options))
 	options := make([]huh.Option[string], 0, len(q.Options))
 	for _, o := range q.Options {
 		label := o.Display()
@@ -65,14 +74,18 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 			// 免得用户以为工具消失了（Text 版会保留并拒绝选择）。
 			continue
 		}
-		options = append(options, huh.NewOption(label, o.Value).Selected(o.Selected))
 		values = append(values, o.Value)
+		labels = append(labels, label)
+		options = append(options, huh.NewOption(label, o.Value).Selected(o.Selected))
 	}
 	// 用户主动取消（Ctrl-C / Esc）时返回 ErrCancelled，与 Text 版语义一致。
 	selected := make([]string, 0, len(values))
 	// 开了"返回上一步"就把键位提示写进说明：huh 的帮助行里没有它（单字段表单里
-	// huh 会把 Prev 置成 disabled，帮助行自然不会画）。
+	// huh 会把 Prev 置成 disabled，帮助行自然不会画）。全选/全不选同理，一并写在说明里。
 	desc := withBackHint(q.Description, q.Back, huhBackHint)
+	if len(values) > 0 {
+		desc = appendHint(desc, huhSelectHint)
+	}
 	// 工具清单动辄几十条：列表按当前终端高度撑满，窗口变大时还能再长（见 listField）。
 	field := huh.NewMultiSelect[string]().
 		Title(q.Title).
@@ -86,6 +99,20 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 			}
 			return nil
 		})
+	// clearSelection 用 huh 的公开 API 把选择清空：先把绑定值置空，再按"全部未勾选"
+	// 重建同一批选项——selectOptions 只按访问器里的值回填选中态，于是内部状态与外部
+	// 访问器保持一致，随后的 updateValue 也不会把旧值写回去。
+	clearSelection := func() {
+		if len(values) == 0 {
+			return
+		}
+		selected = selected[:0]
+		fresh := make([]huh.Option[string], 0, len(values))
+		for i, v := range values {
+			fresh = append(fresh, huh.NewOption(labels[i], v))
+		}
+		field.Options(fresh...)
+	}
 	list := &listField{
 		title:       q.Title,
 		description: desc,
@@ -95,7 +122,7 @@ func (h *huhPrompter) MultiSelect(q MultiSelect) ([]string, error) {
 	}
 	width, height := h.termSize()
 	list.resize(width, height)
-	if err := h.runForm(h.form(field, formOptions{list: list, back: q.Back})); err != nil {
+	if err := h.runForm(h.form(field, formOptions{list: list, back: q.Back, clear: clearSelection})); err != nil {
 		return nil, err
 	}
 	return selected, nil
@@ -173,12 +200,15 @@ func (h *huhPrompter) Input(q Question) (string, error) {
 	return value, nil
 }
 
-// formOptions 是单字段表单的两个可选行为（都靠同一个 tea.WithFilter 实现）。
+// formOptions 是单字段表单的几个可选行为（都靠同一个 tea.WithFilter 实现）。
 type formOptions struct {
 	// list 非 nil 时，它的高度跟着终端窗口走（见 listField）。
 	list *listField
 	// back 为真时 Shift+Tab 表示"返回上一步"，让 runForm 返回 ErrBack。
 	back bool
+	// clear 非 nil 时 Ctrl+X 表示"一键全不选"（只有多选才给）。
+	// huh 自己的 SelectNone 在"部分选中"时是 disabled 的，指望不上（见 MultiSelect）。
+	clear func()
 }
 
 // huhBackKey 是 huh 界面里的"返回上一步"按键。
@@ -193,6 +223,18 @@ const huhBackKey = "shift+tab"
 // 只能自己说清楚（不然用户根本不知道有这么个入口）。
 const huhBackHint = "Shift+Tab 返回上一步"
 
+// huhSelectNoneKey 是"一键全不选"的按键。
+//
+// 用 Ctrl+X 而不是复用 huh 的 Ctrl+A：Ctrl+A 是"全选/全不选"二态切换，默认状态
+// （缺失项勾了一部分）下第一下只会全选，想清空得按两下；huh 又把 SelectNone 在
+// "部分选中"时禁掉了，所以这个键必须是 Ctrl+A 之外的另一个键（Ctrl+X 在 huh 的
+// 多选键位表里没被占用）。纯文本界面里对应 `n`（见 ui.go）。
+const huhSelectNoneKey = "ctrl+x"
+
+// huhSelectHint 把两个键位写进说明行：huh 的帮助行同一时刻只画得出一个绑定
+// （全选/全不选共用一个键），光看它没法知道怎么"取消全选"。
+const huhSelectHint = "全选 ctrl+a，全部取消 ctrl+x"
+
 // form 组装单字段表单；输入输出显式绑定，避免 huh 自己去开 /dev/tty
 // （那样在包装器/IDE 终端里会失败，而我们已经有可用的 in/out）。
 //
@@ -201,11 +243,14 @@ const huhBackHint = "Shift+Tab 返回上一步"
 // 注意 WithProgramOptions 是**替换**而不是追加，所以必须排在最前面，
 // 否则后面 WithInput/WithOutput 追加上去的选项会被它清空。
 //
-// filter 在消息进 huh 的 Form.Update 之前跑，我们只用它做两件 huh 自己做不到的事：
+// filter 在消息进 huh 的 Form.Update 之前跑，我们只用它做几件 huh 自己做不到的事：
 //   - WindowSizeMsg：重算列表高度（huh 会重排宽度与分组高度，但 Height 是我们算的常量）；
-//   - Shift+Tab：换来一个"返回上一步"（huh 在单字段表单里把这个键禁掉了）。
+//   - Shift+Tab：换来一个"返回上一步"（huh 在单字段表单里把这个键禁掉了）；
+//   - Ctrl+X：换来一个随时可用的"全部取消勾选"（见 huhSelectNoneKey）。
 //
-// 两件事都不改写 huh 的语义：消息原样转发，只有"返回"是我们自己发起的退出。
+// 这几件事都不改写 huh 的语义：消息原样转发（Ctrl+X 在 huh 的多选键位表里没被占用，
+// 它认不出也就不会动我们的状态；转发只是为了让 bubbletea 重绘刚被清空的列表），
+// 只有"返回"是我们自己发起的退出。
 func (h *huhPrompter) form(field huh.Field, opts formOptions) *huh.Form {
 	form := huh.NewForm(huh.NewGroup(field))
 	form.WithProgramOptions(
@@ -215,6 +260,11 @@ func (h *huhPrompter) form(field huh.Field, opts formOptions) *huh.Form {
 			case tea.WindowSizeMsg:
 				opts.list.resize(m.Width, m.Height)
 			case tea.KeyMsg:
+				if opts.clear != nil && m.String() == huhSelectNoneKey {
+					opts.clear()
+					// 原样转发让 bubbletea 重绘；huh 认不出这个键，不会动我们的状态。
+					return msg
+				}
 				if opts.back && m.String() == huhBackKey {
 					h.wentBack = true
 					// 让 bubbletea 立刻收工：huh 不会因此置 aborted，

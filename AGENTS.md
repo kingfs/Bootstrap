@@ -251,6 +251,17 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   提示写在字段说明里（huh 不会把 disabled 的 Prev 画进帮助行）。
   **只在上面真有菜单可回的地方开 `Back`**，否则用户按下去只能得到一句"回不去了"。
   改这块跑 `make pty`：里面有一条"手工挑选 → Shift+Tab → 改选先不装"的回归。
+- **"全不选"是我们自己接管的 `ctrl+x`，别指望 huh 的 ctrl+a**：huh 的
+  `setSelectAllHelp` 只在"已经全选"时才启用 SelectNone，而工具列表默认是"缺失项勾了一部分"
+  的部分选中态——第一下 ctrl+a 只会变成全选，想清空得按两下，用户实测反馈"没法取消全选"。
+  所以 `huhPrompter.form()` 的 `tea.WithFilter` 里多拦一个 `ctrl+x`（`huhSelectNoneKey`）：
+  先把绑定值置空、再用 `field.Options(...)` 按"全部未勾选"重建同一批选项（走的是 huh 的公开
+  API，内部状态与访问器保持一致），然后把原消息转发给 huh 触发重绘。两个键位都写在字段说明里
+  （`huhSelectHint`），因为 huh 的帮助行同一时刻只画得出一个绑定。纯文本界面用 `n`/`none`。
+  另外 `app.PickOptions.AskDefault` 会在进列表前问一句"先勾上哪些"（缺失的默认勾 / 一个都不勾），
+  `bs init` 的手工挑选与 `tool install -i` 都开了它；**新增交互式勾选入口时别把它当成必答项写死**，
+  没有这一问的地方（如 upgrade/uninstall）照样能靠 ctrl+x 清空。改这块跑 `make pty`：
+  里面有一条"ctrl+x 清空 → 直接回车必须报至少选 1 个 → 空格勾回一个再提交"的回归。
 - 交互式界面**统一走备用屏幕**（huh 的 `tea.WithAltScreen()`，见 `internal/ui/huh.go` 的 `form()`）：
   表单铺满整屏、退出后终端恢复原样。注意 `WithProgramOptions` 是**替换**而非追加，
   必须排在 `WithInput`/`WithOutput` 之前。

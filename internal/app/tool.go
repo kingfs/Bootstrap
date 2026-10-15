@@ -344,7 +344,18 @@ type PickOptions struct {
 	// Back 为真时允许"返回上一步"（ui.ErrBack）：只有上面还有菜单可回的地方才该打开
 	// （`bs init` 的"想怎么装？"），`tool install -i` 没有上一级。
 	Back bool
+	// AskDefault 为真时，进勾选列表之前先问一句"默认勾上哪些"，让用户在
+	// "缺失的默认勾选（省事，全装）"与"一个都不勾（只挑必要的几个）"之间选。
+	// 用户实测反馈：默认全勾时想只装几个，得先想办法取消全选；这一问把两种
+	// 状态摆到明面上，交互列表里另有 ctrl+x 随时清空。
+	AskDefault bool
 }
+
+// pickDefaultMissing / pickDefaultNone 是"先勾上哪些"的两个答案。
+const (
+	pickDefaultMissing = "missing"
+	pickDefaultNone    = "none"
+)
 
 // PickTools 让用户从候选工具里勾选，返回选中的 id（`bs init` 与 `tool install -i` 共用）。
 //
@@ -354,6 +365,24 @@ type PickOptions struct {
 func (a *App) PickTools(ctx context.Context, opt ToolListOptions, p ui.Prompter, pick PickOptions) ([]string, error) {
 	if p == nil {
 		p = ui.NonInteractive{}
+	}
+	// 先问"默认勾上哪些"再探测：用户想取消的话，没必要先等一遍探测。
+	// 选项顺序与 huh/Text 无关，两种界面都走同一段。
+	if pick.AskDefault {
+		mode, err := p.Select(ui.Question{
+			Title:   "手工挑选前，先勾上哪些？",
+			Default: pickDefaultMissing,
+			Back:    pick.Back,
+		}, []ui.Option{
+			{Value: pickDefaultMissing, Label: "缺失的默认勾选", Hint: "推荐；回车直接用"},
+			{Value: pickDefaultNone, Label: "一个都不勾", Hint: "只挑必要的几个"},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if mode == pickDefaultNone {
+			pick.PreSelected = func(ToolRow) bool { return false }
+		}
 	}
 	rows, err := a.ToolRows(ctx, opt)
 	if err != nil {

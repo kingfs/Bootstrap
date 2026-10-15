@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -456,6 +457,58 @@ func TestPickToolsPreselectsAndFilters(t *testing.T) {
 	}
 	if !seen2["helper"].Selected || seen2["golang"].Selected {
 		t.Error("PreSelected 应当覆盖默认勾选规则")
+	}
+}
+
+// TestPickToolsAskDefault：进勾选列表前先问"先勾上哪些"，两种状态都要能落地。
+//
+// 用户实测反馈：默认全勾时想只装几个，得先想办法把默认勾选清掉；这一问把
+// "缺失的默认勾上"与"一个都不勾"摆到明面上（交互列表里另有 ctrl+x 随时清空）。
+func TestPickToolsAskDefault(t *testing.T) {
+	a, bin := toolSandboxApp(t, pickTestManifest)
+	addFakeBin(t, bin, "helper", "#!/bin/sh\necho helper 1.0\n")
+
+	// 选"一个都不勾"：所有候选都必须从未勾选开始，用户再自己挑。
+	f := &fakePrompter{interactive: true, selects: []string{pickDefaultNone}, multis: [][]string{{"golang"}}}
+	if _, err := a.PickTools(context.Background(), ToolListOptions{}, f, PickOptions{AskDefault: true}); err != nil {
+		t.Fatalf("PickTools: %v", err)
+	}
+	if len(f.selectSeen) != 1 || !strings.Contains(f.selectSeen[0].Title, "先勾上哪些") {
+		t.Fatalf("应当先问默认勾选状态，实际：%+v", f.selectSeen)
+	}
+	if f.selectSeen[0].Default != pickDefaultMissing {
+		t.Errorf("默认值 = %q，期望 %q（回车保持原有的补缺行为）",
+			f.selectSeen[0].Default, pickDefaultMissing)
+	}
+	if len(f.multiSeen) != 1 {
+		t.Fatalf("问完默认状态应当接着弹勾选列表，实际 %d 次", len(f.multiSeen))
+	}
+	for _, o := range f.multiSeen[0].Options {
+		if o.Selected {
+			t.Errorf("选了「一个都不勾」时 %s 不该预勾", o.Value)
+		}
+	}
+
+	// 选"缺失的默认勾选"：还是老的补缺语义（已装的不勾）。
+	f2 := &fakePrompter{interactive: true, selects: []string{pickDefaultMissing}, multis: [][]string{{"golang"}}}
+	if _, err := a.PickTools(context.Background(), ToolListOptions{}, f2, PickOptions{AskDefault: true}); err != nil {
+		t.Fatalf("PickTools: %v", err)
+	}
+	seen := map[string]ui.Option{}
+	for _, o := range f2.multiSeen[0].Options {
+		seen[o.Value] = o
+	}
+	if !seen["golang"].Selected || seen["helper"].Selected {
+		t.Error("选「缺失的默认勾选」应当保持补缺语义")
+	}
+
+	// 在"先勾上哪些"上按返回：必须原样冒泡 ErrBack，调用方才能退回上一级菜单。
+	f3 := &fakePrompter{interactive: true, selectErrs: []error{ui.ErrBack}}
+	if _, err := a.PickTools(context.Background(), ToolListOptions{}, f3, PickOptions{AskDefault: true, Back: true}); !errors.Is(err, ui.ErrBack) {
+		t.Fatalf("err = %v，期望 ErrBack（返回上一级菜单）", err)
+	}
+	if len(f3.multiSeen) != 0 {
+		t.Error("返回了就不该再弹勾选列表")
 	}
 }
 

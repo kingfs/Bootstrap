@@ -168,16 +168,28 @@ pty: build
 	@# 终端变大后列表必须跟着变长：huh 自己会按新尺寸重排，但我们算出来的 Height 是
 	@# 表单启动前的常量，只能靠 WindowSizeMsg 重算（见 internal/ui/huh.go 的 listField）。
 	@# podman 排在第 30 位：24 行终端只看得见 18 个，窗口拉到 50 行后才露出来。
+	@# 手工挑选现在先问一句"先勾上哪些"（AskDefault），所以要两个 ENTER 才进列表。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet --cols 100 --rows 24 \
 		--resize 100x50 --resize-after 5.5 \
 		--expect-code 0 --expect-text "已取消" --expect-text "podman" \
-		--keys ENTER ENTER DOWN DOWN ENTER WAIT3 CTRLC -- init --dry-run
-	@# 子菜单必须能退回上一级菜单：手工挑选 → Shift+Tab 回"想怎么装？"→ 改选"先不装工具"。
+		--keys ENTER ENTER DOWN DOWN ENTER ENTER WAIT3 CTRLC -- init --dry-run
+	@# 子菜单必须能退回上一级菜单：手工挑选 → 先勾上哪些（回车用默认）→ 勾选列表里
+	@# Shift+Tab 回"想怎么装？"→ 改选"先不装工具"。
 	@# "已跳过工具安装"是判别式：没有返回键的版本会在勾选列表里把 DOWN 吃掉、直接提交，
 	@# 于是走进计划表，绝不会打这句话（返回语义见 internal/ui/huh.go 的 ErrBack/runForm）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已跳过工具安装" --expect-text "Shift+Tab 返回上一步" \
-		--keys ENTER ENTER DOWN DOWN ENTER SHIFTTAB DOWN DOWN DOWN ENTER -- init --dry-run
+		--keys ENTER ENTER DOWN DOWN ENTER ENTER SHIFTTAB DOWN DOWN DOWN ENTER -- init --dry-run
+	@# "全不选"必须是**随时可用、一键生效**的：默认状态只是"缺失项勾了一部分"，
+	@# huh 自带的 ctrl+a 在这种状态下只会变成全选（用户实测反馈"没法取消全选"）。
+	@# CTRLX 清空后直接回车必须报"至少需要选择 1 个"——这句话就是"真的清空了"的判别式；
+	@# 再用空格勾回光标所在那一行并提交，证明清空后照样能只装挑中的那几个。
+	@# 说明行也要把键位写清楚（huh 的帮助行只画得出其中一个绑定）。
+	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
+		--expect-code 0 --expect-text "先勾上哪些" --expect-text "全部取消 ctrl+x" \
+		--expect-text "至少需要选择 1 个" \
+		--expect-text "（dry-run：以下操作都不会被执行）" \
+		--keys ENTER WAIT4 CTRLX ENTER WAIT1 SPACE WAIT1 ENTER -- tool install -i --dry-run
 	@# 收尾一步：shell 受管块**不再问一句**，直接写进 rc 并只提示"怎么让它生效"。
 	@# 这条特意不加 --dry-run（干跑会跳过写 rc）：老版本会弹确认框、回车＝默认拒绝，
 	@# 于是既不会出现"已把 bs 受管块写进"，也就暴露不了"到底写没写"的区别。
@@ -191,11 +203,12 @@ pty: build
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "已取消" \
 		--keys ENTER -- tool install duf
-	@# 勾选式安装：-i 出复选框界面，回车＝用默认（缺失/可升级的已勾选），再 preview 干跑
+	@# 勾选式安装：-i 先问默认勾选状态（回车＝缺失/可升级的已勾选），再出复选框界面，
+	@# 第二个回车＝用默认提交，随后 preview 干跑（探测 77 个工具要等一会儿）。
 	@python3 "$(ROOT)/scripts/pty-check.py" --quiet \
 		--expect-code 0 --expect-text "x toggle" \
 		--expect-text "（dry-run：以下操作都不会被执行）" \
-		--keys ENTER -- tool install -i --dry-run
+		--keys ENTER WAIT4 ENTER -- tool install -i --dry-run
 	@echo "交互式界面 PTY 校验通过"
 
 # e2e 需要网络：真从 GitHub Release 下载并校验，产物只落在 .cache/e2e

@@ -546,12 +546,15 @@ func (a *App) chooseInitTools(ctx context.Context, opt InitOptions, overview Ini
 // pickTools 让用户逐个勾选：缺失的默认勾上，已装的默认不勾（"补缺"而不是"全都重来"）。
 //
 // 允许"返回上一步"：勾选是从"想怎么装？"进来的，选错了（或发现该换套装）应当能退回去。
+// AskDefault 让用户在"缺失的默认勾上"和"一个都不勾"之间选——两种状态都只多一次回车，
+// 不必先想办法把默认勾选清掉（用户实测反馈）。
 func (a *App) pickTools(ctx context.Context, opt InitOptions, overview InitOverview) ([]string, error) {
 	return a.PickTools(ctx, ToolListOptions{}, opt.Prompter, PickOptions{
 		Title: fmt.Sprintf("选择要安装/修复的工具（%d 个适用，%d 个缺失）",
 			overview.Tools.Applicable, overview.Tools.Missing),
-		Question: "缺失的已默认勾选（已装的默认不勾）",
-		Back:     true,
+		Question:   "缺失的已默认勾选（已装的默认不勾）",
+		Back:       true,
+		AskDefault: true,
 	})
 }
 

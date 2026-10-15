@@ -791,8 +791,9 @@ func TestToolInstallInteractiveSelectionDrivesPlan(t *testing.T) {
 	rt, out, errBuf, _ := sandboxWithManifest(t)
 	yes := true
 	rt.interactiveOverride = &yes
-	// 纯文本多选：按 id 勾 golang（裸编号依赖清单里的排序，名字更稳），再回答 y 确认。
-	rt.Opts.In = strings.NewReader("golang\ny\n")
+	// 纯文本问答依次是：默认勾选状态（回车＝缺失的默认勾上）、多选（按 id 勾 golang）、
+	// 破坏性操作确认 y。裸编号依赖清单里的排序，名字更稳。
+	rt.Opts.In = strings.NewReader("\ngolang\ny\n")
 
 	code, stdout, stderr := run(t, rt, "tool", "install", "-i", "--dry-run")
 	if code != ExitOK {
