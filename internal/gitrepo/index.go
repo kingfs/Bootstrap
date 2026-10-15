@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -21,7 +22,7 @@ type IndexEntry struct {
 
 func indexPath(root string) string { return filepath.Join(root, ".bootstrap", "repos.db") }
 
-func openIndex(root string) (*sql.DB, error) {
+func openIndex(ctx context.Context, root string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(indexPath(root)), 0755); err != nil {
 		return nil, err
 	}
@@ -29,13 +30,13 @@ func openIndex(root string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS repos (path TEXT PRIMARY KEY, slug TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`)
+	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS repos (path TEXT PRIMARY KEY, slug TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
 	// 兼容旧数据库；仅写入路径允许升级 schema，只读 list 不修改数据库。
-	rows, err := db.Query(`PRAGMA table_info(repos)`)
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(repos)`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -60,7 +61,7 @@ func openIndex(root string) (*sql.DB, error) {
 	}
 	for _, col := range []string{"default_branch", "worktree"} {
 		if !cols[col] {
-			if _, err := db.Exec(`ALTER TABLE repos ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+			if _, err := db.ExecContext(ctx, `ALTER TABLE repos ADD COLUMN `+col+` TEXT NOT NULL DEFAULT ''`); err != nil {
 				db.Close()
 				return nil, err
 			}
@@ -73,7 +74,10 @@ func openIndex(root string) (*sql.DB, error) {
 var ErrNoIndex = errors.New("repository index missing; run `bs repo scan` first")
 
 // LoadIndex 只读索引，不创建目录或数据库。
-func LoadIndex(root string) ([]IndexEntry, error) {
+//
+// 收 ctx 是为了让调用方（`bs repo list`/`scan`）的取消能作用到数据库查询上，
+// 与其它 I/O 一样：`--timeout` 到点时不该卡在一次 sqlite 读取里。
+func LoadIndex(ctx context.Context, root string) ([]IndexEntry, error) {
 	if _, err := os.Stat(indexPath(root)); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrNoIndex
@@ -96,13 +100,13 @@ func LoadIndex(root string) ([]IndexEntry, error) {
 	// 旧索引仍可只读，扩展字段在下次 scan/get 时补齐。
 	query := `SELECT path,slug,branch FROM repos ORDER BY path`
 	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('repos') WHERE name IN ('default_branch','worktree')`).Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('repos') WHERE name IN ('default_branch','worktree')`).Scan(&count); err != nil {
 		return nil, err
 	}
 	if count == 2 {
 		query = `SELECT path,slug,branch,default_branch,worktree FROM repos ORDER BY path`
 	}
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -125,29 +129,29 @@ func LoadIndex(root string) ([]IndexEntry, error) {
 }
 
 // SaveIndex 以事务方式重建索引。
-func SaveIndex(root string, entries []IndexEntry) error {
-	db, err := openIndex(root)
+func SaveIndex(ctx context.Context, root string, entries []IndexEntry) error {
+	db, err := openIndex(ctx, root)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`DELETE FROM repos`); err != nil {
-		tx.Rollback()
+	// 回滚统一放在 defer 里：出错路径不必各写一遍，也就不会漏掉某一条。
+	// 提交成功后再调 Rollback 会返回 sql.ErrTxDone（事务已结束），那是预期结果，刻意丢弃。
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM repos`); err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO repos(path,slug,branch,default_branch,worktree) VALUES(?,?,?,?,?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO repos(path,slug,branch,default_branch,worktree) VALUES(?,?,?,?,?)`)
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
 	defer stmt.Close()
 	for _, e := range entries {
-		if _, err = stmt.Exec(e.Path, e.Slug, e.Branch, e.DefaultBranch, fmt.Sprint(e.Worktree)); err != nil {
-			tx.Rollback()
+		if _, err = stmt.ExecContext(ctx, e.Path, e.Slug, e.Branch, e.DefaultBranch, fmt.Sprint(e.Worktree)); err != nil {
 			return err
 		}
 	}

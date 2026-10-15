@@ -22,7 +22,7 @@ func TestRepoListRequiresIndexAndDoesNotScan(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".bootstrap")); !os.IsNotExist(err) {
 		t.Fatal("list created index")
 	}
-	if err := gitrepo.SaveIndex(root, nil); err != nil {
+	if err := gitrepo.SaveIndex(context.Background(), root, nil); err != nil {
 		t.Fatal(err)
 	}
 	if views, _, err := a.RepoList(context.Background()); err != nil || len(views) != 0 {

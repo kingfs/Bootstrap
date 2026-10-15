@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ func TestRepoListMissingAndEmptyIndex(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repoRoot, ".bootstrap")); !os.IsNotExist(err) {
 		t.Fatal("read created index")
 	}
-	if err := gitrepo.SaveIndex(repoRoot, nil); err != nil {
+	if err := gitrepo.SaveIndex(context.Background(), repoRoot, nil); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, stderr := run(t, rt, "repo", "list"); code != ExitOK {

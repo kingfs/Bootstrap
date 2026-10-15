@@ -16,18 +16,18 @@ import (
 
 func TestIndexReadOnlyAndRoundTrip(t *testing.T) {
 	root := t.TempDir()
-	if _, err := LoadIndex(root); !errors.Is(err, ErrNoIndex) {
+	if _, err := LoadIndex(context.Background(), root); !errors.Is(err, ErrNoIndex) {
 		t.Fatalf("missing index: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".bootstrap")); !os.IsNotExist(err) {
 		t.Fatal("read created index directory")
 	}
 	entries := []IndexEntry{{Path: filepath.Join(root, "repo"), Slug: "gitlab.com/team/sub/repo", Branch: "develop", DefaultBranch: "develop", Worktree: true}}
-	if err := SaveIndex(root, entries); err != nil {
+	if err := SaveIndex(context.Background(), root, entries); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.Stat(indexPath(root))
-	got, err := LoadIndex(root)
+	got, err := LoadIndex(context.Background(), root)
 	if err != nil || len(got) != 1 || got[0] != entries[0] {
 		t.Fatalf("round trip: %+v %v", got, err)
 	}
@@ -35,10 +35,10 @@ func TestIndexReadOnlyAndRoundTrip(t *testing.T) {
 	if !before.ModTime().Equal(after.ModTime()) {
 		t.Fatal("read modified index")
 	}
-	if err := SaveIndex(root, nil); err != nil {
+	if err := SaveIndex(context.Background(), root, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := LoadIndex(root); err != nil || len(got) != 0 {
+	if got, err := LoadIndex(context.Background(), root); err != nil || len(got) != 0 {
 		t.Fatalf("empty index: %v %v", got, err)
 	}
 }
@@ -184,7 +184,7 @@ func TestLegacyIndexReadAndMigration(t *testing.T) {
 	}
 	db.Close()
 	before, _ := os.ReadFile(indexPath(root))
-	entries, err := LoadIndex(root)
+	entries, err := LoadIndex(context.Background(), root)
 	if err != nil || len(entries) != 1 || entries[0].Branch != "develop" {
 		t.Fatalf("legacy read: %+v %v", entries, err)
 	}
@@ -192,17 +192,17 @@ func TestLegacyIndexReadAndMigration(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("legacy read changed schema")
 	}
-	if err := SaveIndex(root, entries); err != nil {
+	if err := SaveIndex(context.Background(), root, entries); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadIndex(root); err != nil {
+	if _, err := LoadIndex(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 	// 重复键导致重建失败时，原有记录必须仍在。
-	if err := SaveIndex(root, append(entries, entries[0])); err == nil {
+	if err := SaveIndex(context.Background(), root, append(entries, entries[0])); err == nil {
 		t.Fatal("expected duplicate key error")
 	}
-	got, err := LoadIndex(root)
+	got, err := LoadIndex(context.Background(), root)
 	if err != nil || len(got) != 1 || got[0] != entries[0] {
 		t.Fatalf("transaction lost entries: %+v %v", got, err)
 	}

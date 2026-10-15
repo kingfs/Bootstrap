@@ -115,7 +115,7 @@ func (a *App) RepoGet(ctx context.Context, inputs []string, opts RepoOptions) ([
 			results = append(results, res)
 			// 克隆/更新成功后立即写入轻量索引，后续 list 无需遍历整个目录。
 			if res.Status == "cloned" || res.Status == "updated" || res.Status == "up-to-date" {
-				idx, err := gitrepo.LoadIndex(root)
+				idx, err := gitrepo.LoadIndex(ctx, root)
 				if err != nil && !errors.Is(err, gitrepo.ErrNoIndex) {
 					applyErr = fmt.Errorf("load repository index: %w", err)
 					return
@@ -133,7 +133,7 @@ func (a *App) RepoGet(ctx context.Context, inputs []string, opts RepoOptions) ([
 				if !found {
 					idx = append(idx, entry)
 				}
-				if err := gitrepo.SaveIndex(root, idx); err != nil {
+				if err := gitrepo.SaveIndex(ctx, root, idx); err != nil {
 					applyErr = fmt.Errorf("save repository index: %w", err)
 					return
 				}
@@ -150,7 +150,7 @@ func (a *App) RepoList(ctx context.Context) ([]RepoStatusView, string, error) {
 		// 根目录还不存在不是错误：`bs repo list` 应该安静地报告"还没有仓库"。
 		return nil, root, nil
 	}
-	idx, err := gitrepo.LoadIndex(root)
+	idx, err := gitrepo.LoadIndex(ctx, root)
 	if err != nil {
 		return nil, root, err
 	}
@@ -186,7 +186,7 @@ func (a *App) RepoScan(ctx context.Context) ([]RepoStatusView, string, error) {
 	if a.DryRun {
 		return out, root, nil
 	}
-	if err := gitrepo.SaveIndex(root, entries); err != nil {
+	if err := gitrepo.SaveIndex(ctx, root, entries); err != nil {
 		return nil, root, err
 	}
 	return out, root, nil
