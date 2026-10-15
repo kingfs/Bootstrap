@@ -346,17 +346,16 @@ func printAttempt(rt *Runtime, label, via string, a app.TestAttempt) {
 
 func (rt *Runtime) proxyAddCmd() *cobra.Command {
 	var httpProxy, httpsProxy, noProxy string
-	var write bool
+	write := true
 	cmd := &cobra.Command{
 		Use:   "add <name>",
-		Short: "新增一个代理 profile（默认只打印 YAML 片段）",
+		Short: "新增一个代理 profile（默认写入配置）",
 		Long: `新增代理 profile。
 
-默认只把 YAML 片段打印出来，由你自己粘贴到配置文件——避免工具擅自重排你的注释。
-加 --write 才会直接合并进用户配置文件（写前自动备份）。`,
+		默认直接合并进用户配置文件（写前自动备份）。--dry-run 只打印将写入的 YAML 片段。`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			res, err := rt.app().ProxyAdd(args[0], httpProxy, httpsProxy, noProxy, write)
+			res, err := rt.app().ProxyAdd(args[0], httpProxy, httpsProxy, noProxy, write && !rt.Opts.DryRun)
 			if err != nil {
 				return usageErr(err)
 			}
@@ -380,7 +379,7 @@ func (rt *Runtime) proxyAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&httpProxy, "http", "", "http_proxy 值，如 http://127.0.0.1:7890")
 	cmd.Flags().StringVar(&httpsProxy, "https", "", "https_proxy 值（通常与 --http 相同）")
 	cmd.Flags().StringVar(&noProxy, "no-proxy", "", "no_proxy 值（逗号分隔）")
-	cmd.Flags().BoolVar(&write, "write", false, "直接写入用户配置文件（写前备份）")
+	cmd.Flags().BoolVar(&write, "write", true, "直接写入用户配置文件（默认开启）")
 	return cmd
 }
 

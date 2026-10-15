@@ -351,7 +351,7 @@ func TestProxyTestRendersRouteLabels(t *testing.T) {
 	}
 }
 
-func TestProxyAddDefaultsToDrySnippet(t *testing.T) {
+func TestProxyAddDefaultsToWritingConfig(t *testing.T) {
 	rt, out, _, root := sandbox(t)
 	writeConfig(t, root, proxyConfig)
 	before, err := os.Stat(filepath.Join(root, "config", "config.yaml"))
@@ -363,19 +363,19 @@ func TestProxyAddDefaultsToDrySnippet(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d", code)
 	}
-	if !strings.Contains(out.String(), "http_proxy: http://127.0.0.1:7890") {
-		t.Errorf("expected a YAML snippet:\n%s", out.String())
-	}
-	// 说明文字只在 --help 里；运行时第一行是 YAML 注释，整段可直接粘进配置文件。
-	if !strings.HasPrefix(out.String(), "#") {
-		t.Errorf("默认输出应当是可直接粘贴的 YAML：\n%s", out.String())
+	if !strings.Contains(out.String(), "已写入") {
+		t.Errorf("expected write confirmation:\n%s", out.String())
 	}
 	after, err := os.Stat(filepath.Join(root, "config", "config.yaml"))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if !before.ModTime().Equal(after.ModTime()) {
-		t.Error("proxy add without --write modified the config file")
+	if before.ModTime().Equal(after.ModTime()) {
+		t.Error("proxy add should modify the config file by default")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "config", "config.yaml"))
+	if err != nil || !strings.Contains(string(data), "https_proxy: http://127.0.0.1:7890") {
+		t.Error("https proxy should inherit http proxy")
 	}
 }
 

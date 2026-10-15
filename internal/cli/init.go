@@ -26,6 +26,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
 		withShell   bool
 		noShell     bool
 		noTools     bool
+		noProxy     string
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -93,6 +94,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
 				// 少了这一条，help 里那句"bs init --yes # 不再问"就只在非终端里成立。
 				Auto:          rt.Opts.Yes,
 				RepoRootGiven: rt.Opts.RepoRoot != "",
+				NoProxy:       noProxy,
 				OnOverview:    rt.renderInitOverview,
 				OnPlan:        rt.renderInitPlan,
 			}
@@ -137,6 +139,7 @@ func (rt *Runtime) initCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&toolList, "tools", nil, "只处理这些工具（逗号分隔，可重复）")
 	cmd.Flags().BoolVar(&missingOnly, "missing-only", false, "只处理当前缺失的工具")
 	cmd.Flags().BoolVar(&noTools, "no-tools", false, "只做环境准备（配置/仓库根/受管块），不安装任何工具")
+	cmd.Flags().StringVar(&noProxy, "no-proxy", "", "代理直连例外（逗号分隔，写入 init 创建的 profile）")
 	cmd.Flags().BoolVar(&withShell, "with-shell", false, "把 bs 受管块写进 shell 启动文件（默认就写；非交互环境用它明确授权）")
 	cmd.Flags().BoolVar(&noShell, "no-shell", false, "明确不碰 shell 启动文件")
 	return cmd

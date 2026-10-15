@@ -328,6 +328,9 @@ func (a *App) ProxyAdd(name, httpProxy, httpsProxy, noProxy string, write bool) 
 	}
 	if httpsProxy != "" {
 		profile["https_proxy"] = httpsProxy
+	} else if httpProxy != "" {
+		// 大多数代理同时服务 HTTP 与 HTTPS；省略 --https 时沿用 HTTP 地址。
+		profile["https_proxy"] = httpProxy
 	}
 	if noProxy != "" {
 		profile["no_proxy"] = noProxy

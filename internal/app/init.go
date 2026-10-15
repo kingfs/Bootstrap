@@ -90,6 +90,8 @@ type InitOptions struct {
 	Auto bool
 	// RepoRootGiven 表示仓库根目录已经由 `--repo-root` 明确给出：向导不再问它。
 	RepoRootGiven bool
+	// NoProxy 由 init 的 --no-proxy 提供，写入向导创建的代理 profile。
+	NoProxy string
 	// ShellInstall 为 nil 表示"由向导决定"（交互时问一句，非交互时不装）；
 	// 非 nil 表示明确要求装/不装 rc 受管块。
 	ShellInstall *bool
@@ -360,7 +362,7 @@ func (a *App) initSetup(ctx context.Context, opt InitOptions, overview *InitOver
 		return setup, err
 	}
 	if value = strings.TrimSpace(value); value != "" {
-		if err := a.applyInitProxy(ctx, value); err != nil {
+		if err := a.applyInitProxy(ctx, value, opt.NoProxy); err != nil {
 			return setup, err
 		}
 		setup.ProxyConfigured = true
@@ -374,16 +376,21 @@ func (a *App) initSetup(ctx context.Context, opt InitOptions, overview *InitOver
 //
 // 走 `config set` 那条路（yaml.Node 原地改）而不是 `proxy add`：
 // 后者会重写整份配置、把默认配置里的说明头与注释全丢掉。
-func (a *App) applyInitProxy(ctx context.Context, proxyURL string) error {
+func (a *App) applyInitProxy(ctx context.Context, proxyURL, noProxy string) error {
 	keys := []string{
 		"proxy.profiles." + initProxyProfile + ".http_proxy",
 		"proxy.profiles." + initProxyProfile + ".https_proxy",
 		"proxy.default_profile",
 	}
+	if strings.TrimSpace(noProxy) != "" {
+		keys = append(keys, "proxy.profiles."+initProxyProfile+".no_proxy")
+	}
 	for _, key := range keys {
 		value := proxyURL
 		if key == "proxy.default_profile" {
 			value = initProxyProfile
+		} else if strings.HasSuffix(key, ".no_proxy") {
+			value = noProxy
 		}
 		if _, err := a.ConfigSet(key, value, false); err != nil {
 			return err
@@ -397,6 +404,7 @@ func (a *App) applyInitProxy(ctx context.Context, proxyURL string) error {
 		Name:       initProxyProfile,
 		HTTPProxy:  proxyURL,
 		HTTPSProxy: proxyURL,
+		NoProxy:    noProxy,
 	}
 	a.Cfg.Proxy.DefaultProfile = initProxyProfile
 	_, err := a.ProxyUse(ctx, initProxyProfile)
