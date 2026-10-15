@@ -82,13 +82,9 @@ func (rt *Runtime) repoListCmd() *cobra.Command {
 				return nil
 			}
 			w := rt.newTable()
-			fmt.Fprintln(w, "PATH\tBRANCH\tDEFAULT\tWORKTREE\tSLUG")
+			fmt.Fprintln(w, "PATH\tBRANCH\tDEFAULT\tSLUG")
 			for _, v := range views {
-				worktree := ""
-				if v.Worktree {
-					worktree = "yes"
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", v.Path, orDash(v.Branch), orDash(v.DefaultBranch), worktree, orDash(v.Slug))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Path, orDash(v.Branch), orDash(v.DefaultBranch), orDash(v.Slug))
 			}
 			return w.Flush()
 		},
@@ -96,7 +92,7 @@ func (rt *Runtime) repoListCmd() *cobra.Command {
 }
 
 func (rt *Runtime) repoScanCmd() *cobra.Command {
-	return &cobra.Command{Use: "scan", Short: "离线扫描仓库与 worktree，重建 SQLite 索引", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	return &cobra.Command{Use: "scan", Short: "按站点层数扫描主检出，重建 SQLite 索引（不含 worktree/submodule）", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		views, root, err := rt.app().RepoScan(cmd.Context())
 		if err != nil {
 			return failf("%v", err)
@@ -138,7 +134,7 @@ func (rt *Runtime) repoSyncCmd() *cobra.Command {
 	opts := app.RepoOptions{}
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "并发更新根目录下所有仓库",
+		Short: "并发更新根目录下的主检出（worktree/submodule 不算）",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			views, err := rt.app().RepoSync(cmd.Context(), jobs, opts)

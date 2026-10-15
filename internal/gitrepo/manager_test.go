@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -326,44 +327,102 @@ func TestApplyPullAutostash(t *testing.T) {
 	}
 }
 
-func TestDiscoverFindsRepos(t *testing.T) {
-	root := t.TempDir()
-	repos := []string{
-		filepath.Join(root, "github.com", "kingfs", "Bootstrap"),
-		filepath.Join(root, "github.com", "kingfs", "dotfiles"),
-		filepath.Join(root, "gitlab.com", "team", "svc"),
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	for _, r := range repos {
-		if err := os.MkdirAll(filepath.Join(r, ".git"), 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-	}
-	// 仓库内部的子目录不应该被当作独立仓库。
-	nested := filepath.Join(repos[0], "internal", "app")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	// 无关目录也不应该出现。
-	if err := os.MkdirAll(filepath.Join(root, "github.com", "not-a-repo"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+}
 
-	found, err := Discover(root, 0)
+// writeGitFile 写一个真实的 gitdir 文件（worktree/submodule 的 .git 就是这样）。
+func writeGitFile(t *testing.T, repo, gitdir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("gitdir: "+gitdir+"\n"), 0o644); err != nil {
+		t.Fatalf("write gitdir file: %v", err)
+	}
+}
+
+// TestDiscoverFindsReposBySiteDepth 锁定"按站点层数枚举"的取舍：
+// 普通站点只认 <host>/*/*/.git（默认 Depth=2），子组站点（默认 gitlab.com）
+// 逐层探到 SubgroupDepth=4；github.com 没有子组，更深或更浅的布局都不收。
+func TestDiscoverFindsReposBySiteDepth(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string) string {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		mustMkdirAll(t, filepath.Join(p, ".git"))
+		return p
+	}
+	bootstrap := mk("github.com/kingfs/Bootstrap")
+	want := []string{
+		bootstrap,
+		mk("github.com/kingfs/dotfiles"),
+		mk("gitee.com/team/repo"),
+		mk("gitlab.com/team/svc"),
+		mk("gitlab.com/team/sub/deep"),
+		mk("gitlab.com/a/b/c/d"),
+	}
+	// github.com 没有子组：三/四级布局不认（glob 方案接受的"会漏"）。
+	mk("github.com/owner/a/b/c")
+	// 只有 <host>/<repo> 两段（没有 owner）的克隆也不认。
+	mk("github.com/justrepo")
+	// 仓库工作区内部的东西不会被看到：既不记录、也不再往下走。
+	mustMkdirAll(t, filepath.Join(bootstrap, "vendor", "inner", ".git"))
+	mustMkdirAll(t, filepath.Join(root, "github.com", "not-a-repo"))
+	// 一级目录本身就是检出：既不是站点、也不能被当成站点往下扫（否则里面的
+	// vendor/inner 会冒充第 2 层候选）。
+	mustMkdirAll(t, filepath.Join(root, "loose-repo", ".git"))
+	mustMkdirAll(t, filepath.Join(root, "loose-repo", "vendor", "inner", ".git"))
+
+	found, err := Discover(root, DefaultScanOptions())
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if len(found) != len(repos) {
-		t.Fatalf("Discover = %v, want %d repos", found, len(repos))
+	sort.Strings(want)
+	if len(found) != len(want) {
+		t.Fatalf("Discover = %v, want %v", found, want)
 	}
-	for i, r := range repos {
-		if found[i] != r {
-			t.Errorf("found[%d] = %q, want %q", i, found[i], r)
+	for i := range want {
+		if found[i] != want[i] {
+			t.Errorf("found[%d] = %q, want %q", i, found[i], want[i])
 		}
 	}
 }
 
+// TestDiscoverSkipsLinkedCheckouts 锁定：worktree 与 submodule（`.git` 是 gitdir 文件）
+// 都不是"用户管理的主检出"——不记录、也不往它们的子树里扫。
+// 内网自建站点要靠 repo.scan.subgroup_hosts 显式声明，这里一并验证。
+func TestDiscoverSkipsLinkedCheckouts(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "git.in.chaitin.net", "core", "skynet-sec", "skynet")
+	mustMkdirAll(t, filepath.Join(repo, ".git", "worktrees", "skynet-wt"))
+	// submodule：.git 是相对 gitdir，指向父仓库的 .git/modules/。
+	sub := filepath.Join(repo, "vendor", "crc32c")
+	mustMkdirAll(t, sub)
+	writeGitFile(t, sub, filepath.Join("..", "..", ".git", "modules", "vendor", "crc32c"))
+	// 子模块内部再 clone 出来的独立仓库同样不该出现。
+	mustMkdirAll(t, filepath.Join(sub, "inner", ".git"))
+	// worktree：同级目录，.git 指向父仓库的 .git/worktrees/<name>。
+	wt := filepath.Join(root, "git.in.chaitin.net", "core", "skynet-sec", "skynet-wt")
+	mustMkdirAll(t, wt)
+	writeGitFile(t, wt, filepath.Join(repo, ".git", "worktrees", "skynet-wt"))
+	// 同级还有一个正常克隆，必须保留。
+	plain := filepath.Join(root, "git.in.chaitin.net", "core", "skynet-sec", "detector")
+	mustMkdirAll(t, filepath.Join(plain, ".git"))
+
+	opts := ScanOptions{Depth: 2, SubgroupHosts: []string{"git.in.chaitin.net"}, SubgroupDepth: 4}
+	found, err := Discover(root, opts)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	want := []string{plain, repo}
+	if len(found) != len(want) || found[0] != want[0] || found[1] != want[1] {
+		t.Fatalf("Discover = %v, want %v（worktree/submodule 不该出现）", found, want)
+	}
+}
+
 func TestDiscoverMissingRoot(t *testing.T) {
-	_, err := Discover(filepath.Join(t.TempDir(), "nope"), 0)
+	_, err := Discover(filepath.Join(t.TempDir(), "nope"), DefaultScanOptions())
 	if err == nil {
 		t.Fatal("Discover on a missing root should fail")
 	}

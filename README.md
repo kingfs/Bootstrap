@@ -114,16 +114,24 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 | --- | --- |
 | `bs repo get <repo>...` | 克隆或更新；已存在则 `git pull`。目标目录非空且**不是** git 仓库时只 `skip` 并提示，绝不覆盖你已有的内容 |
 | `bs repo get --root DIR` / `--protocol https\|ssh` / `--depth N` / `--ref R` / `--autostash` | 换仓库根目录 / 换克隆协议 / 浅克隆 / 显式指定分支或 tag / pull 前自动 stash |
-| `bs repo list` | 只读索引，列出仓库的分支、默认分支、worktree 标记和来源 |
-| `bs repo scan` | 离线扫描并重建根目录下的 `.bootstrap/repos.db` SQLite 索引 |
+| `bs repo list` | 只读索引，列出仓库的分支、默认分支和来源 |
+| `bs repo scan` | 按站点层数扫描主检出，重建根目录下的 `.bootstrap/repos.db` SQLite 索引（不含 worktree/submodule） |
 | `bs repo cd <repo>` | 输出仓库目录，可用 `cd "$(bs repo cd <repo>)"` 快速切换 |
 | `bs repo sync [-j N] [--root DIR] [--autostash]` | 并发更新 hosts 允许的仓库；脏工作区默认跳过 |
 | `bs repo root` | 打印仓库根目录及其来源 |
 
 `repo list` / `repo cd` 只读 `<repo.root>/.bootstrap/repos.db`，索引缺失时提示先执行
 `bs repo scan`，不会自动遍历目录。列表是扫描时的快照，不表示实时工作区状态。
-`scan` 不联网、不按 `repo.hosts` 过滤，识别 `.git` 目录及 worktree/submodule 的 `.git` 文件，
-继续发现嵌套仓库且不限子组深度；跳过 `.git`、`.bootstrap` 内部，不跟随目录符号链接。
+`scan` 不联网、不按 `repo.hosts` 过滤：把仓库根目录的一级子目录当站点，
+普通站点只认 `<host>/*/*/.git`（`repo.scan.depth`，默认 2），
+支持多级子组的站点（`repo.scan.subgroup_hosts`，默认只有 `gitlab.com`）
+逐层探测到 `<host>/*/*/*/*/.git`（`repo.scan.subgroup_depth`，默认 4）。
+只有 `.git` **目录**才算主检出，因此 **worktree 与 submodule 一律不进索引**——
+worktree 分支经常被清理、submodule 以父仓库为准；遇到检出也不再往里扫，
+所以子模块、`vendor/` 里的独立 clone、工具缓存 checkout 都不会冒出来。
+代价是布局之外的东西扫不到：`<host>/<repo>` 这种少了 owner 的克隆、
+`--separate-git-dir` 生成的 `.git` 文件检出，以及没列进 `subgroup_hosts` 的自建站点深层子组。
+跳过 `.git`、`.bootstrap` 内部，不跟随目录符号链接。
 扫描取消或目录不可读时保留旧索引；`--dry-run` 不写索引。
 
 `repo sync` 只对所有远端均在 `repo.hosts` 中的仓库执行 fetch/pull；未知主机仍可扫描、列出，
@@ -133,7 +141,8 @@ GitLab 的 `group/subgroup/project` 会按原层级落盘，网页地址使用 `
 分支名无需是 main/master：新 clone 采用远端 HEAD；已有仓库 fetch 后 pull **当前分支的 upstream**，
 不会切换分支，也不会将默认分支合并到功能分支。detached HEAD 或缺少 upstream 时只 fetch 并提示跳过。
 `DEFAULT` 列来自本地 `origin/HEAD`（可能过期或缺失），可用 `git remote set-head origin -a` 刷新；
-需要更新本地主分支时先切换到该分支。多个 worktree 的同步按共享 Git 目录串行执行。
+需要更新本地主分支时先切换到该分支。`repo sync` 用同一套发现逻辑，因此只更新主检出，
+worktree 目录不会被 fetch/pull（它们的对象都在主仓库里）。
 
 "不覆盖"是刻意的：**没有** `--force` 这类"绕过护栏"的开关——要往那个目录克隆，先自己把它腾空。
 

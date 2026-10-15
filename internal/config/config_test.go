@@ -227,6 +227,37 @@ func TestLoadExplicitFile(t *testing.T) {
 	}
 }
 
+// TestLoadPartialNestedBlockKeepsDefaults：配置文件只写嵌套块的某个字段时，
+// 同块里没写的字段必须保持内置默认值——否则用户只加一行 subgroup_hosts，
+// 就会把 depth 变成 0 并撞上校验错误。
+func TestLoadPartialNestedBlockKeepsDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	paths := Paths{
+		ConfigDir: filepath.Join(tmp, "config"),
+		StateDir:  filepath.Join(tmp, "state"),
+		CacheDir:  filepath.Join(tmp, "cache"),
+		HomeDir:   filepath.Join(tmp, "home"),
+	}
+	if err := os.MkdirAll(paths.ConfigDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "repo:\n  scan:\n    subgroup_hosts: [\"gitlab.com\", \"git.in.chaitin.net\"]\n"
+	if err := os.WriteFile(paths.ConfigFile(), []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	res, err := Load(LoadOptions{Paths: paths, GOOS: "linux", Getenv: func(string) string { return "" }})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	scan := res.Config.Repo.Scan
+	if scan.Depth != 2 || scan.SubgroupDepth != 4 {
+		t.Errorf("未写的字段应保持默认：%+v", scan)
+	}
+	if len(scan.SubgroupHosts) != 2 || scan.SubgroupHosts[1] != "git.in.chaitin.net" {
+		t.Errorf("subgroup_hosts 未被覆盖：%v", scan.SubgroupHosts)
+	}
+}
+
 func TestLoadInvalidConfig(t *testing.T) {
 	tmp := t.TempDir()
 	paths := Paths{

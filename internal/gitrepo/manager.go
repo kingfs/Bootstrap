@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -324,54 +323,166 @@ type RepoStatus struct {
 	Branch        string `json:"branch,omitempty"`
 	DefaultBranch string `json:"default_branch,omitempty"`
 	Worktree      bool   `json:"worktree"`
-	Dirty         bool   `json:"dirty"`
 	Action        string `json:"action,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
 
-// Discover 发现普通仓库、嵌套仓库和 worktree；maxDepth <= 0 时不限制 namespace 深度。
-func Discover(root string, maxDepth int) ([]string, error) {
-	return DiscoverContext(context.Background(), root, maxDepth)
+// ScanOptions 控制"按站点层数枚举"的仓库发现（`bs repo scan` / `bs repo sync`）。
+type ScanOptions struct {
+	// Depth 是普通站点下 `*` 的个数：Depth=2 表示 <site>/*/*/.git。
+	Depth int
+	// SubgroupHosts 是支持多级子组的站点，会从 Depth 逐层探测到 SubgroupDepth。
+	SubgroupHosts []string
+	// SubgroupDepth 是上述站点的最大 `*` 个数（须 >= Depth）。
+	SubgroupDepth int
 }
 
-// DiscoverContext 允许取消大目录扫描；读取失败时不以不完整结果覆盖原索引。
-func DiscoverContext(ctx context.Context, root string, maxDepth int) ([]string, error) {
+// DefaultScanOptions 是内置默认：普通站点 2 层（<host>/<owner>/<repo>），
+// gitlab.com 这类支持子组的站点最多 4 层（<host>/<g>/<sg>/<ssg>/<repo>）。
+func DefaultScanOptions() ScanOptions {
+	return ScanOptions{Depth: 2, SubgroupHosts: []string{"gitlab.com"}, SubgroupDepth: 4}
+}
+
+// ScanOptionsFrom 把 `repo.scan` 配置映射成扫描参数。
+func ScanOptionsFrom(scan config.ScanConfig) ScanOptions {
+	return ScanOptions{Depth: scan.Depth, SubgroupHosts: scan.SubgroupHosts, SubgroupDepth: scan.SubgroupDepth}
+}
+
+// normalized 补齐未设置的字段（配置零值时仍然可用）。
+func (o ScanOptions) normalized() ScanOptions {
+	def := DefaultScanOptions()
+	if o.Depth < 1 {
+		o.Depth = def.Depth
+	}
+	if o.SubgroupHosts == nil {
+		o.SubgroupHosts = def.SubgroupHosts
+	}
+	if o.SubgroupDepth < o.Depth {
+		o.SubgroupDepth = o.Depth
+	}
+	return o
+}
+
+func (o ScanOptions) isSubgroupHost(name string) bool {
+	for _, h := range o.SubgroupHosts {
+		if strings.EqualFold(strings.TrimSpace(h), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// Discover 按站点层数枚举 root 下的主检出。opts 为零值时用 DefaultScanOptions。
+func Discover(root string, opts ScanOptions) ([]string, error) {
+	return DiscoverContext(context.Background(), root, opts)
+}
+
+// DiscoverContext 允许取消大目录扫描；读取失败时返回错误，调用方据此保留旧索引。
+//
+// 枚举规则（即"按站点 glob"）：
+//   - root 的一级子目录视为站点；
+//   - 普通站点只认 <site>/*…/*/.git（`*` 个数 = opts.Depth）；
+//   - opts.SubgroupHosts 里的站点从 Depth 逐层探测到 SubgroupDepth；
+//   - 只有 `.git` **目录**才算主检出：worktree 与 submodule 的 `.git` 是 gitdir
+//     文件，它们属于另一个仓库，既不记录也不再深入（worktree 分支经常被清理，
+//     submodule 以父仓库为准）；
+//   - 因此嵌套在某个检出里的候选取不到，天然完成了"最外层优先"的去重。
+func DiscoverContext(ctx context.Context, root string, opts ScanOptions) ([]string, error) {
+	opts = opts.normalized()
 	if !fsx.IsDir(root) {
 		// 用 %w 包住哨兵错误，调用方（CLI）才能把它映射成"前置条件不满足"而不是一般失败。
 		return nil, fmt.Errorf("%w: %s", ErrNoRoot, root)
 	}
-	var found []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", path, err)
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		base := filepath.Base(path)
-		if base == ".git" || base == ".bootstrap" {
-			return fs.SkipDir
-		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr == nil && rel != "." && maxDepth > 0 && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
-			return fs.SkipDir
-		}
-		if isRepository(path) {
-			found = append(found, path)
-		}
-		return nil
-	})
+	sites, err := dirsAtLevel(ctx, root, 1)
 	if err != nil {
 		return nil, err
+	}
+	var found []string
+	for _, site := range sites {
+		if isCheckout(site) {
+			// 一级目录本身就是个检出（不是站点）：按布局它不是仓库，也不能当站点往下扫，
+			// 否则会把它内部的东西当成 layer-2/3/4 的候选。
+			continue
+		}
+		depths := []int{opts.Depth}
+		if opts.isSubgroupHost(filepath.Base(site)) {
+			for d := opts.Depth + 1; d <= opts.SubgroupDepth; d++ {
+				depths = append(depths, d)
+			}
+		}
+		for _, depth := range depths {
+			dirs, err := dirsAtLevel(ctx, site, depth)
+			if err != nil {
+				return nil, err
+			}
+			for _, dir := range dirs {
+				if isPrimaryCheckout(dir) {
+					found = append(found, dir)
+				}
+			}
+		}
 	}
 	sort.Strings(found)
 	return found, nil
 }
 
-// Inspect 读取一个本地仓库的分支、远端与脏状态。
+// dirsAtLevel 返回 dir 下第 n 层（n >= 1）的目录。
+//
+// 中间层遇到检出（`.git` 目录或 gitdir 文件）就不再深入：检出内部的东西
+// ——子模块、vendor 里的独立 clone、agent 工具留下的 worktree——
+// 都不属于"用户管理的顶层仓库"这个集合，扫它们既慢又只会产生噪声。
+// 不跟随目录符号链接（DirEntry.IsDir 对符号链接为 false），与既有语义一致。
+func dirsAtLevel(ctx context.Context, dir string, n int) ([]string, error) {
+	current := []string{dir}
+	for level := 1; level <= n; level++ {
+		var next []string
+		for _, d := range current {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			entries, err := os.ReadDir(d)
+			if err != nil {
+				return nil, fmt.Errorf("scan %s: %w", d, err)
+			}
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if name == ".git" || name == ".bootstrap" {
+					continue
+				}
+				path := filepath.Join(d, name)
+				if level == n {
+					next = append(next, path)
+					continue
+				}
+				if !isCheckout(path) {
+					next = append(next, path)
+				}
+			}
+		}
+		current = next
+	}
+	return current, nil
+}
+
+// isCheckout 判断目录是不是一个 git 检出（主检出的 `.git` 目录，或 worktree/submodule 的 gitdir 文件）。
+func isCheckout(path string) bool {
+	_, err := os.Lstat(filepath.Join(path, ".git"))
+	return err == nil
+}
+
+// isPrimaryCheckout 只认 `.git` 是目录的检出：worktree/submodule 用的是 gitdir 文件。
+func isPrimaryCheckout(path string) bool {
+	return fsx.IsDir(filepath.Join(path, ".git"))
+}
+
+// Inspect 读取一个本地仓库的分支与远端。
+//
+// 这里刻意不跑 `git status`：`bs repo scan` 的索引不存脏状态，而大仓库上的
+// `git status --porcelain` 是整次扫描里最贵的一步。真正需要脏状态的是 pull 前的
+// 检查（applyPull 自己做）。
 func (m *Manager) Inspect(ctx context.Context, path string) (RepoStatus, error) {
 	st := RepoStatus{Path: path}
 	if info, err := os.Stat(filepath.Join(path, ".git")); err == nil {
@@ -389,15 +500,12 @@ func (m *Manager) Inspect(ctx context.Context, path string) (RepoStatus, error) 
 			st.Slug = ref.Slug()
 		}
 	}
-	if dirty, err := m.isDirty(ctx, path); err == nil {
-		st.Dirty = dirty
-	}
 	return st, nil
 }
 
 // Sync 并发更新 root 下的所有仓库。
 func (m *Manager) Sync(ctx context.Context, root string, jobs int, opts Options) ([]RepoStatus, error) {
-	paths, err := DiscoverContext(ctx, root, 0)
+	paths, err := DiscoverContext(ctx, root, ScanOptionsFrom(m.Cfg.Repo.Scan))
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +609,8 @@ func isDirEmpty(path string) bool {
 	return len(entries) == 0
 }
 
-// isRepository 兼容 worktree/submodule 的 gitdir 文件，避免把普通同名文件当仓库。
+// isRepository 判断目录是不是一个 git 仓库（主检出的 `.git` 目录，或 worktree/submodule
+// 的 gitdir 文件）。`bs repo get` 需要认识后者：用户完全可能指定一个 worktree 目录。
 func isRepository(path string) bool {
 	marker := filepath.Join(path, ".git")
 	if fsx.IsDir(marker) {

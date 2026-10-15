@@ -1235,7 +1235,7 @@ eval "$(bs shell init bash)"
 
 - 已实现：不存在→clone（含 `--depth`/`--branch`/`extra_args`）、存在且是 git 仓库→`fetch --all [--prune]` +
   `status --porcelain` + `pull --ff-only|--rebase|--merge`、脏工作区默认跳过、`--autostash` 走 stash→pull→pop、
-  `bs repo list`（索引快照：分支/默认分支/worktree/远端）、`bs repo sync`（并发，单仓库失败不中断整体）、`--dry-run` 完全不执行命令。
+  `bs repo list`（索引快照：分支/默认分支/远端）、`bs repo sync`（并发，单仓库失败不中断整体）、`--dry-run` 完全不执行命令。
 - 已强化的安全语义：目标目录**非空且不是 git 仓库**时一律 `skip`（不删除、不覆盖任何已有文件），
   只有目录为空时才 clone 进去——这一条由单测锁定（`TestPlanSkipProtectsPreciousDirectory`）。
 - 推迟：`--print-path`、`--adopt`、`origin` 不一致的校验与 `--repair-origin`、非默认分支的落后/领先计数。
@@ -1256,25 +1256,40 @@ bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull�
 
 `bs repo sync` 是"换电脑/定期更新"的主力命令：并发 fetch+pull，输出 `仓库 | 分支 | 动作 | 结果 | 领先/落后`。
 
-### 9.5 索引、发现与分支边界（2026-10-14）
+### 9.5 索引、发现与分支边界（2026-10-15：扫描改为按站点层数枚举）
 
 - 索引位于 `<repo.root>/.bootstrap/repos.db`。list/cd 只读打开，不建库；缺失时提示 scan，
   有效空索引不触发遍历。get 成功后保存实际分支，scan 原子事务替换全部记录。
   旧表在写入时补充 default_branch/worktree 列，读取旧表不修改 schema。
-- scan 不联网、不依赖 layout/hosts；遍历所有目录（不跟随目录符号链接），
-  跳过 `.git`/`.bootstrap`，同时识别 `.git` 目录和 `gitdir:` 文件。
-  发现仓库后继续递归，包含子模块与嵌套 worktree；默认不设深度上限，以容纳 GitLab 多级子组。
-  取消或读取错误不覆盖旧库，dry-run 不写库。GitLab 网页路径只用 `/-/` 消除 namespace 歧义；
-  SSH/带 `.git` 后缀的克隆路径不按网页关键字截断。
+- scan 不联网、不依赖 layout/hosts，改用"按站点层数枚举"（≈ 按 host 的 glob），
+  不再遍历整棵树。起因（2026-10-15 实测）：仓库根目录 996 条记录里 403 条嵌套在别的
+  仓库里、395 条深度 ≥5 且全是仓库内部的噪声（`vendor/`、`thirdparty/`、
+  agent 快照备份里的 `.codex/.tmp/plugins`）；而不限深度的遍历要打开几十万个目录，
+  实测 15 分钟仍未走完，限深枚举只需打开约 980 个目录。
+- 规则：root 的一级子目录即站点；普通站点只认 `<host>/*…/*/.git`
+  （`repo.scan.depth`，默认 2）；`repo.scan.subgroup_hosts`（默认 `gitlab.com`）里的站点
+  从 depth 逐层探到 `repo.scan.subgroup_depth`（默认 4）——内网自建服务必须由用户自己列，
+  公开仓库不内置内网地址。中间层遇到检出就停止深入，因此"最外层优先"的去重是天然的。
+- **只有 `.git` 目录才算主检出**：worktree 与 submodule 的 `.git` 是 gitdir 文件，
+  都不记录、也不再往里扫（worktree 分支常被清理，submodule 以父仓库为准）。
+  已知代价：`<host>/<repo>` 这种没有 owner 的克隆、`--separate-git-dir` 的 `.git` 文件检出、
+  以及未列入 `subgroup_hosts` 的自建站点深层子组会被漏掉。
+- 不跟随目录符号链接；取消或读取错误返回错误、不覆盖旧库；dry-run 不写库。
+  GitLab 网页路径只用 `/-/` 消除 namespace 歧义；SSH/带 `.git` 后缀的克隆路径不按网页关键字截断。
+- `repo.scan` 是这一层唯一的旋钮；它同时作用于 `repo scan`、`repo sync` 与
+  `bs doctor` 的仓库计数——三者必须看到同一批仓库。
 - sync 仍显式发现磁盘上的仓库；fetch --all 前核对所有 remote 的 URL。
   任一远端不在 hosts 或无法识别为网络仓库时，整仓库 skip，避免隐式访问私网；
-  多个 worktree 按 common Git directory 加锁，避免并发操作共享 refs/stash。
+  同一 common Git directory 的并发操作仍加锁（多 worktree 场景的安全网）。
+- `Inspect` 不再跑 `git status`：索引本来就不存脏状态，而它是扫描里最贵的一步；
+  pull 前的脏检查在 applyPull 里照旧。
 - clone 不猜分支名，使用远端 HEAD；pull 始终针对当前 upstream。
   detached HEAD/无 upstream 时 fetch 后 skip；不自动 checkout，不替用户修改功能分支与默认分支关系。
   默认分支信息来自本地 refs/remotes/origin/HEAD，无此 ref 则留空；它是离线快照，可能过期，
   可由用户执行 `git remote set-head origin -a` 刷新。
-- 计数应统计 `.git` 标记本身（例如 `find <root> -name .git -prune -print`），
-  `ls */*/*/.git | wc -l` 统计的是目录内容和标题，不能与索引行数比较。
+- 计数不能再拿 `find <root> -name .git -prune -print` 对索引行数：那个口径会把
+  worktree/submodule 与仓库内部的嵌套检出都算进来。要与索引对齐，就按同一套规则
+  （站点层数 + 只认 `.git` 目录）；`bs doctor` 的仓库计数已经复用同一个 Discover。
 
 ---
 

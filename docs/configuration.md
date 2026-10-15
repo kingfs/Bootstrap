@@ -72,7 +72,8 @@ timeouts: {...}
 
 `bs config validate` 的校验面：`version`、`log.level`、`log.color`、`repo.layout`（必须含
 `{{.Repo}}` 且能渲染）、`repo.clone.protocol`、`repo.pull.strategy`、`repo.clone.depth >= 0`、
-`repo.sync.jobs >= 1`、`repo.hosts` 无空项、`proxy.default_profile` 必须存在于 `proxy.profiles`、
+`repo.sync.jobs >= 1`、`repo.scan.depth >= 1`、`repo.scan.subgroup_depth >= repo.scan.depth`、
+`repo.scan.subgroup_hosts` 无空项、`repo.hosts` 无空项、`proxy.default_profile` 必须存在于 `proxy.profiles`、
 每个 profile 至少一个非空代理地址且 URL 合法（`http`/`https`/`socks5(h)`/`socks4`）、
 `tool.allow_system_for` 与 `tool.managers` 的键值非空、`ui.progress`、
 `timeouts.*` 必须是带单位的正数时长（`30s`/`10m`/`1h`；写 `300` 会报错，因为不同环节的裸数字含义不同）。
@@ -106,9 +107,23 @@ timeouts: {...}
 | `pull.autostash` | 布尔 | `false` | pull 前自动 `stash` 并在结束后 `pop` |
 | `pull.prune` | 布尔 | `true` | fetch 时加 `--prune` |
 | `sync.jobs` | 整数 | `4` | `bs repo sync` 的并发度 |
+| `scan.depth` | 整数 | `2` | 普通站点下 `*` 的个数：`2` = `<host>/*/*/.git`。布局里没有 host 时改成 `1` |
+| `scan.subgroup_hosts` | 字符串数组 | `[gitlab.com]` | 支持多级子组的站点；会从 `depth` 逐层探到 `subgroup_depth`。内网自建服务（如 `git.in.chaitin.net`）必须自己列进来，否则它的三四级子组仓库扫不到 |
+| `scan.subgroup_depth` | 整数 | `4` | 上述站点的最大 `*` 个数（须 ≥ `scan.depth`）：`4` = `<host>/*/*/*/*/.git` |
 
 > 脏工作区（有未提交改动）默认**跳过** pull，只提示；需要自动处理就开 `pull.autostash`，
 > 或临时用 `bs repo get --autostash` / `bs repo sync --autostash`。
+
+> `repo.scan.*` 决定 `bs repo scan` / `bs repo sync` / `bs doctor` 怎么找仓库，是同一个实现：
+> 只有 `.git` **目录**才算主检出，worktree 与 submodule 都不进索引；遇到检出不再往里扫，
+> 所以仓库内部的 `vendor/`、子模块、工具缓存 checkout 都不会出现。
+> 例如把内网 GitLab 加进来：
+>
+> ```yaml
+> repo:
+>   scan:
+>     subgroup_hosts: ["gitlab.com", "git.in.chaitin.net"]
+> ```
 
 ### `proxy`
 
@@ -226,6 +241,10 @@ repo:
     prune: true
   sync:
     jobs: 4
+  scan:
+    depth: 2
+    subgroup_hosts: ["gitlab.com"]
+    subgroup_depth: 4
 
 proxy:
   default_profile: local

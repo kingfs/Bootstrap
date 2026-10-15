@@ -235,7 +235,7 @@ func (a *App) Doctor(ctx context.Context) []Check {
 	root, source := a.RepoRoot()
 	if fsx.IsDir(root) {
 		count := 0
-		if paths, err := discoverCount(root); err == nil {
+		if paths, err := a.discoverCount(root); err == nil {
 			count = paths
 		}
 		add(Check{Name: "repo root", Status: StatusOK, Detail: fmt.Sprintf("%s (%s, %d 个仓库)", root, source, count)})
@@ -284,8 +284,8 @@ func CheckSummary(checks []Check) (ok, warn, fail, skip int) {
 	return
 }
 
-func discoverCount(root string) (int, error) {
-	paths, err := gitrepoDiscover(root)
+func (a *App) discoverCount(root string) (int, error) {
+	paths, err := a.gitrepoDiscover(root)
 	if err != nil {
 		return 0, err
 	}

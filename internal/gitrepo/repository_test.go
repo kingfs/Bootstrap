@@ -84,9 +84,11 @@ func TestRealGitNonstandardDefaultAndWorktree(t *testing.T) {
 	}
 	wt := filepath.Join(target, "nested", "a", "b", "c", "d", "worktree")
 	git("-C", target, "worktree", "add", "-b", "feature/local", wt)
-	paths, err := Discover(root, 0)
-	if err != nil || len(paths) != 3 {
-		t.Fatalf("discover nested deep worktree: %v %v", paths, err)
+	paths, err := Discover(root, DefaultScanOptions())
+	// 只应看到 github.com/team/repo 这一个主检出：深埋在仓库里的 worktree
+	// 不在枚举范围内（root 下的 source 也不是 <host>/<owner>/<repo> 布局）。
+	if err != nil || len(paths) != 1 || paths[0] != target {
+		t.Fatalf("discover should only see the primary checkout: %v %v", paths, err)
 	}
 	if commonGitDir(target) != commonGitDir(wt) {
 		t.Fatal("worktree shared directory not recognized")
@@ -129,6 +131,17 @@ func TestRealGitNonstandardDefaultAndWorktree(t *testing.T) {
 	if st.Action != "skipped" || !strings.Contains(st.Message, "repo.hosts") {
 		t.Fatalf("host guard: %+v", st)
 	}
+	// 真 git 建出来的 submodule：它的 .git 是 gitdir 文件，Discover 不能把它
+	// ——以及它内部再 clone 出来的嵌套仓库——当成用户管理的顶层仓库。
+	subSource := t.TempDir()
+	git("init", "--initial-branch=main", subSource)
+	git("-C", subSource, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "sub")
+	git("-C", target, "-c", "protocol.file.allow=always", "submodule", "add", subSource, filepath.Join("engines", "zydis"))
+	git("clone", subSource, filepath.Join(target, "engines", "zydis", "inner"))
+	paths, err = Discover(root, DefaultScanOptions())
+	if err != nil || len(paths) != 1 || paths[0] != target {
+		t.Fatalf("submodule leaked into discovery: %v %v", paths, err)
+	}
 }
 
 func TestSyncDisallowedRemoteNeverFetches(t *testing.T) {
@@ -152,7 +165,7 @@ func TestSyncDisallowedRemoteNeverFetches(t *testing.T) {
 func TestDiscoverCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := DiscoverContext(ctx, t.TempDir(), 0); !errors.Is(err, context.Canceled) {
+	if _, err := DiscoverContext(ctx, t.TempDir(), DefaultScanOptions()); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 }

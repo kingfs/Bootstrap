@@ -126,6 +126,23 @@ type RepoConfig struct {
 	Clone       CloneConfig `mapstructure:"clone" yaml:"clone"`
 	Pull        PullConfig  `mapstructure:"pull" yaml:"pull"`
 	Sync        SyncConfig  `mapstructure:"sync" yaml:"sync"`
+	Scan        ScanConfig  `mapstructure:"scan" yaml:"scan"`
+}
+
+// ScanConfig 控制 `bs repo scan` / `bs repo sync` 怎么在仓库根目录下找仓库。
+//
+// 发现方式是"按站点层数枚举"，而不是遍历整棵树：仓库根目录的布局是有限的
+// （<host>/<owner>/<repo>），而仓库工作区内部（vendor、node_modules、thirdparty、
+// 快照备份…）动辄几十万个目录——遍历它们既慢，又会把子模块和工具缓存里的 git
+// 目录挖出来当成仓库。
+type ScanConfig struct {
+	// Depth 是普通站点下 `*` 的个数：2 表示 <host>/*/*/.git。
+	Depth int `mapstructure:"depth" yaml:"depth"`
+	// SubgroupHosts 是支持多级子组的站点（GitLab 及同类自建服务），会从 Depth
+	// 逐层探测到 SubgroupDepth。必须显式列出：公开仓库不内置任何内网地址。
+	SubgroupHosts []string `mapstructure:"subgroup_hosts" yaml:"subgroup_hosts"`
+	// SubgroupDepth 是上述站点的最大 `*` 个数，须 >= Depth。
+	SubgroupDepth int `mapstructure:"subgroup_depth" yaml:"subgroup_depth"`
 }
 
 // CloneConfig 控制 git clone。
@@ -205,6 +222,8 @@ func Defaults() Config {
 			Clone:       CloneConfig{Protocol: "https", Depth: 0},
 			Pull:        PullConfig{Strategy: "ff-only", Prune: true},
 			Sync:        SyncConfig{Jobs: 4},
+			// gitlab.com 是公开的多级子组站点；内网自建服务由用户在配置里自己加。
+			Scan: ScanConfig{Depth: 2, SubgroupHosts: []string{"gitlab.com"}, SubgroupDepth: 4},
 		},
 		Proxy: ProxyConfig{
 			AutoApply:        true,

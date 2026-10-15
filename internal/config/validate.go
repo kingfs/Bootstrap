@@ -62,6 +62,17 @@ func (c *Config) Validate() error {
 	if c.Repo.Sync.Jobs < 1 {
 		fail("repo.sync.jobs must be >= 1")
 	}
+	if c.Repo.Scan.Depth < 1 {
+		fail("repo.scan.depth must be >= 1")
+	}
+	if c.Repo.Scan.SubgroupDepth < c.Repo.Scan.Depth {
+		fail("repo.scan.subgroup_depth (%d) must be >= repo.scan.depth (%d)", c.Repo.Scan.SubgroupDepth, c.Repo.Scan.Depth)
+	}
+	for i, h := range c.Repo.Scan.SubgroupHosts {
+		if strings.TrimSpace(h) == "" {
+			fail("repo.scan.subgroup_hosts[%d] must not be empty", i)
+		}
+	}
 	for i, h := range c.Repo.Hosts {
 		if strings.TrimSpace(h) == "" {
 			fail("repo.hosts[%d] must not be empty", i)

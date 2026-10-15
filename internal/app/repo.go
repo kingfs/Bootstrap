@@ -166,7 +166,7 @@ func (a *App) RepoList(ctx context.Context) ([]RepoStatusView, string, error) {
 func (a *App) RepoScan(ctx context.Context) ([]RepoStatusView, string, error) {
 	mgr := a.RepoManager()
 	root, source := a.RepoRoot()
-	paths, err := gitrepo.DiscoverContext(ctx, root, 0)
+	paths, err := gitrepo.DiscoverContext(ctx, root, gitrepo.ScanOptionsFrom(a.Cfg.Repo.Scan))
 	if err != nil {
 		return nil, root, err
 	}

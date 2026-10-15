@@ -223,6 +223,22 @@ assert_contains "dry-run 支持 --ref" "--branch develop" "$out"
 out="$("$BIN" repo list)"
 assert_contains "空根目录不报错" "暂未发现仓库" "$out"
 
+# scan 的发现规则：只认 .git 目录（主检出）；worktree/submodule 的 .git 是 gitdir 文件，
+# 既不进索引也不再往下扫。这里用假目录/假 gitdir 文件构造，不依赖 git 与网络；
+# 站点名刻意用独立命名空间，避免和后面"被掐断的 clone"那步的路径撞车。
+SCANROOT="$WORK/home/src/scanfx.test/team"
+mkdir -p "$SCANROOT/primary/.git/worktrees/pr1" "$SCANROOT/second/.git"
+# worktree 与 submodule 都可能以"同级目录"的形式出现（用户在仓库旁开的 worktree 就是这样）
+mkdir -p "$SCANROOT/primary-wt" "$SCANROOT/legacy-sub"
+printf 'gitdir: %s\n' "$SCANROOT/primary/.git/worktrees/pr1" > "$SCANROOT/primary-wt/.git"
+printf 'gitdir: %s\n' "$SCANROOT/primary/.git/modules/legacy-sub" > "$SCANROOT/legacy-sub/.git"
+out="$("$BIN" repo scan)"
+assert_contains "scan 只收录主检出" "已扫描 2 个仓库" "$out"
+out="$("$BIN" repo list)"
+assert_contains "scan 收录主检出" "$SCANROOT/primary" "$out"
+assert_not_contains "worktree 不进索引" "primary-wt" "$out"
+assert_not_contains "submodule 不进索引" "legacy-sub" "$out"
+
 step "工具清单与安装计划"
 out="$("$BIN" tool manifest validate 2>&1)"
 assert_contains "内置清单通过校验" "清单校验通过" "$out"

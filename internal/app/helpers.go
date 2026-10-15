@@ -24,7 +24,10 @@ func asExitError(err error, target **exec.ExitError) bool {
 
 func (a *App) lookPath(name string) (string, bool) { return a.Runner.LookPath(name) }
 
-func gitrepoDiscover(root string) ([]string, error) { return gitrepo.Discover(root, 0) }
+// gitrepoDiscover 按 `repo.scan` 配置枚举仓库根目录下的主检出。
+func (a *App) gitrepoDiscover(root string) ([]string, error) {
+	return gitrepo.Discover(root, gitrepo.ScanOptionsFrom(a.Cfg.Repo.Scan))
+}
 
 // IsTerminalWriter 判断输出是不是交互式终端（命令层需要它来决定默认策略）。
 func IsTerminalWriter(w io.Writer) bool { return isTerminal(w) }

@@ -81,3 +81,35 @@ func TestResolvedTimeoutsAndValidate(t *testing.T) {
 		t.Errorf("校验错误应当指明是哪个字段：%v", err)
 	}
 }
+
+// TestScanConfigDefaultsAndValidate：仓库扫描的默认值必须"开箱可用"
+// （普通站点 2 层、gitlab.com 子组到 4 层），坏值在 validate 阶段被拦住。
+func TestScanConfigDefaultsAndValidate(t *testing.T) {
+	scan := Defaults().Repo.Scan
+	if scan.Depth != 2 || scan.SubgroupDepth != 4 {
+		t.Fatalf("默认扫描层数 = %+v，期望 depth=2 subgroup_depth=4", scan)
+	}
+	if len(scan.SubgroupHosts) != 1 || scan.SubgroupHosts[0] != "gitlab.com" {
+		t.Errorf("默认子组站点 = %v，期望只有公开的 gitlab.com（不内置任何内网地址）", scan.SubgroupHosts)
+	}
+	def := Defaults()
+	if err := def.Validate(); err != nil {
+		t.Fatalf("默认配置应当合法：%v", err)
+	}
+
+	bad := Defaults()
+	bad.Repo.Scan.Depth = 0
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "repo.scan.depth") {
+		t.Errorf("depth=0 应当报错：%v", err)
+	}
+	bad = Defaults()
+	bad.Repo.Scan.SubgroupDepth = 1
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "repo.scan.subgroup_depth") {
+		t.Errorf("subgroup_depth < depth 应当报错：%v", err)
+	}
+	bad = Defaults()
+	bad.Repo.Scan.SubgroupHosts = []string{"gitlab.com", " "}
+	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "repo.scan.subgroup_hosts") {
+		t.Errorf("空 host 应当报错：%v", err)
+	}
+}
