@@ -555,6 +555,89 @@ esac
 	}
 }
 
+// TestToolInstallOutputHasNoRawLogLines 锁定输出格式：例行安装日志不得以
+// `time=… level=INFO msg=apply …` 的形式插进用户可见输出。
+//
+// 新机器上用户实测反馈过：`bs tool install -i` 的输出被这些原始日志行切碎，
+// 根因是 CLI 从不应用配置里的 log.level，而引擎把每一步都记在 Info 上。
+func TestToolInstallOutputHasNoRawLogLines(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假命令用 POSIX shell 脚本实现")
+	}
+	rt, _, _, root := sandboxWithManifest(t)
+	// 换成默认的 info（新机器的配置就是它）：这时最容易漏出例行日志。
+	writeConfig(t, root, strings.ReplaceAll(
+		strings.ReplaceAll(toolManifestConfig, "%USERDIR%", filepath.Join(root, "config", "tools")),
+		"level: error", "level: info"))
+	writeFakeBin(t, filepath.Join(root, "bin"), "g", `#!/bin/sh
+case "$1" in
+  ls-remote) echo "1.24.1" ;;
+esac
+`)
+	code, stdout, stderr := run(t, rt, "tool", "install", "golang", "--yes")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s\nstdout = %s", code, stderr, stdout)
+	}
+	for name, out := range map[string]string{"stdout": stdout, "stderr": stderr} {
+		if strings.Contains(out, "level=INFO") || strings.Contains(out, "msg=apply") {
+			t.Errorf("%s 里出现了原始日志行：\n%s", name, out)
+		}
+	}
+	// 但结果表与进度提示必须在（别用"什么都不打印"换清净）。
+	if !strings.Contains(stdout, "golang") {
+		t.Errorf("stdout 应仍然报告装了哪个工具：\n%s", stdout)
+	}
+}
+
+// TestNewLoggerHonorsConfigLevel：级别优先级 flag > -v > 配置 log.level > info。
+func TestNewLoggerHonorsConfigLevel(t *testing.T) {
+	buf := &bytes.Buffer{}
+	rt := &Runtime{Opts: &Options{Out: &bytes.Buffer{}, Err: buf}}
+
+	logger, err := rt.newLogger("warn")
+	if err != nil {
+		t.Fatalf("newLogger: %v", err)
+	}
+	logger.Info("hidden")
+	logger.Warn("shown")
+	if strings.Contains(buf.String(), "hidden") {
+		t.Errorf("配置 log.level=warn 时不该打 Info：%s", buf)
+	}
+	if !strings.Contains(buf.String(), "shown") {
+		t.Errorf("warn 必须打出来：%s", buf)
+	}
+
+	// flag 盖过配置
+	buf.Reset()
+	rt.Opts.LogLevel = "info"
+	logger, err = rt.newLogger("error")
+	if err != nil {
+		t.Fatalf("newLogger: %v", err)
+	}
+	logger.Info("from-flag")
+	if !strings.Contains(buf.String(), "from-flag") {
+		t.Errorf("flag 应盖过配置：%s", buf)
+	}
+
+	// -v 也盖过配置（没给 --log-level 时）
+	buf.Reset()
+	rt2 := &Runtime{Opts: &Options{Out: &bytes.Buffer{}, Err: buf, Verbose: 1}}
+	logger, err = rt2.newLogger("error")
+	if err != nil {
+		t.Fatalf("newLogger: %v", err)
+	}
+	logger.Debug("from-verbose")
+	if !strings.Contains(buf.String(), "from-verbose") {
+		t.Errorf("-v 应盖过配置：%s", buf)
+	}
+
+	// 非法的 --log-level 是用法错误
+	rt.Opts.LogLevel = "loud"
+	if _, err := rt.newLogger("info"); err == nil {
+		t.Error("非法的 --log-level 必须报错")
+	}
+}
+
 // TestToolInstallSkipsInstalled：已安装的工具会直接跳过，不执行任何命令。
 func TestToolInstallSkipsInstalled(t *testing.T) {
 	if runtime.GOOS == "windows" {

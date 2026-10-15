@@ -188,12 +188,6 @@ func (rt *Runtime) init(cmd *cobra.Command) error {
 	if rt.Opts.Interactive && rt.Opts.NonInteractive {
 		return usageErrf("--interactive 与 --non-interactive 不能同时使用")
 	}
-	logger, err := rt.newLogger()
-	if err != nil {
-		return usageErr(err)
-	}
-	rt.Log = logger
-
 	// cobra 的补全请求命令（`bs __complete ...`）在 Execute 时才被挂上命令树，
 	// 拿不到我们在别的命令上打的注解，只能按名字识别。它同样必须容忍配置损坏：
 	// 否则配置写错一次，用户的 Tab 补全就彻底不工作。cobra 的补全脚本把这条命令的
@@ -236,6 +230,16 @@ func (rt *Runtime) init(cmd *cobra.Command) error {
 	if platform.HomeDir == "" {
 		platform.HomeDir = paths.HomeDir
 	}
+
+	// 日志级别必须等配置读完再定：默认值来自 `log.level`（docs/design.md §5.4），
+	// 只有 flag/-v 能盖过它。以前这里在装配 App 之前就先把 logger 建好了，
+	// 于是配置里的 log.level 永远不生效——新机器上默认的 info 就把引擎的例行日志
+	// （`msg=apply tool=btop via=apt`）直接插进了用户可见的安装输出里。
+	logger, err := rt.newLogger(res.Config.Log.Level)
+	if err != nil {
+		return usageErr(err)
+	}
+	rt.Log = logger
 
 	rt.App = app.New(paths, res.Config, res.Sources, platform, logger, rt.Opts.Out, rt.Opts.Err)
 	rt.App.DryRun = rt.Opts.DryRun
@@ -295,15 +299,15 @@ func (rt *Runtime) timeoutLabel() string {
 	return "?"
 }
 
-func (rt *Runtime) newLogger() (*slog.Logger, error) {
-	level := slog.LevelInfo
+// newLogger 构造进程级 logger，级别按 `--log-level` > `-v` > 配置 `log.level` 决定。
+//
+// cfgLevel 为空时按 info（配置装载已经会把空值补成 info，这里只是兜底）。
+func (rt *Runtime) newLogger(cfgLevel string) (*slog.Logger, error) {
+	level := levelFromName(cfgLevel)
 	switch strings.ToLower(strings.TrimSpace(rt.Opts.LogLevel)) {
 	case "":
-		// 留待 App 装配后按配置决定；这里只处理 -v。
-		switch {
-		case rt.Opts.Verbose >= 2:
-			level = slog.LevelDebug
-		case rt.Opts.Verbose == 1:
+		// 没给 flag 时才看 -v：`-v` 是"我这次就要看细节"，比配置文件更贴近当下意图。
+		if rt.Opts.Verbose >= 1 {
 			level = slog.LevelDebug
 		}
 	case "debug":
@@ -319,6 +323,23 @@ func (rt *Runtime) newLogger() (*slog.Logger, error) {
 	}
 	handler := slog.NewTextHandler(rt.Opts.Err, &slog.HandlerOptions{Level: level})
 	return slog.New(handler), nil
+}
+
+// levelFromName 把配置里的级别名解析成 slog 级别。
+//
+// 认不出来的值按 info 处理而不报错：`config.Validate` 已经拦过非法值，走到这里
+// 还不认识只可能是容忍模式（配置损坏、但补全之类的命令还要能用），那种场合不该再崩一次。
+func levelFromName(name string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // emit 以 JSON 输出结构化结果（未开启 --json 时不做任何事）。

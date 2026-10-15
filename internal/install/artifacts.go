@@ -335,7 +335,7 @@ func removeReleaseArtifacts(plan releasePlan, e ExecEnv) error {
 		if err := os.Remove(p); err != nil {
 			return fmt.Errorf("uninstall %s: %w", p, err)
 		}
-		e.Log().Info("removed", "path", p)
+		e.Log().Debug("removed", "path", p)
 	}
 	for _, p := range plan.RemoveLinks {
 		info, err := os.Lstat(p)
@@ -352,7 +352,7 @@ func removeReleaseArtifacts(plan releasePlan, e ExecEnv) error {
 		if err := os.Remove(p); err != nil {
 			return fmt.Errorf("uninstall symlink %s: %w", p, err)
 		}
-		e.Log().Info("removed symlink", "path", p)
+		e.Log().Debug("removed symlink", "path", p)
 	}
 	return nil
 }
@@ -582,7 +582,7 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 				"the archive probably has no wrapping directory", filepath.Base(local), plan.Strip)
 		}
 		if plan.Tree {
-			e.Log().Info("extracted", "tool", a.ToolID, "files", len(files), "dest", plan.Dest)
+			e.Log().Debug("extracted", "tool", a.ToolID, "files", len(files), "dest", plan.Dest)
 			return applySymlink(plan, e)
 		}
 		found, ok := archive.FindBinary(files, plan.Binary)
@@ -602,7 +602,7 @@ func (r *releaseInstaller) Execute(ctx context.Context, a Action, e ExecEnv) err
 	if err := applySymlink(plan, e); err != nil {
 		return err
 	}
-	e.Log().Info("installed", "tool", a.ToolID, "path", target)
+	e.Log().Debug("installed", "tool", a.ToolID, "path", target)
 	return nil
 }
 
