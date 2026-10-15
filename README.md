@@ -247,7 +247,7 @@ eval "$(bs shell init bash)"
 | `bs tool search <关键词>` | 按名字/描述/标签搜索 |
 | `bs tool info <工具>` | 单个工具的详情、方式链（哪个可用、哪个会选中）与依赖 |
 | `bs tool plan [...]` | 只打印将要执行的步骤，不安装也不升级（离线预览，不解析"最新版本"）。注意探测会跑工具自己的版本命令（如 `go version`），那种命令可能有自己的副作用 |
-| `bs tool install [...]` | 安装（幂等：已装的跳过；含依赖，按拓扑序） |
+| `bs tool install [...]` | 安装（幂等：已装的跳过；依赖按拓扑序自动补齐） |
 | `bs tool install -i [...]` | 先探测再用交互界面勾选要处理的工具（`-i` 对 `upgrade`/`uninstall` 同样有效） |
 | `bs tool upgrade [...]` | 更新（交给各自的包管理器/版本管理器） |
 | `bs tool upgrade --all` | 把清单里所有已安装的工具过一遍升级（系统包管理器按设计不动，列为"跳过"；没有可做的也不算失败） |
@@ -256,6 +256,10 @@ eval "$(bs shell init bash)"
 
 选择方式（`plan`/`install`/`upgrade`/`uninstall` 通用）：`--profile`、`--stack`、`--kind`、`--tag`、`--missing`，
 以及位置参数指定的工具 id 或 `前缀/*`。`--via <方式>` 强制某一种方式（**只约束显式点名的工具**，依赖仍按自己的清单解析）。
+
+只勾一个工具时，bs 会把它缺的那个命令对应的工具一并装上：`bs tool install gopls` 会自动带出
+`golang`，机器上连 Go 都没有时再带出 `g`（只在同一个 stack 内这样推断；跨 stack 的需求由清单的
+`depends_on` 显式声明）。
 
 ```sh
 bs tool list --missing                 # 这台机器上还缺什么

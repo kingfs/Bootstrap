@@ -783,7 +783,9 @@ type ExecEnv interface {
 - `WorkDir()` 只算出 `<cache>/work/<pid>-<纳秒>`，**不建目录**：`bs tool plan` 不该因为要展示一个
   临时路径就在磁盘上留下东西；
 - `LookPath` 先查注入的 `PATH`，再查配置 `tool.extra_path` 与 `~/.local/bin`、`~/bin`、
-  `~/.g/versions/current/bin`——这些目录不写进 PATH 也能被探测到。
+  `~/.g/bin`、`~/.g/go/bin`（g 的布局：`~/.g/go` 是指向当前版本的软链）——这些目录不写进
+  PATH 也能被探测到；`Run` 也按同一套规则把命令名解析成绝对路径，否则"刚装进 `~/.local/bin`
+  的管理器"在同一次运行里会因为子进程 PATH 里没有它而报"找不到可执行文件"。
 
 **注册表**（`Registry`）持有全部 Installer 与版本管理器定义：`Get(via)`、`KnownVias()`、
 `IsSystemVia(via)`、`Managers()`、`ValidateMethod`、`ValidateManagerAction`。
@@ -853,6 +855,21 @@ type ExecEnv interface {
 **依赖顺序**：`depends_on` 构成 DAG，`selectTools` 用 `manifest.ExpandDeps` 做拓扑排序
 （同层保持清单书写顺序），例：`g → golang → gopls`。环在加载期就被 `manifest.TopoOrder`
 拦截并打印完整路径。
+
+**命令提供者推断**（`internal/install/providers.go`）：光有 `depends_on` 还不够——`gopls` 的
+`goinstall` 只声明了 `when: {has: [go]}`，一台没有 Go 的机器上它"一条可用方式都没有"，
+而清单里明明有工具是靠 `go` 验收的。于是 `selectTools` 迭代到不动点：
+
+1. 对每个候选工具跑一次 `ResolveChain`，能选出方法就不动它；
+2. 选不出、且失败原因**只是缺某个 `when.has` 命令**（os/distro/`has_not` 不匹配不算）时，
+   按 `verify.command` 反查"谁提供这个命令"，把那个工具补进集合，**并加一条 `depends_on` 边**
+   ——顺序必须由拓扑序保证，否则 `gopls` 可能排在 `golang` 前面；
+3. 提供者自己可能又缺命令（`golang` 的 `via: manager` 缺 `g`），所以迭代直到没有新东西。
+
+两条边界：只在 `op == install` 时推断（卸载/升级不能因为"机器上恰好缺某个命令"多卸多升）；
+只在**同一个 stack** 内推断（跨 stack 的需求必须清单里显式写 `depends_on`，否则
+`bs tool install nodejs` 会为了一个 Node 版本管理器把整条 Rust 工具链拉进来）。
+推断出的边只影响本次计划，不写回清单文件。
 
 ### 7.3 Installer 实现与参数
 
@@ -944,7 +961,7 @@ type ExecEnv interface {
 - 缓存文件损坏或过期只当作"没有缓存"，不报错；`ErrNoExecutor` 防止"既没有执行器也没有
   PATH 查找"时静默给出满屏 `missing`。
 - **探测与安装共用同一套查找规则**（`install.OSEnv.LookPath`：进程 PATH + `tool.extra_path`
-  + 清单 `path_dirs` + `~/.local/bin`、`~/bin`、`~/.g/versions/current/bin`）。这不是洁癖：
+  + 清单 `path_dirs` + `~/.local/bin`、`~/bin`、`~/.g/bin`、`~/.g/go/bin`）。这不是洁癖：
   新机器上装进 `~/.local/bin` 的工具在重开 shell 之前不在 PATH 里，若两边规则不一致，
   "复核"会把自己刚装好的工具判成 missing。也因此探测**用解析出的完整路径执行** `--version`，
   而不是退回裸命令名。
@@ -958,7 +975,13 @@ type ExecEnv interface {
 [1] Preflight   依赖检查：depends_on 指向的工具不在本次选择里 → 记进 plan.Problems
                 （"可能已安装"，只提示不阻断）
 [2] Select      ExpandDeps 拓扑排序（含依赖自动补全）→ 过滤 disabled 与 when 不匹配的工具
+                · 只勾了 `gopls` 会连 `golang`、`g` 一起计划出来：某工具在本机一条可用方式
+                  都没有、而卡点只是缺某个命令（`when.has`）时，把清单里"正是靠这个命令验收"
+                  的**同 stack** 工具当成依赖补进来并重排拓扑序（见 §7.2 末）
 [3] Plan        逐工具 ResolveChain → 选中的 Installer.Plan()
+                · 计划期把"本次计划里更早的步骤会装出来的命令"当成已存在，否则
+                  `via: manager` 永远选不中（管理器自己还没装）；管理器确实还没就绪时，
+                  `latest` 的解析（`g ls-remote`）推迟到执行到该步之前再做（`Action.Resolve`）
                 · install：已安装（installed）→ skip；uninstall：未安装 → skip；upgrade 从不跳过
                 · 方法链全部不可用 → 该步 status=failed 并带上聚合原因
                   （CLI 看到 failed 步骤就以退出码 4 结束，不会静默返回 0）
@@ -990,8 +1013,9 @@ type ExecEnv interface {
   但仍然做真实探测（这样才能如实回答"哪些已装、哪些要处理"）。新机器上网络还没配好时，
   `bs tool plan` 必须立刻给出结果，而不是每个工具卡 15 秒。
 - **`--dry-run`** 是给 `install/upgrade/uninstall` 的同一套演练开关，行为一致。
-- 真实的版本号、下载地址与校验和**只在执行安装时解析**（`release` 查最新 tag、
-  `manager` 的 `latest` 查 `list-remote`）。预览显示占位符是有意为之：预览的用途是
+- 真实的版本号、下载地址与校验和**只在执行时解析**（`release` 查最新 tag、
+  `manager` 的 `latest` 查 `list-remote`；后者在"管理器由本次计划更早的步骤安装"时会推迟到
+  Apply 阶段，见上面 [3]）。预览显示占位符是有意为之：预览的用途是
   "看要做什么、按什么顺序、用哪种方式"，不是"看最终 URL"。
 
 **日志与审计**：`<state>/installed.yaml` 记录 `{version, tools.<id>.{via, version, installed_at}}`，

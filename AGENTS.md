@@ -254,6 +254,20 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   所以 release 走不通）。另外 `bat`/`fd` 那种"按 `distro` 挑 verify 规则"有个已知边角：
   在 Ubuntu 上若用 **cargo/brew** 装出的是 `bat`/`fd`（没有 `batcat`/`fdfind`），探测会误报
   missing——现有 schema 表达不了"哪个命令在 PATH 里就用哪个"。
+- **例行日志不能进用户可见输出**：`internal/cli` 的 logger 按 `--log-level` > `-v` > 配置
+  `log.level` 决定级别（新机器上配置默认就是 `info`）；引擎每一步都会发生的那几条日志
+  （`apply`/`installed`/`extracted`/`removed`/干跑命令）一律记在 **Debug** 上——安装进度由
+  `ui.progress` 的进度行与结果表负责。新增"每个工具都会打一次"的日志时用 Debug，用 Info 就会以
+  `time=… level=INFO msg=…` 的形式插进用户可见输出（新机器上实测反馈过）。
+- **依赖推断**（`internal/install/providers.go`，动机与算法见 design §7.2 末）：只勾 `gopls` 时
+  自动补 `golang`、再补 `g`。两条边界别拆：只在 `op == install` 时推断（卸载/升级不能因为
+  "恰好缺某个命令"多卸多升），只认**同一个 stack** 的提供者（跨 stack 要清单里显式写
+  `depends_on`，否则会为了 `fnm` 把整条 Rust 工具链拉进来）；推断出的依赖边只影响本次计划，
+  不写回清单文件。
+- **g 的 Go 在 `~/.g/go/bin`**（`~/.g/go` 是指向当前版本的软链；`~/.g/versions/current/bin`
+  是想当然写错的）：`app.extraPathDirs` 与 `install.OSEnv.searchDirs` 必须一致；`install.OSEnv.Run`
+  还要用同一套规则把命令名解析成绝对路径，否则"本次运行里刚装出来的管理器/runtime"
+  （`g install` 之后紧接着 `gopls` 的 `go install`）跑不起来。
 - `bs tool install -i` 的"想怎么选工具？"菜单（`app.PickToolsScoped`）：按套装（整套装安装 /
   组内勾选）、按技术栈、全部、只补缺失。**只在"安装"且没给
   `--profile/--stack/--kind/--tag/--missing` 时出现**——已经圈定范围还多问一层是噪音；

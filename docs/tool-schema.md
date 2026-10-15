@@ -72,6 +72,18 @@ when:
 空 `when` 表示"总是适用"。条件在工具层与方法层都可用，**筛选在运行时真做**，
 不是加载期裁剪——否则 `--os darwin` 这类跨平台校验就没意义了。
 
+`has` 描述的是"机器上已经有这个命令"，但**装的时候允许它来自本次计划**：
+`bs tool install gopls` 时 `go` 还没有，引擎会因为 `gopls` 一条可用方式都没有、而卡点正是
+`has: [go]`，把清单里靠 `go` 验收的**同 stack** 工具（`golang`）当成依赖补进来，并重排拓扑序
+（`golang` 再补出 `g`）。所以：
+
+- 语言工具（`goinstall`/`cargo`/`npm`/`pipx`…）**不必**手写 `depends_on: [golang]`，
+  只要 `verify.command` 写对（引擎按它反查提供者）；
+- 跨 stack 的需求（例如 `fnm` 想借 `cargo` 装）**必须显式写 `depends_on`**：
+  推断刻意不跨 stack，否则"装 nodejs"会顺手把整条 Rust 工具链装上；
+- `when.has` 的其余写法（偏好某个已有的管理器/工具）不受影响：**只要该工具已经有可用方式，
+  引擎就不会为它补任何依赖**。
+
 ## 3. `verify`：怎么判断装没装
 
 ```yaml

@@ -161,7 +161,7 @@ profile 至少要有一个非空代理地址，否则配置校验失败。
 默认关。详见 [design.md](./design.md) §7.2。
 
 `extra_path` 之外，`bs env path` 还会收进清单里各工具声明的 `path_dirs`；
-而探测（`LookPath`）在配置之外还会看 `~/bin` 与 `~/.g/versions/current/bin`。
+而探测（`LookPath`）在配置之外还会看 `~/bin`、`~/.g/bin` 与 `~/.g/go/bin`（g 的 Go 工具链）。
 
 ### `shell`
 
