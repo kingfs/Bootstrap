@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -26,7 +28,7 @@ func (rt *Runtime) repoCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	cmd.AddCommand(rt.repoGetCmd(), rt.repoListCmd(), rt.repoSyncCmd(), rt.repoRootCmd())
+	cmd.AddCommand(rt.repoGetCmd(), rt.repoListCmd(), rt.repoScanCmd(), rt.repoCDCmd(), rt.repoSyncCmd(), rt.repoRootCmd())
 	return cmd
 }
 
@@ -88,6 +90,37 @@ func (rt *Runtime) repoListCmd() *cobra.Command {
 			return w.Flush()
 		},
 	}
+}
+
+func (rt *Runtime) repoScanCmd() *cobra.Command {
+	return &cobra.Command{Use: "scan", Short: "全面扫描并重建仓库索引", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		views, root, err := rt.app().RepoScan(cmd.Context())
+		if err != nil {
+			return failf("%v", err)
+		}
+		if rt.Opts.JSON {
+			return rt.emit(map[string]any{"root": root, "count": len(views)})
+		}
+		fmt.Fprintf(rt.out(), "已扫描 %d 个仓库，索引已更新\n", len(views))
+		return nil
+	}}
+}
+
+func (rt *Runtime) repoCDCmd() *cobra.Command {
+	return &cobra.Command{Use: "cd <repo>", Short: "输出仓库目录（用于 shell 快速切换）", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		views, _, err := rt.app().RepoList(cmd.Context())
+		if err != nil {
+			return failf("%v", err)
+		}
+		q := strings.ToLower(args[0])
+		for _, v := range views {
+			if strings.ToLower(v.Slug) == q || strings.EqualFold(filepath.Base(v.Path), args[0]) {
+				fmt.Fprintln(rt.out(), v.Path)
+				return nil
+			}
+		}
+		return failf("仓库未在索引中找到: %s", args[0])
+	}}
 }
 
 func (rt *Runtime) repoSyncCmd() *cobra.Command {

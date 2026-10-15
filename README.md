@@ -115,6 +115,8 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 | `bs repo get <repo>...` | 克隆或更新；已存在则 `git pull`。目标目录非空且**不是** git 仓库时只 `skip` 并提示，绝不覆盖你已有的内容 |
 | `bs repo get --root DIR` / `--protocol https\|ssh` / `--depth N` / `--ref R` / `--autostash` | 换仓库根目录 / 换克隆协议 / 浅克隆 / 显式指定分支或 tag / pull 前自动 stash |
 | `bs repo list` | 列出根目录下的仓库（分支、来源、是否有未提交改动） |
+| `bs repo scan` | 全面扫描并重建根目录下的 `.bootstrap/repos.tsv` 轻量索引 |
+| `bs repo cd <repo>` | 输出仓库目录，可用 `cd "$(bs repo cd <repo>)"` 快速切换 |
 | `bs repo sync [-j N] [--root DIR] [--autostash]` | 并发更新所有仓库；脏工作区默认跳过 |
 | `bs repo root` | 打印仓库根目录及其来源 |
 
