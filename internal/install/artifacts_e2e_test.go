@@ -921,3 +921,141 @@ tools:
 		t.Fatalf("装出来的二进制不可用：%v / %q", err, res.Stdout)
 	}
 }
+
+// TestReleaseInstallFromChecksumURL 端到端验证 `params.checksum_url`。
+//
+// 场景就是真实的 herdr：上游**不发** checksums.txt/SHA256SUMS，把 sha256 放在自己的
+// JSON 清单里（`latest.json`），因此清单用 `checksum_url` + JSON Pointer 指过去。
+// 这条测试把 GitHub API 换成一个"只要被调用就记一笔"的假服务：既然后来装成功了、
+// 又断言 API 一次都没被打，就证明这条路**完全不依赖** API（匿名 60 次/小时/IP 的限流
+// 打不到它）。校验的仍是 sha256 真值：下载物算出来的哈希必须与清单里的相等。
+func TestReleaseInstallFromChecksumURL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("假二进制是 POSIX shell 脚本")
+	}
+	// 宿主机上真的装了 herdr 时探测会看到它、计划直接 skip（同 TestReleaseInstallFromAPIDigest）。
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	const (
+		repo  = "herdrdev/herdr"
+		tag   = "v0.9.5"
+		ver   = "0.9.5"
+		asset = "herdr-linux-amd64"
+	)
+	payload := []byte("#!/bin/sh\necho \"herdr " + ver + "\"\n")
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+
+	var mu sync.Mutex
+	paths := map[string]int{}
+	apiCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths[r.URL.Path]++
+		if strings.HasPrefix(r.URL.Path, "/repos/") {
+			apiCalls++
+		}
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/latest.json":
+			// 上游自己的校验和清单：sha256 按平台键放，与 GitHub API 的 digest 同值。
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"releases": map[string]any{
+					ver: map[string]any{"sha256": map[string]string{"linux-x86_64": digest}},
+				},
+			})
+		case "/" + repo + "/releases/download/" + tag + "/" + asset:
+			_, _ = w.Write(payload)
+		default:
+			// 校验和文件与 API 都在这里失败：任何一条被走到都会让测试红。
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldAPI, oldAsset := ghrelease.APIBaseURL, ghrelease.AssetBaseURL
+	ghrelease.APIBaseURL, ghrelease.AssetBaseURL = srv.URL, srv.URL
+	defer func() { ghrelease.APIBaseURL, ghrelease.AssetBaseURL = oldAPI, oldAsset }()
+
+	home := t.TempDir()
+	dest := filepath.Join(home, "bin")
+	env := NewOSEnv(OSEnvOptions{
+		Env:       map[string]string{"PATH": os.Getenv("PATH"), "HOME": home},
+		ExtraPath: []string{dest},
+		HomeDir:   home,
+		GOOS:      "linux",
+		Arch:      "amd64",
+		Client:    httpx.New(30e9, nil),
+		WorkRoot:  t.TempDir(),
+	})
+	runner := cmdx.New(nil)
+
+	loaded := loadManifest(t, `
+version: 1
+tools:
+  - id: herdr
+    stack: agent
+    kind: agent
+    verify:
+      command: herdr
+      version_args: [--version]
+      version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'
+    install:
+      - via: release
+        params:
+          repo: `+repo+`
+          version_source: `+tag+`
+          asset: "`+asset+`"
+          checksum_url: "`+srv.URL+`/latest.json#/releases/{{version}}/sha256/{{os|osmap:darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}"
+          binary: herdr
+          dest: `+dest+`
+`)
+	det := &detect.Detector{Executor: runner, LookPath: env, HomeDir: home,
+		Timeout: detect.ProbeTimeout, Concurrency: 2}
+	eng, err := NewEngine(EngineOptions{Env: env, Loaded: loaded, Detector: det, LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	plan, err := eng.PlanTools(context.Background(), []string{"herdr"}, OpInstall)
+	if err != nil {
+		t.Fatalf("PlanTools: %v", err)
+	}
+	if len(plan.Steps) != 1 || plan.Steps[0].Status != StepInstall {
+		t.Fatalf("plan = %+v", plan.Steps)
+	}
+	if got := plan.Steps[0].Action.Downloads[0].SHA256; got != digest {
+		t.Fatalf("计划里的 sha256 = %q，期望上游清单里的 %q", got, digest)
+	}
+
+	report, err := eng.Apply(context.Background(), plan, OpInstall)
+	if err != nil {
+		t.Fatalf("Apply: %v (steps=%+v)", err, report.Steps)
+	}
+	if report.Steps[0].Status != StepDone {
+		t.Fatalf("step = %+v", report.Steps[0])
+	}
+	res, err := runner.Run(context.Background(), cmdx.Command{Name: filepath.Join(dest, "herdr"), Args: []string{"--version"}})
+	if err != nil || !strings.Contains(res.Stdout, ver) {
+		t.Fatalf("装出来的二进制不可用：%v / %q", err, res.Stdout)
+	}
+
+	// 只该有两次请求：读上游清单 + 下载产物。校验和文件一个都没试，GitHub API 一次没打。
+	mu.Lock()
+	defer mu.Unlock()
+	if apiCalls != 0 {
+		t.Errorf("checksum_url 命中时不该碰 GitHub API，实际打了 %d 次", apiCalls)
+	}
+	want := map[string]int{
+		"/latest.json": 1,
+		"/" + repo + "/releases/download/" + tag + "/" + asset: 1,
+	}
+	if len(paths) != len(want) {
+		t.Errorf("请求路径 = %v，期望恰好 %v", paths, want)
+	}
+	for p, n := range want {
+		if paths[p] != n {
+			t.Errorf("%s 请求了 %d 次，期望 %d 次（实际全部：%v）", p, paths[p], n, paths)
+		}
+	}
+}

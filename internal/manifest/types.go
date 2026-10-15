@@ -406,7 +406,10 @@ type Params struct {
 	Checksum string    `yaml:"checksum"`
 	// ChecksumFile 指定校验和文件名/模板（默认按常见名字逐个尝试）。
 	ChecksumFile string `yaml:"checksum_file"`
-	Binary       string `yaml:"binary"`
+	// ChecksumURL 指定校验和的来源 URL（可带 `#/…` 的 RFC 6901 JSON Pointer）。
+	// 用于"上游确实发布哈希，但不在 Release 的 SHA256SUMS/checksums.txt 里"的项目。
+	ChecksumURL string `yaml:"checksum_url"`
+	Binary      string `yaml:"binary"`
 	// Extract 为真时把归档整棵解压到 dest（用于 Go 工具链、nvm 这类"目录型"发布物）；
 	// 默认为假，即"从归档里挑出那一个可执行文件复制到 dest"。
 	Extract *bool `yaml:"extract"`
@@ -441,6 +444,7 @@ func (p Params) TemplateFields() []TemplateField {
 		{"params.url", p.URL},
 		{"params.sha256", p.SHA256},
 		{"params.checksum_file", p.ChecksumFile},
+		{"params.checksum_url", p.ChecksumURL},
 		{"params.ref", p.Ref},
 		{"params.package", p.Package},
 		{"params.crate", p.Crate},

@@ -72,7 +72,23 @@ func (a *App) selfUpdateOptions(opt SelfUpdateOptions) selfupdate.Options {
 func (a *App) httpClient() *httpx.Client {
 	c := httpx.New(httpx.DefaultTimeout, a.NetworkEnv())
 	c.DownloadTimeout = withDefault(a.timeouts().Download, httpx.DefaultDownloadTimeout)
+	ghrelease.AttachToken(c, GitHubToken())
 	return c
+}
+
+// GitHubToken 返回 GitHub API 令牌（`GITHUB_TOKEN` > `GH_TOKEN`），都没有就返回空串。
+//
+// 为什么需要它：匿名 API 配额只有 60 次/小时/IP，共享出口（公司 NAT、云主机）上很容易
+// 被用光，于是"上游不发校验和文件、只能查 Release asset digest"的工具会装不上
+// （用户实测：herdr 在共享出口 IP 上撞 403）。带令牌后是 5000 次/小时。
+// 令牌只发给 GitHub 官方 API（ghrelease.TokenHost），配了镜像时不发。
+func GitHubToken() string {
+	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // exePath 返回被替换的二进制路径（测试可注入 ExePath）。

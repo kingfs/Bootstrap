@@ -591,10 +591,11 @@ tools:
     verify: {command: herdr, version_args: [--version], version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'}
     install:
       # 上游的安装渠道：brew（macOS 与 Linuxbrew）、官方 install.sh（属于 via: script，
-      # 内置清单不用）、以及 Release 里的裸二进制。Release 页**确实没有** checksums 文件，
-      # 但 release 是 immutable 的，GitHub API 会给每个资产一个 sha256 digest，
-      # 引擎在所有校验和文件都拿不到时会退回到它（docs/tool-schema.md §7）——
-      # 所以"没有 brew 的 Linux 机器装不了"这个老缺口已经补上。
+      # 内置清单不用）、以及 Release 里的裸二进制（**没有** checksums.txt/SHA256SUMS）。
+      # 校验和取上游自己在 https://herdr.dev/latest.json 里公布的 sha256（官方 install.sh
+      # 就是这么校验的），所以这条路完全不碰 GitHub API——匿名 API 只有 60 次/小时/IP，
+      # 共享出口（公司 NAT、云主机）上很容易被用光（用户实测撞过 403）。
+      # API 的 asset digest 仍留在链尾兜底（ADR-0017）。
       - via: brew
         when: {has: [brew]}
         params: {formula: herdr}
@@ -605,6 +606,9 @@ tools:
           # 资产名用 x86_64/aarch64（不是 {{arch}} 的 amd64/arm64），macOS 写成 macos；
           # 产物是**裸二进制**，没有外层目录，因此不写 strip_components。
           asset: "herdr-{{os|osmap:darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}"
+          # JSON Pointer 指向 latest.json 里这个版本、这个平台的哈希；按 {{version}} 取，
+          # 所以固定版本安装时拿到的也是对应版本的那一个（不会串到 latest 上）。
+          checksum_url: "https://herdr.dev/latest.json#/releases/{{version}}/sha256/{{os|osmap:darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}"
           binary: herdr
           dest: "~/.local/bin"
 

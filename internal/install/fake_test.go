@@ -35,8 +35,10 @@ type fakeEnv struct {
 	env         map[string]string
 	bins        map[string]string // 命令名 → 路径（等价于 PATH 里有它）
 	files       map[string]string // URL → 内容（FetchText/Download 用）
+	fetchErr    map[string]error  // URL → FetchText 的错误（模拟 404/403 的真实文本）
 	tags        map[string]string // repo → latest tag
 	digests     map[string]string // "repo@tag/asset" → sha256（AssetDigest 用）
+	digestErr   error             // AssetDigest 返回的错误（模拟 API 限流）
 	digestCalls int               // AssetDigest 被调用了几次（断言"能少问一次就少问一次"）
 	commands    []Command
 	downloads   []Download
@@ -54,8 +56,8 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 		home: filepath.Join(work, "home"), work: work,
 		env:  map[string]string{"PATH": "/usr/bin:/bin", "HOME": filepath.Join(work, "home")},
 		bins: map[string]string{}, files: map[string]string{}, tags: map[string]string{},
-		digests: map[string]string{},
-		runErr:  map[string]error{}, runOut: map[string]string{},
+		digests: map[string]string{}, fetchErr: map[string]error{},
+		runErr: map[string]error{}, runOut: map[string]string{},
 		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
@@ -110,6 +112,9 @@ func (f *fakeEnv) Download(_ context.Context, d Download) (string, error) {
 }
 
 func (f *fakeEnv) FetchText(_ context.Context, url string) (string, error) {
+	if err, ok := f.fetchErr[url]; ok {
+		return "", err
+	}
 	if body, ok := f.files[url]; ok {
 		return body, nil
 	}
@@ -128,7 +133,11 @@ func (f *fakeEnv) LatestRelease(_ context.Context, repo string) (string, error) 
 func (f *fakeEnv) AssetDigest(_ context.Context, repo, tag, asset string) (string, bool, error) {
 	f.mu.Lock()
 	f.digestCalls++
+	err := f.digestErr
 	f.mu.Unlock()
+	if err != nil {
+		return "", false, err
+	}
 	sha, ok := f.digests[digestKey(repo, tag, asset)]
 	return sha, ok, nil
 }

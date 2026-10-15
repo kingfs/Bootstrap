@@ -53,6 +53,34 @@ func normalizeBase(v, def string) string {
 	return def
 }
 
+// TokenHost 返回"可以把 GitHub 令牌发给哪个主机"。
+//
+// 只在 API 前缀确实指向 GitHub 官方时返回主机名；配了镜像（`BS_GITHUB_API`）时返回空串——
+// 那是第三方地址，把 GitHub 凭据交给它不在本项目的决定范围内（design §16 第 8 条）。
+func TokenHost() string {
+	u, err := url.Parse(APIBaseURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "api.github.com") {
+		return ""
+	}
+	return u.Host
+}
+
+// AttachToken 给 HTTP 客户端挂上 GitHub API 令牌（空令牌或非官方 API 前缀时不挂）。
+//
+// 动机：匿名 API 配额只有 60 次/小时/IP，共享出口（公司 NAT、云主机）上很容易用光，
+// 于是"上游不发校验和文件、只能查 asset digest"的项目会装不上；带令牌是 5000 次/小时。
+// 令牌本身由调用方从环境变量取（本包不读环境变量，见 SetBaseURLs 的说明）。
+func AttachToken(c *httpx.Client, token string) {
+	if c == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	host := TokenHost()
+	if host == "" {
+		return
+	}
+	c.Token, c.TokenHosts = strings.TrimSpace(token), []string{host}
+}
+
 // LatestTag 查询仓库最新 release 的 tag（如 `v0.3.0`）。
 //
 // 先用 API；API 被限流（403/429）时退化为跟随 /releases/latest 的重定向，
@@ -143,17 +171,28 @@ func ParseAssetDigest(releaseJSON, asset string) (string, bool) {
 		if a.Name != want {
 			continue
 		}
-		algo, hex, found := strings.Cut(a.Digest, ":")
-		if !found || !strings.EqualFold(strings.TrimSpace(algo), "sha256") {
-			return "", false
-		}
-		hex = strings.ToLower(strings.TrimSpace(hex))
-		if !bareSHA256.MatchString(hex) {
-			return "", false
-		}
-		return hex, true
+		return NormalizeSHA256(a.Digest)
 	}
 	return "", false
+}
+
+// NormalizeSHA256 把"可能是 sha256 的字符串"归一成小写裸哈希。
+//
+// 接受裸 hex 与 `sha256:<hex>`（GitHub API 的 digest 字段、以及不少上游的 JSON
+// 校验和清单，都是后者）。算法不是 sha256 或长度不对时返回 false——
+// 宁可让调用方报"这个来源没有哈希"，也不能拿一个来路不明的值去校验。
+func NormalizeSHA256(v string) (string, bool) {
+	if algo, hex, found := strings.Cut(strings.TrimSpace(v), ":"); found {
+		if !strings.EqualFold(strings.TrimSpace(algo), "sha256") {
+			return "", false
+		}
+		v = hex
+	}
+	v = strings.ToLower(strings.TrimSpace(v))
+	if !bareSHA256.MatchString(v) {
+		return "", false
+	}
+	return v, true
 }
 
 // AssetURL 拼出某个 tag 下资产的下载地址。

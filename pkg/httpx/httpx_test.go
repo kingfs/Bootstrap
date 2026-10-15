@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -440,5 +441,58 @@ func TestTLSHint(t *testing.T) {
 		if !errors.Is(TLSHint(tc.err), tc.err) && !strings.Contains(got, tc.err.Error()) {
 			t.Errorf("%s：原始错误被丢了：%q", tc.name, got)
 		}
+	}
+}
+
+// TestTokenIsSentOnlyToAllowlistedHosts 锁定令牌的发送范围。
+//
+// 令牌（比如 GITHUB_TOKEN）绝不能跟着请求跑到用户配的镜像上：白名单之外的请求
+// 一个 Authorization 头都不能带。两条路径都要覆盖——GetBytes（元数据）与
+// Download（产物），它们各自构造请求。
+func TestTokenIsSentOnlyToAllowlistedHosts(t *testing.T) {
+	var mu sync.Mutex
+	auth := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth[r.URL.Path] = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	c := New(5*time.Second, nil)
+	c.Retries = 0
+	c.Token = "s3cret"
+	c.TokenHosts = []string{host}
+
+	if _, err := c.GetBytes(context.Background(), srv.URL+"/meta"); err != nil {
+		t.Fatalf("GetBytes: %v", err)
+	}
+	if _, err := c.Download(context.Background(), srv.URL+"/asset", filepath.Join(t.TempDir(), "asset"), "", 0o644); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+
+	sent := func(path string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		return auth[path]
+	}
+	for _, path := range []string{"/meta", "/asset"} {
+		if got := sent(path); got != "Bearer s3cret" {
+			t.Errorf("%s 的 Authorization = %q，期望 Bearer s3cret", path, got)
+		}
+	}
+
+	// 白名单外的主机：一个字节的凭据都不许发。
+	other := New(5*time.Second, nil)
+	other.Retries = 0
+	other.Token = "s3cret"
+	other.TokenHosts = []string{"api.github.com"}
+	if _, err := other.GetBytes(context.Background(), srv.URL+"/other"); err != nil {
+		t.Fatalf("GetBytes: %v", err)
+	}
+	if got := sent("/other"); got != "" {
+		t.Errorf("白名单外的主机收到了 Authorization = %q", got)
 	}
 }

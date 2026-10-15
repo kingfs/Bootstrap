@@ -919,7 +919,7 @@ tools:
 	if err == nil {
 		t.Fatal("missing checksum must fail the plan")
 	}
-	mustContain(t, err.Error(), "cannot find a sha256")
+	mustContain(t, err.Error(), "no sha256 for")
 }
 
 // TestReleasePinnedSHA256：清单里固化 sha256 时不再联网找校验文件。

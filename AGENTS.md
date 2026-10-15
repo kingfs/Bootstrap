@@ -206,9 +206,14 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 2. **`via: release` 只在仓库确实发布校验和时使用**（实测：voidint/g 用 `sha256sum.txt`、
    lazygit 用 `checksums.txt`、k9s 用 `checksums.sha256`、uv/ruff/ripgrep 每个产物配 `<asset>.sha256`；
    fnm/bat/fzf 的 tar 包**没有**校验和）。拿不到校验和就中止，因此这类工具走管理器。
-   唯一的例外是**不可变 release 的 GitHub API asset digest**（`digest: sha256:<hex>`，ADR-0017）：
-   上游只发裸二进制、不发任何校验和文件时（herdr），它是同一性质的真校验，引擎自动回退、
-   清单无需声明；非不可变 release 没有这个字段，行为与以前一致。
+   有了 `params.checksum_url`（ADR-0018）后，"确实发布校验和"不再限于 Release 文件：上游把哈希
+   发在别处（JSON 清单、官网）时用 `checksum_url` 指过去，`#/…` 写 RFC 6901 JSON Pointer，
+   例如 herdr 的 `https://herdr.dev/latest.json#/releases/{{version}}/sha256/<os>-<arch>`。
+   最后一个来源是**不可变 release 的 GitHub API asset digest**（`digest: sha256:<hex>`，ADR-0017）：
+   上游只发裸二进制、不发任何校验和文件时它是同一性质的真校验，引擎自动回退、清单无需声明；
+   非不可变 release 没有这个字段，行为与以前一致。但它要打 API，而**匿名配额只有 60 次/小时/IP**
+   （共享出口很容易用光，实测撞过 403），所以能用 `checksum_url` 就别依赖它，`GITHUB_TOKEN`/`GH_TOKEN`
+   只是把配额提到 5000 次/小时（令牌只发给 GitHub 官方 API，配了 `BS_GITHUB_API` 时不发）。
    产物不在 GitHub Release 上时用**直链模式**（`params.url` + `<url>.sha256`/`.sha256sum`），
    校验和同样是硬要求；细节见 `docs/tool-schema.md` 的"直链模式"。
    内置清单里**不使用** `via: script`（官方脚本没有稳定哈希，用 `insecure` 等于放弃校验）。
@@ -219,8 +224,8 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
    再 `bs tool plan` 看实际会选哪个方式。清单字段见 `docs/tool-schema.md`。
 6. **"名字类"参数可以引用 `{{versions.*}}`**，但只限 `version`/`package`/`formula`/`cask`/
    `crate`/`module`/`id`/`python`/`version_source`/`source`/`repo`（引擎会提前展开）；
-   `asset`/`url`/`sha256`/`dest`/`build` 里的 `{{version}}` 由 installer 在版本确定后渲染，
-   这两类不能混用——写错了 `bs tool plan` 里会直接看到字面量 `{{...}}`。
+   `asset`/`url`/`checksum_file`/`checksum_url`/`sha256`/`dest`/`build` 里的 `{{version}}`
+   由 installer 在版本确定后渲染，这两类不能混用——写错了 `bs tool plan` 里会直接看到字面量 `{{...}}`。
 
 ## 10. 已知未完成项
 
@@ -254,8 +259,10 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
   范围内；上游 Release 实测不发任何校验和，PyPI 的 duckdb 只有 Python 模块没有 CLI）；
   `clickhouse` 在发行版里只有 2018 年的 18.16（上游 `.tgz` 只配 sha512，引擎只认 sha256，
   所以 release 走不通）。`herdr` 曾经也是缺口（只有 brew），现在**已经补上**：上游 Release 没有
-  校验和文件，但 release 不可变、GitHub API 提供 asset digest，清单因此走 `via: release`
-  （ADR-0017；brew 仍排在前面的偏好位）；官方 `install.sh` 属于 `via: script`，仍然不用。
+  校验和文件，但它在 `https://herdr.dev/latest.json` 里公布每个平台的 sha256（官方 `install.sh`
+  就这么校验），清单因此用 `params.checksum_url` + JSON Pointer 取哈希（ADR-0018），
+  这条路完全不碰 GitHub API；API 的 asset digest 仍留在链尾兜底（ADR-0017），
+  brew 仍排在前面的偏好位；官方 `install.sh` 属于 `via: script`，仍然不用。
   另外 `bat`/`fd` 那种"按 `distro` 挑 verify 规则"有个已知边角：
   在 Ubuntu 上若用 **cargo/brew** 装出的是 `bat`/`fd`（没有 `batcat`/`fdfind`），探测会误报
   missing——现有 schema 表达不了"哪个命令在 PATH 里就用哪个"。

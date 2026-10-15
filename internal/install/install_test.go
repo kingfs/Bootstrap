@@ -1005,8 +1005,8 @@ func TestReleaseChecksumFallbackToAPIDigest(t *testing.T) {
 					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
 				}
 				// 新来源失败时，错误信息仍要说清"就是没找到校验和"，别把人引向"网络问题"。
-				if !strings.Contains(err.Error(), "cannot find a sha256") {
-					t.Errorf("错误信息应当仍然是 cannot find a sha256：%v", err)
+				if !strings.Contains(err.Error(), "no sha256 for") {
+					t.Errorf("错误信息应当仍然是 no sha256 for：%v", err)
 				}
 				return
 			}
@@ -1027,5 +1027,164 @@ func TestReleaseChecksumFallbackToAPIDigest(t *testing.T) {
 				t.Errorf("digest 查询次数 = %d, want 1", env.digestCalls)
 			}
 		})
+	}
+}
+
+// checksumURLManifest 造一份用 params.checksum_url 取校验和的清单。
+func checksumURLManifest(checksumURL string) string {
+	return `
+version: 1
+tools:
+  - id: herdr
+    stack: agent
+    kind: agent
+    verify: {command: herdr, version_args: [--version], version_regex: 'herdr (?P<v>\d+\.\d+\.\d+)'}
+    install:
+      - via: release
+        params:
+          repo: herdrdev/herdr
+          version_source: v0.9.5
+          asset: "herdr-linux-amd64"
+          checksum_url: "` + checksumURL + `"
+          binary: herdr
+          dest: "~/.local/bin"
+`
+}
+
+// TestReleaseChecksumFromURL 锁定 `params.checksum_url`：
+// 上游把 sha256 发布在 Release 之外（JSON 清单、别的站点）时，清单可以显式声明它；
+// 渲染支持 {{version}} 与 os/arch 过滤器，`#/…` 是 RFC 6901 JSON Pointer；
+// 命中后不再碰 GitHub API（匿名配额只有 60 次/小时/IP，共享出口上会被用光）。
+func TestReleaseChecksumFromURL(t *testing.T) {
+	const (
+		repo    = "herdrdev/herdr"
+		tag     = "v0.9.5"
+		asset   = "herdr-linux-amd64"
+		jsonSum = "3333333333333333333333333333333333333333333333333333333333333333"
+		fileSum = "4444444444444444444444444444444444444444444444444444444444444444"
+		apiSum  = "5555555555555555555555555555555555555555555555555555555555555555"
+	)
+	const jsonURL = "https://herdr.dev/latest.json"
+	tests := []struct {
+		name        string
+		checksumURL string
+		body        string
+		// fileChecksum 为真时同时登记一个 checksums.txt：用来验证"显式 URL 优先于常见文件名"。
+		fileChecksum bool
+		want         string
+		wantErr      string
+	}{
+		{
+			name:        "JSON Pointer 命中（模板渲染出平台键）",
+			checksumURL: jsonURL + "#/releases/{{version}}/sha256/{{os|osmap:darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}",
+			body:        `{"releases":{"0.9.5":{"sha256":{"linux-x86_64":"` + jsonSum + `"}}}}`,
+			want:        jsonSum,
+		},
+		{
+			name:         "显式声明的 URL 优先于常见校验和文件名",
+			checksumURL:  jsonURL + "#/sha256",
+			body:         `{"sha256":"` + jsonSum + `"}`,
+			fileChecksum: true,
+			want:         jsonSum,
+		},
+		{
+			name:        "URL 取不到就继续走后面的来源",
+			checksumURL: "https://herdr.dev/SHA256SUMS",
+			want:        apiSum,
+		},
+		{
+			name:        "Pointer 指不到字段也算这个来源没有",
+			checksumURL: jsonURL + "#/sha256/nope",
+			body:        `{"sha256":{"linux-x86_64":"` + jsonSum + `"}}`,
+			want:        apiSum,
+		},
+		{
+			name:        "URL 非法是清单错误，不能静默跳过",
+			checksumURL: "ftp://herdr.dev/SHA256SUMS",
+			wantErr:     "params.checksum_url",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFakeEnv(t)
+			if tc.body != "" {
+				env.files[jsonURL] = tc.body
+			}
+			// 后面的来源（常见文件名、API digest）都摆在这里：验证"该用哪个、有没有多问"。
+			if tc.fileChecksum {
+				env.files[ghrelease.AssetURL(repo, tag, "checksums.txt")] = fileSum + "  " + asset + "\n"
+			}
+			env.digests[digestKey(repo, tag, asset)] = apiSum
+
+			loaded := loadManifest(t, checksumURLManifest(tc.checksumURL))
+			tool, _ := loaded.ByID("herdr")
+			in, _ := NewRegistry().Get("release")
+			action, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Plan: %v", err)
+			}
+			if got := action.Downloads[0].SHA256; got != tc.want {
+				t.Fatalf("sha256 = %q, want %q", got, tc.want)
+			}
+			if tc.want != apiSum && env.digestCalls != 0 {
+				t.Errorf("checksum_url 已命中，却还查了 %d 次 API digest", env.digestCalls)
+			}
+			if tc.want == apiSum && env.digestCalls != 1 {
+				t.Errorf("digest 查询次数 = %d, want 1", env.digestCalls)
+			}
+		})
+	}
+}
+
+// TestChecksumErrorIsShortAndActionable：找不到校验和时的报错必须短、可行动。
+//
+// 用户实测的原始报错把 5 个候选的完整 URL 与 403 响应体（HTML/JSON 片段）全塞进一行，
+// 1000+ 字符，还在结果表与 `bs: 安装失败：…` 里各出现一次。这里锁定：
+// 只有来源名 + 一句话结论；撞上限流时明确提示 GITHUB_TOKEN。
+func TestChecksumErrorIsShortAndActionable(t *testing.T) {
+	const (
+		repo  = "herdrdev/herdr"
+		tag   = "v0.9.5"
+		asset = "herdr-linux-amd64"
+	)
+	env := newFakeEnv(t)
+	// 真实 httpx 的错误文本：URL + 状态码 + 最多 200 字节响应体。
+	notFound := func(url string) error {
+		return errors.New(url + " returned HTTP 404: <!DOCTYPE html><html lang=\"en\">" + strings.Repeat("x", 200))
+	}
+	for _, name := range ghrelease.ChecksumFileNames {
+		env.fetchErr[ghrelease.AssetURL(repo, tag, name)] = notFound(ghrelease.AssetURL(repo, tag, name))
+	}
+	env.fetchErr[ghrelease.AssetURL(repo, tag, asset+".sha256")] = notFound(ghrelease.AssetURL(repo, tag, asset+".sha256"))
+	env.digestErr = errors.New("https://api.github.com/repos/" + repo + "/releases/tags/" + tag +
+		` returned HTTP 403: {"message":"API rate limit exceeded for 13.250.170.47."}`)
+
+	loaded := loadManifest(t, digestFallbackManifest)
+	tool, _ := loaded.ByID("herdr")
+	in, _ := NewRegistry().Get("release")
+	_, err := in.Plan(context.Background(), env, tool, tool.Install[0], OpInstall)
+	if err == nil {
+		t.Fatal("所有来源都失败时应当报错")
+	}
+	msg := err.Error()
+	if len(msg) > 360 {
+		t.Errorf("错误信息太长（%d 字符）：%s", len(msg), msg)
+	}
+	if strings.Contains(msg, "DOCTYPE") || strings.Contains(msg, "https://") {
+		t.Errorf("错误信息里不该出现响应体或完整 URL：%s", msg)
+	}
+	for _, want := range []string{
+		"no sha256 for " + asset,
+		"checksums.txt, sha256sum.txt, checksums.sha256, SHA256SUMS, " + asset + ".sha256: HTTP 404",
+		"api digest: " + rateLimitOutcome,
+		"set GITHUB_TOKEN",
+	} {
+		mustContain(t, msg, want)
 	}
 }

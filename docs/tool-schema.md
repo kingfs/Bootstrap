@@ -227,8 +227,10 @@ install:
   引擎会在选用方法前先把这类"名字类"参数（`version`/`package`/`formula`/`cask`/`crate`/`module`/
   `id`/`python`/`version_source`/`source`/`repo`）里的 `{{versions.*}}` 渲染成真实值，再交给
   安装器——它们会被当作**值**塞进命令模板，不能留到后面才展开。
-  反过来 `asset`/`url`/`sha256`/`dest`/`build` 这些引用 `{{version}}` 的参数必须等到版本号
-  确定后由各 installer 渲染，别写成 `{{versions.*}}`。
+  反过来 `asset`/`url`/`checksum_file`/`checksum_url`/`sha256`/`dest`/`build` 这些引用 `{{version}}`
+  的参数必须等到版本号确定后由各 installer 渲染，别写成 `{{versions.*}}`
+  （`checksum_url` 与 `asset` 用同一套 `{{os}}`/`{{arch}}` 过滤器，因为 herdr 的哈希键就是
+  `linux-x86_64` 这种形态）。
 - `tool.update` 与 `tool.uninstall` 是可选的显式覆盖：写了就用它（`update` 是单个方法，
   `uninstall` 是一条链），没写则复用 `install` 链并由安装器推算命令。
 - 内置支持的管理器：`g`、`fnm`、`nvm`（`NeedsShell`，会先 `source ~/.nvm/nvm.sh`）、`uv`、`rustup`、`mise`、`pyenv`。
@@ -293,22 +295,34 @@ params:
     - {from: "~/.local/share/uv/uv", to: "~/.local/bin/uv"}
     - {from: "~/.local/share/uv/uvx", to: "~/.local/bin/uvx"}
   checksum_file: SHASUMS256.txt         # 指定校验和文件名（默认按候选链找）
+  checksum_url: "https://…"             # 或用上游自己发布的校验和（可带 `#/…` JSON Pointer）
   sha256: "..."                         # 或直接固化下载物的哈希（字面量，不做模板渲染：
                                         # 多平台要各写一条 when，各配自己那份哈希）
   checksum: sha256                      # `none` 显式放弃校验（逃生口，内置清单不用）
 ```
 
-- **校验和是硬要求**：候选链为 `checksums.txt` → `sha256sum.txt` → `checksums.sha256` →
-  `SHA256SUMS` → `<asset>.sha256` → **GitHub API 的 asset digest**，都拿不到就**中止**
-  （`params.sha256` 可以完全免联网校验）。
-- 最后那个来源是为"只发裸二进制、不发任何校验和文件"的仓库准备的（实测：herdr）。
-  GitHub 从 2025 年起给**不可变 release**（immutable release）的每个资产附带
-  `digest: sha256:<hex>`，引擎在前几个来源都拿不到时自动回退到它——这仍然是**真校验**，
-  不是 `checksum: none` 那种放弃。它排在最后有两个理由：①要多打一次 API（匿名限流
-  60 次/小时）；②清单显式写的 `checksum_file`/`sha256` 更能表达"我确认过这个来源"。
-  清单**不需要**为它写任何字段；非不可变 release 没有 digest，行为与以前完全一致（中止）。
-  注意 digest 查询只在 `repo` + `asset` 模式生效（直链模式仍按 URL 的兄弟文件找），
-  而且资产名必须逐字相等。
+- **校验和是硬要求**：候选链为 `params.sha256` → `params.checksum_file` → `params.checksum_url`
+  → `checksums.txt` / `sha256sum.txt` / `checksums.sha256` / `SHA256SUMS` → `<asset>.sha256`
+  → **GitHub API 的 asset digest**，都拿不到就**中止**（`params.sha256` 可以完全免联网校验；
+  `params.checksum: none` 是唯一的显式放弃开关）。
+- **上游确实发布哈希、只是不在 Release 的校验和文件里**时，用 `params.checksum_url` 把位置写出来
+  （支持 `{{version}}`/`{{os}}`/`{{arch}}` 与过滤器，与 `asset` 同一套渲染）：
+  - 正文按校验和文件解析：`<hash>  <filename>` 列表（文件名要能对上资产名或它的 basename），
+    或整份正文**只有一个裸哈希**（不能拿多资产清单里的第一行去凑，那会是别的文件的哈希）；
+  - 哈希在 JSON 里时，URL 后面加 `#` + **RFC 6901 JSON Pointer**，例如 herdr：
+    `https://herdr.dev/latest.json#/releases/{{version}}/sha256/{{os|osmap:darwin=macos}}-{{arch|archmap:amd64=x86_64,arm64=aarch64}}`
+    （`~0`/`~1` 转义与数组下标都支持；值可以是裸 hex，也可以是 `sha256:<hex>`）。
+  - 取不到、Pointer 指不到、正文其实是 HTML（不少站点对任何路径都回 200 首页）都算"这个来源没有"，
+    引擎继续走后面的来源；只有 URL 非法或模板写错才是清单错误。
+- **GitHub API 的 asset digest** 是链尾兜底：GitHub 从 2025 年起给**不可变 release**
+  （immutable release）的每个资产附带 `digest: sha256:<hex>`，清单**不需要**写任何字段；
+  非不可变 release 没有它，行为与以前一致（中止）。它排在最后有两个理由：①要多打一次 API
+  ——**匿名配额只有 60 次/小时/IP**，共享出口（公司 NAT、云主机）上很容易用光（实测撞过 403），
+  设置 `GITHUB_TOKEN`（或 `GH_TOKEN`）后是 5000 次/小时（令牌只发给 GitHub 官方 API，
+  配了 `BS_GITHUB_API` 镜像时**不发**，避免把凭据交给第三方地址）；②清单显式声明的来源
+  更能表达"我确认过哈希发布在哪里"。digest 只在 `repo` + `asset` 模式生效，资产名逐字相等。
+- 找不到校验和时的报错只说一句话结论（来源名 + 原因），完整 URL 与响应体在
+  `--log-level debug` 的 `msg=http get=…` 里——不要在清单里靠"报错文本"做判断。
 - `asset` 支持模板；`symlink`/`symlinks` 里的 `from`/`to` **同样支持模板**
   （gradle 要写 `~/.local/share/gradle/gradle-{{version}}/bin/gradle`）。
 - 没写 `binary` 时：`repo` 模式取仓库名，直链模式取产物名去掉归档后缀。
@@ -337,6 +351,8 @@ params:
 - 校验和按 URL 的**兄弟文件**找：`<url>.sha256` → `<url>.sha256sum`；
   `checksum_file` 给绝对 URL 就用它，给名字（如 `sha256sum`）就当作 `<url>.<名字>`。
   文件内容两种都认：带文件名的列表（`<hash>  <名字>`）与只有裸哈希。
+  上游的哈希在别处（JSON 清单、别的站点）时，用 `checksum_url` 直接声明，语义与
+  `repo` 模式完全相同。
 - 干跑（`bs tool plan`）**不联网**：`version_source` 是 URL 时也用 `<latest>` 占位，
   真正的版本解析发生在 Apply。
 

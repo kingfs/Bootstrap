@@ -67,6 +67,9 @@ type OSEnvOptions struct {
 	Client *httpx.Client
 	// LookupTimeout 覆盖元数据查询时限（0 = LookupTimeout 常量）。
 	LookupTimeout time.Duration
+	// Token 是 GitHub API 令牌（可选）：匿名配额 60 次/小时/IP，带上它是 5000 次/小时。
+	// 只发给 GitHub 官方 API；配了镜像（BS_GITHUB_API）时不发。
+	Token string
 	// DownloadTimeout 覆盖单个归档的下载时限（0 = httpx.DefaultDownloadTimeout）。
 	DownloadTimeout time.Duration
 }
@@ -81,6 +84,8 @@ func NewOSEnv(opt OSEnvOptions) *OSEnv {
 	if client == nil {
 		client = httpx.New(httpx.DefaultTimeout, opt.Env)
 	}
+	// API 令牌只发给 GitHub 官方 API（配了镜像就不发），见 ghrelease.AttachToken。
+	ghrelease.AttachToken(client, opt.Token)
 	if opt.DownloadTimeout > 0 {
 		client.DownloadTimeout = opt.DownloadTimeout
 	}

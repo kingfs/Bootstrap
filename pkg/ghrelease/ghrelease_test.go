@@ -192,3 +192,56 @@ func TestAssetDigestViaAPI(t *testing.T) {
 		t.Error("404 应当是错误")
 	}
 }
+
+// TestNormalizeSHA256 锁定"什么算一个 sha256 值"：接受裸 hex 与 `sha256:<hex>`，
+// 大小写与空白归一；算法不对或长度不对一律不算（宁可当"这个来源没有"）。
+func TestNormalizeSHA256(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
+	good := []string{sum, strings.ToUpper(sum), "  " + sum + "  ", "sha256:" + sum, "SHA256:" + strings.ToUpper(sum), " sha256 : " + sum}
+	for _, in := range good {
+		got, ok := NormalizeSHA256(in)
+		if !ok || got != sum {
+			t.Errorf("NormalizeSHA256(%q) = %q, %v；期望 %q, true", in, got, ok, sum)
+		}
+	}
+	bad := []string{"", "deadbeef", "sha512:" + sum, "sha256:" + strings.Repeat("z", 64), sum + "x", strings.Repeat("a", 63)}
+	for _, in := range bad {
+		if got, ok := NormalizeSHA256(in); ok {
+			t.Errorf("NormalizeSHA256(%q) 不该成功，得到 %q", in, got)
+		}
+	}
+}
+
+// TestTokenHostAndAttachToken 锁定令牌的挂载规则：
+// 官方 API 前缀才挂，配了镜像（BS_GITHUB_API）一律不挂——那是第三方地址。
+func TestTokenHostAndAttachToken(t *testing.T) {
+	old := APIBaseURL
+	defer func() { APIBaseURL = old }()
+
+	APIBaseURL = DefaultAPIBaseURL
+	if got := TokenHost(); got != "api.github.com" {
+		t.Errorf("TokenHost() = %q，期望 api.github.com", got)
+	}
+	c := httpx.New(time.Second, nil)
+	AttachToken(c, "  tok  ")
+	if c.Token != "tok" || len(c.TokenHosts) != 1 || c.TokenHosts[0] != "api.github.com" {
+		t.Errorf("AttachToken 后 = %q %v", c.Token, c.TokenHosts)
+	}
+
+	APIBaseURL = "https://gh-mirror.example/api"
+	if got := TokenHost(); got != "" {
+		t.Errorf("镜像前缀下 TokenHost() = %q，期望空串", got)
+	}
+	mirror := httpx.New(time.Second, nil)
+	AttachToken(mirror, "tok")
+	if mirror.Token != "" || len(mirror.TokenHosts) != 0 {
+		t.Errorf("镜像下不该挂令牌，得到 %q %v", mirror.Token, mirror.TokenHosts)
+	}
+
+	APIBaseURL = DefaultAPIBaseURL
+	empty := httpx.New(time.Second, nil)
+	AttachToken(empty, "   ")
+	if empty.Token != "" {
+		t.Errorf("空令牌不该挂，得到 %q", empty.Token)
+	}
+}

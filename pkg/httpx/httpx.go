@@ -51,6 +51,11 @@ type Client struct {
 	Env map[string]string
 	// UserAgent 会附加到每个请求上（GitHub API 要求）。
 	UserAgent string
+	// Token 是随请求发出的 Bearer 令牌（可选，用于 GitHub API 这类有配额的接口）。
+	Token string
+	// TokenHosts 限定令牌只发给这些主机（URL 的 Host，含端口）。
+	// **为空就一个都不发**：凭据的默认行为必须是"不泄露"，哪怕调用方忘了填。
+	TokenHosts []string
 	// Retries 是失败重试次数（默认 1 次重试）。
 	Retries int
 	// Timeout 是通用 GET 的单次预算。
@@ -90,7 +95,26 @@ func New(timeout time.Duration, env map[string]string) *Client {
 func (c *Client) GetCtx(ctx context.Context, rawURL string) (*http.Response, error) {
 	ctx, cancel := withBudget(ctx, c.Timeout)
 	defer cancel()
-	return c.HTTP.Do(mustRequest(ctx, rawURL, c.UserAgent))
+	req := mustRequest(ctx, rawURL, c.UserAgent)
+	c.setAuth(req)
+	return c.HTTP.Do(req)
+}
+
+// setAuth 按 TokenHosts 白名单给请求挂上 Bearer 令牌。
+//
+// 用白名单而不是"有令牌就发"：`BS_GITHUB_API` 之类的镜像同样是用户配的地址，
+// 但"把 GitHub 凭据交给它"不该由本包替用户决定（design §16 第 8 条）。
+// 令牌只进请求头，不会进日志（本包只记录 URL、耗时与错误）。
+func (c *Client) setAuth(req *http.Request) {
+	if c.Token == "" || req.URL == nil {
+		return
+	}
+	for _, h := range c.TokenHosts {
+		if h != "" && strings.EqualFold(strings.TrimSpace(h), req.URL.Host) {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+			return
+		}
+	}
 }
 
 // withBudget 给 ctx 套上单次操作的预算（已有更短 deadline 时以更短者为准）。
@@ -292,6 +316,7 @@ func (c *Client) fetch(ctx context.Context, rawURL string, offset int64) (*http.
 		if c.UserAgent != "" {
 			req.Header.Set("User-Agent", c.UserAgent)
 		}
+		c.setAuth(req)
 		if offset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
@@ -371,6 +396,7 @@ func (c *Client) do(ctx context.Context, rawURL string) (*http.Response, error) 
 		if c.UserAgent != "" {
 			req.Header.Set("User-Agent", c.UserAgent)
 		}
+		c.setAuth(req)
 		resp, err := c.doOnce(req, rawURL)
 		if err != nil {
 			var perm *permanentError

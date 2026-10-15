@@ -53,9 +53,13 @@
 | `BS_REPO` | 覆盖自更新/发布用的仓库（`owner/repo`） | 默认 `kingfs/Bootstrap`；fork 自测用 |
 | `BS_GITHUB_API` | 覆盖 GitHub API 前缀 | 默认 `https://api.github.com`；镜像/加速站 |
 | `BS_GITHUB_ASSET_BASE` | 覆盖产物与校验和的下载前缀 | 默认 `https://github.com`；镜像/加速站 |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub API 令牌（可选） | 只影响 API 配额：匿名 60 次/小时/IP，带令牌 5000 次/小时；只发给 GitHub 官方 API，配了 `BS_GITHUB_API` 时不发 |
 
 `BS_GITHUB_*` 作用于**所有**从 GitHub Release 下载的路径（按清单装 release 工具、`bs self-update`）。
 注意它们同时决定产物与 `checksums.txt` 的来源，因此镜像必须完全可信（见 design §16）。
+
+`GITHUB_TOKEN` 只在"上游不发校验和文件、引擎退回查 Release asset digest"时才用得上
+（见 tool-schema §7）：共享出口 IP（公司 NAT、云主机）上匿名配额很容易用光，带上令牌就不会再撞 403。
 
 ## 2. 顶层字段
 

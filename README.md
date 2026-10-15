@@ -39,6 +39,10 @@ BS_BASE_URL=https://mirror.example.com/bootstrap BS_VERSION=v0.1.0 sh scripts/in
 （产物与校验和，默认 `https://github.com`）。注意校验和与产物来自同一个前缀，
 所以镜像必须完全可信——它有能力同时换掉两者。
 
+少数仓库（例如 herdr）不在 Release 里发校验和文件，`bs` 会退回查询 GitHub API 的 asset
+digest；匿名 API 只有 60 次/小时/IP，共享出口上容易用光。给了 `GITHUB_TOKEN`（或 `GH_TOKEN`）
+就是 5000 次/小时——令牌只发给 GitHub 官方 API，配了镜像前缀时不发。
+
 也可以直接下载归档，或从源码构建：
 
 ```sh

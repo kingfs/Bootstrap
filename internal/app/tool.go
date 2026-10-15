@@ -656,6 +656,9 @@ func (a *App) installEnv() install.ExecEnv {
 		Versions:  a.Cfg.Tool.Versions,
 		Log:       a.Log,
 		Runner:    a.Runner,
+		// GitHub API 令牌（GITHUB_TOKEN/GH_TOKEN）：只有"上游不发校验和文件、
+		// 退回查 asset digest"的工具才用得上，但那种工具在匿名限流下会直接装不上。
+		Token: GitHubToken(),
 		// 时限留空 = 用各环节内置默认值（见 config.TimeoutConfig 的注释）。
 		LookupTimeout:   a.timeouts().Lookup,
 		DownloadTimeout: a.timeouts().Download,

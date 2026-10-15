@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/manifest"
@@ -432,7 +431,8 @@ func (r *releaseInstaller) Plan(ctx context.Context, e ExecEnv, t manifest.Tool,
 
 // checksumFor 解析产物的 sha256。
 //
-// 顺序：显式固化 → 显式文件名 → 常见文件名 → `<asset>.sha256` → GitHub API 的 asset digest。
+// 顺序：显式固化 → 显式文件名 → 显式 URL（`params.checksum_url`）→ 常见文件名 →
+// `<asset>.sha256` → GitHub API 的 asset digest。
 // 拿不到校验和就报错（AGENTS.md §8.3：宁可失败，也不装一个来路不明的东西）。
 func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifest.Tool, m manifest.Method, src releaseSource) (string, error) {
 	if m.Params.Checksum == "none" {
@@ -451,72 +451,147 @@ func (r *releaseInstaller) checksumFor(ctx context.Context, e ExecEnv, t manifes
 		return r.checksumForURL(ctx, e, t, m, src, data)
 	}
 	asset, tag := src.asset, src.tag
-	var candidates []string
+	var attempts checksumAttempts
+
+	tryFile := func(name string) (string, bool) {
+		text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, name))
+		if ferr != nil {
+			// 区分"这个文件不存在"与"取不到这个文件"：网络不通/限流时如果说成
+			// "找不到校验和"，会把人引向错误的排查方向。细节留在 debug 日志里。
+			attempts.add(name, briefFetchError(ferr))
+			return "", false
+		}
+		sha, cerr := ghrelease.ChecksumFor(text, asset)
+		if cerr != nil {
+			attempts.add(name, "no entry for this asset")
+			return "", false
+		}
+		return sha, true
+	}
 	if m.Params.ChecksumFile != "" {
 		name, rerr := Render(m.Params.ChecksumFile, data)
 		if rerr != nil {
 			return "", fmt.Errorf("tool %q: params.checksum_file: %w", t.ID, rerr)
 		}
-		candidates = append(candidates, name)
-	} else {
-		candidates = append(candidates, ghrelease.ChecksumFileNames...)
-	}
-	var tried []string
-	for _, name := range candidates {
-		text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, name))
-		if ferr != nil {
-			// 区分"这个文件不存在"与"取不到这个文件"：
-			// 网络不通时如果说成"找不到校验和"，会把人引向错误的排查方向。
-			tried = append(tried, fmt.Sprintf("%s (fetch failed: %v)", name, firstLineOf(ferr.Error())))
-			continue
+		if sha, ok := tryFile(name); ok {
+			return validateSHA256(t.ID, sha)
 		}
-		sha, cerr := ghrelease.ChecksumFor(text, asset)
-		if cerr != nil {
-			tried = append(tried, name+"(无 "+asset+" 条目)")
-			continue
+	}
+	// 清单显式声明的外部校验和来源排在这里：它是"我确认过上游在这里发布哈希"，
+	// 比下面按常见文件名逐个试更可信，也省掉几个必然 404 的请求。
+	if sha, _, err := r.checksumFromURLSource(ctx, e, t, m, asset, data, &attempts); err != nil || sha != "" {
+		if err != nil {
+			return "", err
 		}
 		return validateSHA256(t.ID, sha)
 	}
-	// 最后试 Rust 生态的 `<asset>.sha256`（文件里通常只有一个裸哈希）
-	if !slices.Contains(candidates, asset+".sha256") {
-		if text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, asset+".sha256")); ferr == nil {
-			if sha, ok := ghrelease.BareChecksum(text); ok {
+	if m.Params.ChecksumFile == "" {
+		for _, name := range ghrelease.ChecksumFileNames {
+			if sha, ok := tryFile(name); ok {
 				return validateSHA256(t.ID, sha)
 			}
 		}
 	}
-	// 再最后试 GitHub API 的 asset digest。
+	// 再试 Rust 生态的 `<asset>.sha256`（文件里通常只有一个裸哈希）
+	if m.Params.ChecksumFile != asset+".sha256" {
+		text, ferr := e.FetchText(ctx, ghrelease.AssetURL(m.Params.Repo, tag, asset+".sha256"))
+		switch {
+		case ferr != nil:
+			attempts.add(asset+".sha256", briefFetchError(ferr))
+		default:
+			if sha, ok := ghrelease.BareChecksum(text); ok {
+				return validateSHA256(t.ID, sha)
+			}
+			attempts.add(asset+".sha256", "no sha256 in file")
+		}
+	}
+	// 最后试 GitHub API 的 asset digest。
 	//
-	// 上游只发裸二进制、不发任何校验和文件时（herdr 就是），不可变 release 的 digest
-	// 是唯一可信的来源——**这是多一个校验和来源，不是放弃校验**：拿不到它照样中止。
-	// 放在整条链的最末尾有两个理由：①它要多打一次 API（匿名限流 60 次/小时），
-	// ②清单作者显式写的 params.sha256 / checksum_file 更能表达"我确认过这个来源"。
+	// 上游只发裸二进制、不发任何校验和文件时（herdr 就是这样），不可变 release 的 digest
+	// 是最后一个可信来源——**这是多一个校验和来源，不是放弃校验**：拿不到它照样中止。
+	// 放在整条链的最末尾有两个理由：①它要多打一次 API（匿名限流 60 次/小时/IP，
+	// 共享出口 IP 上很容易用光，可用 GITHUB_TOKEN 提到 5000 次），
+	// ②前面那些来源要么是清单显式声明的，要么是上游自己发布的文件。
 	if m.Params.Repo != "" {
 		switch sha, ok, derr := e.AssetDigest(ctx, m.Params.Repo, tag, asset); {
 		case derr != nil:
-			// 与校验和文件一样区分"没有"和"取不到"：限流/断网时别说成"上游没发校验和"。
-			tried = append(tried, "api digest (fetch failed: "+firstLineOf(derr.Error())+")")
+			attempts.add("api digest", briefFetchError(derr))
 		case ok:
 			return validateSHA256(t.ID, sha)
 		default:
-			tried = append(tried, "api digest(无 "+asset+" 的 sha256)")
+			attempts.add("api digest", "no sha256 for this asset")
 		}
 	}
-	return "", fmt.Errorf("tool %q: cannot find a sha256 for %s in %s@%s (tried %s); "+
-		"set params.checksum_file, params.sha256, or params.checksum: none to opt out",
-		t.ID, asset, m.Params.Repo, tag, strings.Join(tried, ", "))
+	return "", checksumNotFound(t, m.Params.Repo, tag, asset, attempts)
+}
+
+// checksumFromURLSource 试清单声明的 `params.checksum_url`。
+//
+// 返回 (sha, found, err)：err 只在**清单写错**时非 nil（模板渲染失败、URL 非法），
+// 取不到或解析不出哈希都算"这个来源没有"（found=false），由调用方继续走后面的来源。
+// 这样"上游站点挂了"不会变成"清单非法"，但也绝不会静默跳过校验。
+func (r *releaseInstaller) checksumFromURLSource(ctx context.Context, e ExecEnv, t manifest.Tool,
+	m manifest.Method, asset string, data RenderData, attempts *checksumAttempts) (string, bool, error) {
+	raw := strings.TrimSpace(m.Params.ChecksumURL)
+	if raw == "" {
+		return "", false, nil
+	}
+	rendered, rerr := Render(raw, data)
+	if rerr != nil {
+		return "", false, fmt.Errorf("tool %q: params.checksum_url: %w", t.ID, rerr)
+	}
+	source, perr := parseChecksumSource(rendered)
+	if perr != nil {
+		return "", false, fmt.Errorf("tool %q: params.checksum_url: %w", t.ID, perr)
+	}
+	body, ferr := e.FetchText(ctx, source.URL)
+	if ferr != nil {
+		attempts.add("checksum_url", briefFetchError(ferr))
+		return "", false, nil
+	}
+	sha, ok := checksumFromBody(body, source, asset)
+	if !ok {
+		attempts.add("checksum_url", "no sha256 at "+source.label())
+		return "", false, nil
+	}
+	return sha, true, nil
+}
+
+// checksumNotFound 拼一条短而完整的"找不到校验和"错误。
+//
+// 这条错误会同时出现在结果表与 `bs: 安装失败：…` 行里，长一点点就是双倍噪音，
+// 所以只带来源名与一句话结论（完整 URL、响应体在 debug 日志里）。
+func checksumNotFound(t manifest.Tool, repo, tag, asset string, attempts checksumAttempts) error {
+	msg := fmt.Sprintf("tool %q: no sha256 for %s in %s@%s", t.ID, asset, repo, tag)
+	if s := attempts.String(); s != "" {
+		msg += " (tried " + s + ")"
+	}
+	msg += "; set params.sha256/checksum_file/checksum_url, or checksum: none"
+	if attempts.rateLimited() {
+		msg += "; GitHub API rate limited: set GITHUB_TOKEN"
+	}
+	return errors.New(msg)
 }
 
 // checksumForURL 处理直链产物的 sha256。
 //
 // 直链没有 GitHub 的"资产名"概念，因此按 URL 的兄弟文件找：
+//   - `params.checksum_url` 给了就用它（与 repo 模式同一套语义：可以是任意站点上的
+//     文本/JSON，用 `#/…` 的 JSON Pointer 指字段）；
 //   - `params.checksum_file` 给了绝对 URL 就用它；给的是名字（如 `sha256sum`）
 //     就当作 `<url>.<名字>`（helm 的 `helm-v4.3.0-linux-arm64.tar.gz.sha256sum` 正是这个形态）；
-//   - 没给就依次试 `<url>.sha256`（kubectl、gradle）与 `<url>.sha256sum`（helm）。
+//   - 都没给就依次试 `<url>.sha256`（kubectl、gradle）与 `<url>.sha256sum`（helm）。
 //
 // 解析两种内容：带文件名的列表，以及只有一个裸哈希的文件。
 func (r *releaseInstaller) checksumForURL(ctx context.Context, e ExecEnv, t manifest.Tool,
 	m manifest.Method, src releaseSource, data RenderData) (string, error) {
+	var attempts checksumAttempts
+	if sha, _, err := r.checksumFromURLSource(ctx, e, t, m, src.asset, data, &attempts); err != nil || sha != "" {
+		if err != nil {
+			return "", err
+		}
+		return validateSHA256(t.ID, sha)
+	}
 	var candidates []string
 	if name := strings.TrimSpace(m.Params.ChecksumFile); name != "" {
 		n, rerr := Render(name, data)
@@ -531,11 +606,10 @@ func (r *releaseInstaller) checksumForURL(ctx context.Context, e ExecEnv, t mani
 	} else {
 		candidates = append(candidates, src.url+".sha256", src.url+".sha256sum")
 	}
-	var tried []string
 	for _, u := range candidates {
 		text, ferr := e.FetchText(ctx, u)
 		if ferr != nil {
-			tried = append(tried, fmt.Sprintf("%s (fetch failed: %v)", u, firstLineOf(ferr.Error())))
+			attempts.add(shortURL(u), briefFetchError(ferr))
 			continue
 		}
 		if sha, cerr := ghrelease.ChecksumFor(text, src.asset); cerr == nil {
@@ -544,11 +618,11 @@ func (r *releaseInstaller) checksumForURL(ctx context.Context, e ExecEnv, t mani
 		if sha, ok := ghrelease.BareChecksum(text); ok {
 			return validateSHA256(t.ID, sha)
 		}
-		tried = append(tried, u+"(无 "+src.asset+" 条目)")
+		attempts.add(shortURL(u), "no entry for this asset")
 	}
-	return "", fmt.Errorf("tool %q: cannot find a sha256 for %s next to %s (tried %s); "+
-		"set params.checksum_file, params.sha256, or params.checksum: none to opt out",
-		t.ID, src.asset, shortURL(src.url), strings.Join(tried, ", "))
+	return "", fmt.Errorf("tool %q: no sha256 for %s next to %s (tried %s); "+
+		"set params.sha256/params.checksum_file/params.checksum_url, or params.checksum: none",
+		t.ID, src.asset, shortURL(src.url), attempts)
 }
 
 func validateSHA256(toolID, sha string) (string, error) {

@@ -529,7 +529,7 @@ tools:
 | `apt` `dnf` `yum` `pacman` `zypper` `apk` | `packages`、`needs_root`、`allow_system` |
 | `winget` `scoop` `choco` | `id`（Windows 三件套）或 `packages`、`allow_system` |
 | `script` | `url`、`sha256`（或 `insecure: true`）、`args`、`shell` |
-| `release` | `repo`、`asset`、`version_source`、`version`、`dest`、`binary`、`strip_components`、`extract`、`symlink(s)`、`checksum`、`checksum_file`、`sha256` |
+| `release` | `repo`、`asset`、`version_source`、`version`、`dest`、`binary`、`strip_components`、`extract`、`symlink(s)`、`checksum`、`checksum_file`、`checksum_url`、`sha256` |
 | `source` | `repo` 或 `url`、`ref`、`dest`、`build`、`install`、`command` |
 
 **`via: manager` 的落地方式**：`internal/install/managers.go` 里每个管理器就是一组命令模板
@@ -887,24 +887,33 @@ type ExecEnv interface {
 | `brew` | mac/linux | `formula` `cask` `tap` | `tap` 先于 `install`；`cask` 时加 `--cask` |
 | `apt` `dnf` `yum` `pacman` `zypper` `apk` | linux | `packages` `needs_root` `allow_system` | apt 先 `update`；需要 root 时自动加 `sudo` 前缀 |
 | `winget` `scoop` `choco` | windows | `id` `packages` `allow_system` | winget 用 `--id`，其余用包名；升级一律不支持 |
-| `release` | 全 | `repo` `asset` `version_source` `version` `dest` `binary` `strip_components` `extract` `symlink(s)` `checksum` `checksum_file` `sha256` | GitHub Release 下载 → 校验 sha256 → 解压/取二进制 → 落盘 + 软链 |
+| `release` | 全 | `repo` `asset` `version_source` `version` `dest` `binary` `strip_components` `extract` `symlink(s)` `checksum` `checksum_file` `checksum_url` `sha256` | GitHub Release 下载 → 校验 sha256 → 解压/取二进制 → 落盘 + 软链 |
 | `source` | 全 | `repo` 或 `url` `ref` `dest` `build` `install` `command` | `git clone --depth 1 [--branch ref]`；`dest` 直指目标目录（nvm 这类"仓库即安装物"） |
 | `script` | 全 | `url` `sha256` `args` `shell` `insecure` | 下载固化哈希的官方脚本再执行；**必须**有 `sha256` 或显式 `insecure: true` |
 
 几处刻意的取舍：
 
 - **`release` 拿不到校验和就中止**（AGENTS.md §8.3）。查找顺序：`params.sha256` 固化 →
-  `params.checksum_file` 指定的文件名 → 常见文件名 `checksums.txt` / `sha256sum.txt` /
-  `checksums.sha256` / `SHA256SUMS` → `<asset>.sha256`（Rust 生态习惯，文件里通常只有一个裸哈希）
+  `params.checksum_file` 指定的文件名 → `params.checksum_url` 声明的上游校验和来源 →
+  常见文件名 `checksums.txt` / `sha256sum.txt` / `checksums.sha256` / `SHA256SUMS` →
+  `<asset>.sha256`（Rust 生态习惯，文件里通常只有一个裸哈希）
   → **GitHub API 的 asset digest**（不可变 release 的 `digest: sha256:<hex>` 字段，ADR-0017）。
   `params.checksum: none` 是唯一的显式放弃开关。实测各家习惯不同（g 用 `sha256sum.txt`、
   k9s 用 `checksums.sha256`、uv/ripgrep 每个产物配 `<asset>.sha256`），逐个试比强制清单作者
-  记住某个项目的习惯更可靠；最后一个来源专治"只发裸二进制、不发校验和文件"的仓库
-  （herdr 就是：Releases 页没有任何 checksums 文件，但 release 不可变、API 给 digest），
-  它排在最后是因为要多打一次 API（匿名限流 60 次/小时），而且清单显式声明的来源优先级更高。
+  记住某个项目的习惯更可靠；`checksum_url` 是给"上游确实发布哈希、只是不在 Release 文件里"的
+  情况（herdr 把每个平台的 sha256 放在 `https://herdr.dev/latest.json`，官方 `install.sh`
+  就是 awk 解析它，ADR-0018）——它排在前面的理由与显式 `checksum_file` 相同：清单作者确认过的
+  来源比猜测的文件名可信，也省掉几个必然 404 的请求。最后一个来源专治"只发裸二进制、
+  不发校验和文件"的仓库，它排在最后是因为要多打一次 API：**匿名配额只有 60 次/小时/IP**，
+  共享出口（公司 NAT、云主机）上很容易用光（用户实测撞 403），带 `GITHUB_TOKEN` 是 5000 次/小时。
   这些"元数据查询"（最新 tag、校验和文件、版本文本）共用 `install.LookupTimeout = 60s`
   的单次上限，而真正的下载用 `httpx.DefaultDownloadTimeout = 15min`（通用 GET 是 60s）——
   **下载慢是正常的，查元数据慢不是**；把两者绑在同一个 60s 上，会出现"能下完却永远装不上"。
+- **"找不到校验和"的报错要能一眼读完**（用户实测：一条错误 1000+ 字符，里面塞着 5 个完整 URL
+  与 403 响应体，还会在结果表和 `bs: 安装失败：…` 里各出现一次）。所以错误里只保留
+  "来源名 + 一句话结论"（相同结论合并，如 `checksums.txt, sha256sum.txt…: HTTP 404`），
+  URL 与响应体留在 `--log-level debug` 的 `msg=http get=…` 里。撞上 API 限流时额外提示
+  `set GITHUB_TOKEN`——把"配额用光"和"上游没发校验和"这两件完全不同的事分开说。
 - **下载是"可续、可复用"的**（M4）：归档/脚本落在 `<cache>/downloads`（跨次运行稳定，
   与每次运行都不同的 `WorkDir` 刻意分开），半成品命名为 `.<名字>.<url 指纹>.part`——
   带 URL 指纹就不会出现"v1.2 的半成品被 v1.3 续上"；下次下载带 `Range` 接着来，
@@ -1686,10 +1695,13 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 
 ## 16. 安全边界
 
-1. **下载物必须校验 sha256**：`via: release` 固化了 `params.sha256`、指定了 `params.checksum_file`，
-   或能从常见校验和文件（含 `<asset>.sha256`）里查到才继续，查不到就中止
-   （`params.checksum: none` 是唯一的显式放弃开关）；不可变 release 的
+1. **下载物必须校验 sha256**：`via: release` 固化了 `params.sha256`、指定了 `params.checksum_file`、
+   声明了 `params.checksum_url`，或能从常见校验和文件（含 `<asset>.sha256`）里查到才继续，
+   查不到就中止（`params.checksum: none` 是唯一的显式放弃开关）；不可变 release 的
    **GitHub API asset digest** 是同一性质的校验和来源，只是来得晚一步（ADR-0017）。
+   外部校验和来源（`checksum_url`）**只接受能解析成 sha256 的值**：正文不是 JSON/校验和格式、
+   JSON Pointer 指不到、值是数字或别的算法都算"这个来源没有"，绝不因为 HTTP 200 就相信它
+   （不少站点对任何路径都回 200 首页，ADR-0018）。
    `via: script` 必须有 `params.sha256`，除非清单显式写 `params.insecure: true`。
    内置清单里**不使用** `via: script`（AGENTS.md §9 的清单纪律）。没有 `--insecure-script` 这类 CLI 开关——
    放弃校验必须写进清单并被 review。
@@ -1709,6 +1721,9 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
    防不了"你自己指过去的那台服务器"。因此这两个变量只认环境变量、不落配置文件（不会
    在换机器后悄悄生效），并且在 `bs self-update --help`、`docs/configuration.md` 与这里
    三处都写明这层含义。默认值永远是官方地址，不设变量就等于没有镜像。
+   同理，`GITHUB_TOKEN`/`GH_TOKEN`（只为把 API 配额从匿名 60 次/小时提到 5000 次/小时）
+   **只发给 GitHub 官方 API**：`ghrelease.TokenHost()` 在 API 前缀不是 `api.github.com` 时返回空串，
+   令牌干脆不挂——凭据的默认行为必须是"不泄露"，由 `httpx.Client.TokenHosts` 白名单兜住。
 
 ---
 
@@ -1788,6 +1803,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0015 | **`bs init` 向导的形态** | ①界面全屏（huh 走 AltScreen），不再挤在屏幕下方一小块；②只问三件必要的输入：仓库根目录（带默认值可改）、代理地址（可留空）、装哪些工具（可选）；③配置文件缺失时直接生成，不再询问；④`--yes`＝全自动（连选什么都不问），非交互环境仍必须 `--yes`；⑤shell 探测不到时跳过集成并提示，而不是报错；⑥工具选择是两级菜单（想怎么装 → 套装/手工勾选），子菜单里 Shift+Tab（纯文本 `b`）退回上一级，选错不必重跑命令；⑦收尾的 shell 受管块**不再问一句**（有终端或 `--yes` 就直接写；非交互没授权则跳过并说明），成功后只提示"已写进哪份 rc + 执行 `source` 让它生效"，不再打印备份路径之类的内部细节 | 用户实测反馈：TUI 太小、非交互入口在 help 里看不清、容器里 `$SHELL` 未设置导致 init 报 `unsupported shell ""`、"要不要生成配置"是多此一举、进了勾选列表回不到上一级菜单、"要不要写受管块"同样多此一举、收尾信息太吵（只要一句 `source` 就好） |
 | ADR-0016 | **补全的安装形态** | `bs completion install [shell]` 负责"打开 `shell.completion` + 幂等写入受管块"；补全片段由 `bs shell init` 现算，**不新增第二组受管块标记**；默认关（与 `auto_proxy` 同理，不擅自改变每个新 shell 的行为）；`bs completion bash\|zsh\|fish\|powershell` 保持"只打印脚本"的 cobra 契约 | 用户反馈"生成完不知道下一步该干什么"；沿用 ADR-0007 的单受管块可以一次卸载干净，代价是只想补全的人会连带装上代理包装/PATH 片段 |
 | ADR-0017 | **校验和的最后一个来源** | `via: release` 的前几个来源（`params.sha256` / `checksum_file` / 常见文件名 / `<asset>.sha256`）都拿不到时，回退到 **GitHub API 的 asset digest**（不可变 release 的 `digest: sha256:<hex>`）；清单无需声明，非不可变 release 行为不变；digest 仍是**真校验**，`params.checksum: none` 依然是唯一的放弃开关 | 起因：herdr 只发裸二进制、Releases 页没有任何校验和文件，于是清单里只剩 brew 一条路——"官方支持 Ubuntu 却没 brew 就装不了"。API 与产物同源，信任级别与 `checksums.txt` 相同（§16 第 7 条的镜像语义也一并适用）；代价是多打一次 API（匿名限流 60 次/小时），所以排在最后 |
+| ADR-0018 | **上游校验和不在 Release 文件里时怎么取** | 新增清单字段 `params.checksum_url`（支持模板渲染）：正文按校验和文件解析，或加 `#` + **RFC 6901 JSON Pointer** 从 JSON 里取值（值可为裸 hex 或 `sha256:<hex>`）；它排在 `checksum_file` 之后、常见文件名之前；取不到/指不到/正文不是这两种格式都算"这个来源没有"并继续往下走，只有 URL 非法或模板写错才是清单错误。同时给 `GITHUB_TOKEN`/`GH_TOKEN` 支持（只发给 GitHub 官方 API），并把"找不到校验和"的报错压缩成来源名 + 一句话结论 | 起因：ADR-0017 的 digest 兜底在共享出口 IP 上会被匿名配额掐死（用户实测 `herdr … HTTP 403 API rate limit exceeded for 13.250.170.47`），而 herdr 其实公开了哈希——只是放在 `https://herdr.dev/latest.json`，官方 `install.sh` 就是解析它。让清单把"哈希发布在哪"写出来，比"多打一次可能失败的 API"更可靠也更快；刻意**不**做结果缓存（缓存会把"上游删了旧 release"变成长期假象），也**不**在没有校验和时放行（AGENTS §8.3）。JSON Pointer 而不是自定义字段名，是因为 herdr 的哈希按平台键放在 `releases.<版本>.sha256` 下，路径必须能被清单描述出来；报错瘦身则是"一行错误里塞 5 个 URL + HTML"的直接反馈 |
 
 ### 18.2 已闭环
 
