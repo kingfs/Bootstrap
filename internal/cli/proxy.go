@@ -346,7 +346,6 @@ func printAttempt(rt *Runtime, label, via string, a app.TestAttempt) {
 
 func (rt *Runtime) proxyAddCmd() *cobra.Command {
 	var httpProxy, httpsProxy, noProxy string
-	write := true
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "新增一个代理 profile（默认写入配置）",
@@ -355,7 +354,7 @@ func (rt *Runtime) proxyAddCmd() *cobra.Command {
 		默认直接合并进用户配置文件（写前自动备份）。--dry-run 只打印将写入的 YAML 片段。`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			res, err := rt.app().ProxyAdd(args[0], httpProxy, httpsProxy, noProxy, write && !rt.Opts.DryRun)
+			res, err := rt.app().ProxyAdd(args[0], httpProxy, httpsProxy, noProxy, !rt.Opts.DryRun)
 			if err != nil {
 				return usageErr(err)
 			}
@@ -370,7 +369,7 @@ func (rt *Runtime) proxyAddCmd() *cobra.Command {
 				fmt.Fprintf(rt.out(), "[dry-run] 将写入 %s，片段如下：\n", res.File)
 			} else {
 				// 用 YAML 注释而不是说明段落：用户可以直接把整段复制进配置文件。
-				fmt.Fprintf(rt.out(), "# 粘到 %s 的 proxy.profiles 下（或加 --write 让 bs 写入）\n", rt.app().Paths.ConfigFile())
+				fmt.Fprintf(rt.out(), "# 粘到 %s 的 proxy.profiles 下\n", rt.app().Paths.ConfigFile())
 			}
 			fmt.Fprint(rt.out(), res.Snippet)
 			return nil
@@ -379,7 +378,6 @@ func (rt *Runtime) proxyAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&httpProxy, "http", "", "http_proxy 值，如 http://127.0.0.1:7890")
 	cmd.Flags().StringVar(&httpsProxy, "https", "", "https_proxy 值（通常与 --http 相同）")
 	cmd.Flags().StringVar(&noProxy, "no-proxy", "", "no_proxy 值（逗号分隔）")
-	cmd.Flags().BoolVar(&write, "write", true, "直接写入用户配置文件（默认开启）")
 	return cmd
 }
 
