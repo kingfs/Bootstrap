@@ -1,70 +1,82 @@
 package gitrepo
 
 import (
-	"bufio"
-	"fmt"
+	"database/sql"
+	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 )
 
-// IndexEntry 是仓库索引中的轻量记录；每行仅保存路径、slug 和分支。
+// IndexEntry 是仓库索引中的轻量记录。
 type IndexEntry struct{ Path, Slug, Branch string }
 
-func indexPath(root string) string { return filepath.Join(root, ".bootstrap", "repos.tsv") }
+func indexPath(root string) string { return filepath.Join(root, ".bootstrap", "repos.db") }
 
-// LoadIndex 读取索引；不存在时返回空索引。
-func LoadIndex(root string) ([]IndexEntry, error) {
-	f, err := os.Open(indexPath(root))
-	if os.IsNotExist(err) {
-		return nil, nil
+func openIndex(root string) (*sql.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(indexPath(root)), 0755); err != nil {
+		return nil, err
 	}
+	db, err := sql.Open("sqlite", indexPath(root))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	var out []IndexEntry
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		p := strings.Split(s.Text(), "\t")
-		if len(p) >= 1 && p[0] != "" {
-			e := IndexEntry{Path: p[0]}
-			if len(p) > 1 {
-				e.Slug = p[1]
-			}
-			if len(p) > 2 {
-				e.Branch = p[2]
-			}
-			out = append(out, e)
-		}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS repos (path TEXT PRIMARY KEY, slug TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`)
+	if err != nil {
+		db.Close()
+		return nil, err
 	}
-	return out, s.Err()
+	return db, nil
 }
 
-// SaveIndex 原子写入紧凑索引。
-func SaveIndex(root string, entries []IndexEntry) error {
-	dir := filepath.Dir(indexPath(root))
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+// LoadIndex 读取索引；不存在时返回空索引。
+func LoadIndex(root string) ([]IndexEntry, error) {
+	db, err := openIndex(root)
+	if err != nil {
+		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-	tmp, err := os.CreateTemp(dir, "repos-*.tmp")
+	defer db.Close()
+	rows, err := db.Query(`SELECT path,slug,branch FROM repos ORDER BY path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IndexEntry
+	for rows.Next() {
+		var e IndexEntry
+		if err := rows.Scan(&e.Path, &e.Slug, &e.Branch); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SaveIndex 以事务方式重建索引。
+func SaveIndex(root string, entries []IndexEntry) error {
+	db, err := openIndex(root)
 	if err != nil {
 		return err
 	}
-	name := tmp.Name()
-	defer os.Remove(name)
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM repos`); err != nil {
+		tx.Rollback()
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO repos(path,slug,branch) VALUES(?,?,?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
 	for _, e := range entries {
-		if _, err = fmt.Fprintf(tmp, "%s\t%s\t%s\n", e.Path, e.Slug, e.Branch); err != nil {
-			tmp.Close()
+		if _, err = stmt.Exec(e.Path, e.Slug, e.Branch); err != nil {
+			tx.Rollback()
 			return err
 		}
 	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, indexPath(root))
+	return tx.Commit()
 }
-
-func UpsertIndex(root string, entries []IndexEntry) error { return SaveIndex(root, entries) }
