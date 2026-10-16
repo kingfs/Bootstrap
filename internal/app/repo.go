@@ -4,10 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
 	"github.com/kingfs/Bootstrap/pkg/fsx"
 )
+
+// ErrRepoNotFound 表示仓库索引里没有与查询匹配的条目。
+var ErrRepoNotFound = errors.New("repository not found in index")
 
 // RepoOptions 控制仓库操作。
 type RepoOptions struct {
@@ -117,34 +122,109 @@ func (a *App) RepoGet(ctx context.Context, inputs []string, opts RepoOptions) ([
 				return
 			}
 			results = append(results, res)
-			// 克隆/更新成功后立即写入轻量索引，后续 list 无需遍历整个目录。
-			if res.Status == "cloned" || res.Status == "updated" || res.Status == "up-to-date" {
-				idx, err := gitrepo.LoadIndex(ctx, root)
-				if err != nil && !errors.Is(err, gitrepo.ErrNoIndex) {
-					applyErr = fmt.Errorf("load repository index: %w", err)
-					return
-				}
-				st, _ := mgr.Inspect(ctx, plan.Path)
-				entry := gitrepo.IndexEntry{Path: plan.Path, Slug: plan.Ref.Slug(), Branch: st.Branch, DefaultBranch: st.DefaultBranch, Worktree: st.Worktree}
-				found := false
-				for i := range idx {
-					if idx[i].Path == plan.Path {
-						idx[i] = entry
-						found = true
-						break
-					}
-				}
-				if !found {
-					idx = append(idx, entry)
-				}
-				if err := gitrepo.SaveIndex(ctx, root, idx); err != nil {
-					applyErr = fmt.Errorf("save repository index: %w", err)
-					return
-				}
+			// 干跑与计划阶段不写盘（AGENTS §4.2）；其余情况只要仓库真的在本地，
+			// 就并进轻量索引，后续 `repo list`/`repo cd` 无需先跑 `repo scan`。
+			//
+			// 这里刻意**不**按状态过滤：pull 因"脏工作区 / 游离 HEAD / 没有 upstream"
+			// 被跳过时状态也是 skipped，但仓库明明就在本地，把它漏掉正是用户
+			// "get 成功却 cd 不进去"的来源。
+			if a.DryRun || res.Status == "planned" {
+				continue
+			}
+			if err := upsertRepoIndex(ctx, mgr, root, plan.Path, plan.Ref.Slug()); err != nil {
+				applyErr = err
+				return
 			}
 		}
 	})
 	return results, applyErr
+}
+
+// upsertRepoIndex 把一个本地仓库并进索引（索引不存在时创建）。
+//
+// slug 只是兜底：仓库实际配置的 origin 更权威（可能被 `url.<base>.insteadOf`
+// 改写过，或与这次的输入写法不同），能探测到就用探测结果。
+func upsertRepoIndex(ctx context.Context, mgr *gitrepo.Manager, root, path, slug string) error {
+	idx, err := gitrepo.LoadIndex(ctx, root)
+	if err != nil && !errors.Is(err, gitrepo.ErrNoIndex) {
+		return fmt.Errorf("load repository index: %w", err)
+	}
+	st, _ := mgr.Inspect(ctx, path)
+	if st.Slug != "" {
+		slug = st.Slug
+	}
+	entry := gitrepo.IndexEntry{
+		Path:          path,
+		Slug:          slug,
+		Branch:        st.Branch,
+		DefaultBranch: st.DefaultBranch,
+		Worktree:      st.Worktree,
+	}
+	for i := range idx {
+		if idx[i].Path == path {
+			idx[i] = entry
+			return saveIndex(ctx, root, idx)
+		}
+	}
+	return saveIndex(ctx, root, append(idx, entry))
+}
+
+// saveIndex 写索引并把错误统一带上上下文。
+func saveIndex(ctx context.Context, root string, entries []gitrepo.IndexEntry) error {
+	if err := gitrepo.SaveIndex(ctx, root, entries); err != nil {
+		return fmt.Errorf("save repository index: %w", err)
+	}
+	return nil
+}
+
+// RepoLookup 把用户给的仓库写法解析成索引里的本地路径（`bs repo cd` 的实现）。
+//
+// 接受与 `bs repo get` 相同的输入形态——URL、`git@host:owner/repo.git`、
+// `owner/repo`、带 `/tree/<branch>` 的网页地址——以及索引里记录的 slug、目录名
+// 和本地绝对路径。理由很直接：用户刚 `get` 完手里就是那条 URL，没道理要求
+// 他换成另一种写法才能 `cd`。
+//
+// 找不到时返回 ErrRepoNotFound；索引缺失时原样返回 gitrepo.ErrNoIndex，
+// 调用方据此提示先 `bs repo scan`（绝不在这里偷偷遍历用户目录）。
+func (a *App) RepoLookup(ctx context.Context, query string) (string, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "", fmt.Errorf("%w: empty query", ErrRepoNotFound)
+	}
+	root, _ := a.RepoRoot()
+	idx, err := gitrepo.LoadIndex(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	// 归一化后的目标路径与 slug：URL 之类的写法靠它们命中。
+	wantPath, wantSlug := "", ""
+	if plan, perr := a.RepoManager().Plan(q, root, gitrepo.Options{}); perr == nil {
+		wantPath, wantSlug = plan.Path, plan.Ref.Slug()
+	}
+	// 本地路径写法（绝对路径，或相对当前目录的路径）。
+	if abs, aerr := filepath.Abs(q); aerr == nil {
+		abs = filepath.Clean(abs)
+		for _, e := range idx {
+			if filepath.Clean(e.Path) == abs {
+				return e.Path, nil
+			}
+		}
+	}
+	lower := strings.ToLower(q)
+	for _, e := range idx {
+		// 依次尝试：归一化路径 / 归一化 slug / 输入本身是 slug / 省略 host 的
+		// slug 后缀（owner/repo、owner/sub/repo，`cd kingfs/Bootstrap` 不必关心
+		// 它当初是从哪个站点拉的）/ 目录名。
+		switch {
+		case wantPath != "" && filepath.Clean(e.Path) == filepath.Clean(wantPath),
+			wantSlug != "" && strings.EqualFold(e.Slug, wantSlug),
+			strings.EqualFold(e.Slug, lower),
+			strings.HasSuffix(strings.ToLower(e.Slug), "/"+lower),
+			strings.EqualFold(filepath.Base(e.Path), q):
+			return e.Path, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrRepoNotFound, query)
 }
 
 // RepoList 列出仓库根目录下已有的仓库。

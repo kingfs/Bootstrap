@@ -1322,6 +1322,11 @@ bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull�
 - 索引位于 `<repo.root>/.bootstrap/repos.db`。list/cd 只读打开，不建库；缺失时提示 scan，
   有效空索引不触发遍历。get 成功后保存实际分支，scan 原子事务替换全部记录。
   旧表在写入时补充 default_branch/worktree 列，读取旧表不修改 schema。
+  get 的写入**不看 pull 结果**：克隆/更新成功要写，pull 因脏工作区、游离 HEAD、缺少
+  upstream 被跳过（状态 skipped，但仓库确实在本地）同样要写——2026-10-16 实测反馈：
+  漏写这一种就会出现"`get` 刚说成功，`cd` 却说未在索引中找到"。`cd` 归一化输入
+  （URL / `git@host:owner/repo.git` / `owner/repo` / 网页地址 / slug / 目录名 / 本地路径），
+  与 `repo get` 保持同一套写法，用户不必把刚拿到的那条 URL 换成另一种形式。
 - scan 不联网、不依赖 layout/hosts，改用"按站点层数枚举"（≈ 按 host 的 glob），
   不再遍历整棵树。起因（2026-10-15 实测）：仓库根目录 996 条记录里 403 条嵌套在别的
   仓库里、395 条深度 ≥5 且全是仓库内部的噪声（`vendor/`、`thirdparty/`、

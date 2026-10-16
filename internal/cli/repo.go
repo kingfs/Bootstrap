@@ -3,8 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -110,23 +108,32 @@ func (rt *Runtime) repoScanCmd() *cobra.Command {
 }
 
 func (rt *Runtime) repoCDCmd() *cobra.Command {
-	return &cobra.Command{Use: "cd <repo>", Short: "输出仓库目录（用于 shell 快速切换）", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		views, _, err := rt.app().RepoList(cmd.Context())
-		if err != nil {
-			if errors.Is(err, gitrepo.ErrNoIndex) {
-				return preconditionErrf("%v", err)
+	cmd := &cobra.Command{
+		Use:   "cd <repo>",
+		Short: "输出仓库目录（用于 shell 快速切换）",
+		Long: `按索引输出仓库的本地路径，用法：cd "$(bs repo cd <repo>)"。
+
+<repo> 与 bs repo get 接受同样的写法：URL、git@host:owner/repo.git、owner/repo、
+带 /tree/<branch> 的网页地址；此外也接受索引里的 slug、目录名与本地路径。
+
+索引缺失时提示先执行 bs repo scan；bs repo get 成功后会立即写入索引。`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := rt.app().RepoLookup(cmd.Context(), args[0])
+			if err != nil {
+				if errors.Is(err, gitrepo.ErrNoIndex) {
+					return preconditionErrf("%v", err)
+				}
+				if errors.Is(err, app.ErrRepoNotFound) {
+					return failf("仓库未在索引中找到: %s（可用 `bs repo get %s` 拉取，或 `bs repo list` 查看已有仓库）", args[0], args[0])
+				}
+				return failf("%v", err)
 			}
-			return failf("%v", err)
-		}
-		q := strings.ToLower(args[0])
-		for _, v := range views {
-			if strings.ToLower(v.Slug) == q || strings.EqualFold(filepath.Base(v.Path), args[0]) {
-				fmt.Fprintln(rt.out(), v.Path)
-				return nil
-			}
-		}
-		return failf("仓库未在索引中找到: %s", args[0])
-	}}
+			fmt.Fprintln(rt.out(), path)
+			return nil
+		},
+	}
+	return cmd
 }
 
 func (rt *Runtime) repoSyncCmd() *cobra.Command {

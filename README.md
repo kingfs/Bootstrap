@@ -124,6 +124,11 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 | `bs repo sync [-j N] [--root DIR] [--autostash]` | 并发更新 hosts 允许的仓库；脏工作区默认跳过 |
 | `bs repo root` | 打印仓库根目录及其来源 |
 
+`repo get` 会把每次克隆/更新（**包括**因脏工作区、游离 HEAD、缺少 upstream 而跳过 pull
+的那些）立即写进索引，所以拉完就能 `repo list` / `repo cd`，不必先 `repo scan`。
+`repo cd` 接受与 `repo get` 一样的写法（URL、`git@host:owner/repo.git`、`owner/repo`、
+带 `/tree/<branch>` 的网页地址），也接受索引里的 slug、目录名和本地路径。
+
 `repo list` / `repo cd` 只读 `<repo.root>/.bootstrap/repos.db`，索引缺失时提示先执行
 `bs repo scan`，不会自动遍历目录。列表是扫描时的快照，不表示实时工作区状态。
 `scan` 不联网、不按 `repo.hosts` 过滤：把仓库根目录的一级子目录当站点，

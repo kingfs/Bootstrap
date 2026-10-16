@@ -243,6 +243,35 @@ assert_contains "scan 收录主检出" "$SCANROOT/primary" "$out"
 assert_not_contains "worktree 不进索引" "primary-wt" "$out"
 assert_not_contains "submodule 不进索引" "legacy-sub" "$out"
 
+# cd 必须接受与 get 相同的写法（用户刚 get 完手里就是那条 URL）。
+out="$("$BIN" repo cd scanfx.test/team/primary)"
+assert_contains "repo cd 接受 host/owner/repo" "$SCANROOT/primary" "$out"
+out="$("$BIN" repo cd primary)"
+assert_contains "repo cd 接受目录名" "$SCANROOT/primary" "$out"
+code=0; out="$("$BIN" repo cd nope.test/team/missing 2>&1)" || code=$?
+assert_eq "repo cd 未找到退出码 1" "1" "$code"
+assert_contains "repo cd 未找到给出下一步" "bs repo get" "$out"
+
+# get 成功后立刻写索引：这里用一个假 git 把已有仓库判成"脏工作区 → 跳过 pull"，
+# 仓库仍然在本地，索引里就必须有它——否则紧接着的 cd 会报"未在索引中找到"。
+GETBIN="$WORK/getbin"
+mkdir -p "$GETBIN"
+cat > "$GETBIN/git" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *"status --porcelain"*) echo " M main.go" ;;
+esac
+exit 0
+EOF
+chmod +x "$GETBIN/git"
+DIRTYREPO="$WORK/home/src/getfx.test/team/dirty"
+mkdir -p "$DIRTYREPO/.git"
+code=0; out="$(PATH="$GETBIN:$PATH" "$BIN" repo get getfx.test/team/dirty 2>&1)" || code=$?
+assert_eq "脏工作区上 get 不算失败" "0" "$code"
+assert_contains "脏工作区上 get 说明跳过原因" "未提交改动" "$out"
+out="$("$BIN" repo cd getfx.test/team/dirty)"
+assert_contains "get 后无需 scan 即可 cd" "$DIRTYREPO" "$out"
+
 step "工具清单与安装计划"
 out="$("$BIN" tool manifest validate 2>&1)"
 assert_contains "内置清单通过校验" "清单校验通过" "$out"

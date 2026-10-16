@@ -33,6 +33,37 @@ func TestRepoListMissingAndEmptyIndex(t *testing.T) {
 	}
 }
 
+// TestRepoCdAcceptsGetForms：`repo cd` 要接受与 `repo get` 相同的写法。
+// 用户刚 `get` 完手里就是那条 URL，只认 slug/目录名等于逼他重打一遍。
+func TestRepoCdAcceptsGetForms(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	repoRoot := filepath.Join(root, "home", "src")
+	target := filepath.Join(repoRoot, "github.com", "docker", "docker-agent")
+	if err := gitrepo.SaveIndex(context.Background(), repoRoot, []gitrepo.IndexEntry{
+		{Path: target, Slug: "github.com/docker/docker-agent", Branch: "main", DefaultBranch: "main"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"https://github.com/docker/docker-agent",
+		"git@github.com:docker/docker-agent.git",
+		"docker/docker-agent",
+		"github.com/docker/docker-agent",
+		"docker-agent",
+		target,
+	} {
+		code, out, stderr := run(t, rt, "repo", "cd", q)
+		if code != ExitOK || strings.TrimSpace(out) != target {
+			t.Fatalf("cd %q: code=%d out=%q stderr=%q", q, code, out, stderr)
+		}
+	}
+	if code, _, stderr := run(t, rt, "repo", "cd", "nope/missing"); code != ExitFail {
+		t.Fatalf("missing repo: code=%d stderr=%q", code, stderr)
+	} else if !strings.Contains(stderr, "未在索引中找到") || !strings.Contains(stderr, "bs repo get") {
+		t.Fatalf("missing repo should say what to do next: %q", stderr)
+	}
+}
+
 // TestRepoGetRejectsForce：`--force` 曾经是个**从不生效**的旗标（M1 起就没接到任何分支），
 // 摆在那里只会让人以为"能绕过不覆盖护栏"。它已删除，重新出现必须是有人刻意加回来。
 func TestRepoGetRejectsForce(t *testing.T) {
