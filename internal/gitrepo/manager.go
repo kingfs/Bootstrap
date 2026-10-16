@@ -29,6 +29,9 @@ import (
 // Runner 是执行外部命令的最小接口（cmdx.Runner 天然满足）。
 type Runner interface {
 	Run(ctx context.Context, c cmdx.Command) (cmdx.Result, error)
+	// IsDryRun 用来在"命令还没发出去"之前就跳过准备动作（例如写 known_hosts）：
+	// 干跑必须一个字节都不写，不能等到看 Run 的结果才发现。
+	IsDryRun() bool
 }
 
 // Action 是对某个仓库将要执行的动作。
@@ -58,6 +61,9 @@ type Plan struct {
 	Action   Action
 	Reason   string
 	Commands []cmdx.Command
+	// CloneURL 是本次（或"若有需要"）要 clone 的地址；SSH 传输前的 known_hosts
+	// 准备需要它（见 hostkey.go）。
+	CloneURL string
 	// Existed 表示目标目录在本次操作前是否已存在。
 	Existed bool
 }
@@ -65,14 +71,19 @@ type Plan struct {
 // Outcome 是 Apply 的结果。
 type Outcome struct {
 	Plan    Plan
-	Status  string // cloned | updated | up-to-date | skipped | failed
+	Status  string // cloned | updated | up-to-date | skipped | failed | planned
 	Message string
+	// Note 是本次执行里值得让用户知道、但不影响成败的副作用说明
+	// （目前只有"自动把某 SSH 主机公钥写进 known_hosts"）。
+	Note string
 }
 
 // Manager 编排仓库操作。
 type Manager struct {
 	Cfg    *config.Config
 	Runner Runner
+	// HomeDir 是 ~ 的基准（known_hosts 的查找与写入）；空则用 fsx.HomeDir()。
+	HomeDir string
 }
 
 // NewManager 构造 Manager。
@@ -136,7 +147,7 @@ func (m *Manager) Plan(raw, root string, opts Options) (Plan, error) {
 	}
 	cloneURL := ref.CloneURL(protocol)
 
-	plan := Plan{Raw: raw, Ref: ref, Path: path}
+	plan := Plan{Raw: raw, Ref: ref, Path: path, CloneURL: cloneURL}
 
 	switch {
 	case !fsx.Exists(path):
@@ -202,6 +213,13 @@ func (m *Manager) Apply(ctx context.Context, plan Plan, opts Options) (Outcome, 
 		out.Message = plan.Reason
 		return out, nil
 	case ActionClone:
+		// 干净机器上第一次连某个 SSH 主机时，ssh 会问"是否信任该主机"并在
+		// /dev/tty 上等回答；cmdx 把子进程 stderr 收进缓冲区，于是用户看到的
+		// 就是"没有输出的卡住"。所以先按 SSH 约定把主机公钥准备好（hostkey.go）。
+		note, env := m.prepareSSHFor(ctx, "", plan.CloneURL)
+		out.Note = note
+		setCommandEnv(&plan.Commands[0], env)
+
 		res, err := m.Runner.Run(ctx, plan.Commands[0])
 		if err != nil {
 			out.Status = "failed"
@@ -226,6 +244,14 @@ func (m *Manager) Apply(ctx context.Context, plan Plan, opts Options) (Outcome, 
 
 func (m *Manager) applyPull(ctx context.Context, plan Plan, opts Options) (Outcome, error) {
 	out := Outcome{Plan: plan}
+
+	// 已有仓库也可能遇到"这台机器从没连过该主机"（目录是拷贝/同步过来的），
+	// fetch 前同样准备一次；`fetch --all` 的其它远端不在覆盖范围内，见 design §9.3。
+	note, env := m.prepareSSHFor(ctx, plan.Path, "origin")
+	out.Note = note
+	for i := range plan.Commands {
+		setCommandEnv(&plan.Commands[i], env)
+	}
 
 	// 1) fetch
 	fetchRes, err := m.Runner.Run(ctx, plan.Commands[0])
@@ -591,6 +617,14 @@ func (m *Manager) syncOne(ctx context.Context, path string, opts Options) RepoSt
 	default:
 		st.Action = "pulled"
 		st.Message = out.Message
+	}
+	// 首次信任某台 SSH 主机的提示并进结果行：批量同步里也值得让用户看见。
+	if out.Note != "" {
+		if st.Message == "" {
+			st.Message = out.Note
+		} else {
+			st.Message += "；" + out.Note
+		}
 	}
 	return st
 }

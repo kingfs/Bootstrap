@@ -208,6 +208,10 @@ func renderRepoResults(rt *Runtime, results []app.RepoGetResult) {
 				}
 			}
 		}
+		// 自动信任某台 SSH 主机是要让用户知道的副作用，与 -v 无关。
+		if r.Note != "" {
+			fmt.Fprintf(w, "\t%s\n", r.Note)
+		}
 	}
 	_ = w.Flush()
 }

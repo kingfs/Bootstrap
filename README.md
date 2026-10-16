@@ -148,6 +148,14 @@ GitLab 的 `group/subgroup/project` 会按原层级落盘，网页地址使用 `
 需要更新本地主分支时先切换到该分支。`repo sync` 用同一套发现逻辑，因此只更新主检出，
 worktree 目录不会被 fetch/pull（它们的对象都在主仓库里）。
 
+**首次连接一台没见过的 SSH 主机不会再卡住**：clone/更新前会按 SSH 约定把该主机的主机公钥
+（`ssh-keyscan`）追加进 `~/.ssh/known_hosts`，于是 ssh 不会停在
+`Are you sure you want to continue connecting?` 上等输入（那个提示走 `/dev/tty`，
+而 bs 把子进程 stderr 收进了缓冲区，看起来就是"长时间没有反应"）。
+内网常见的 `url.<base>.insteadOf`（粘的是 https 地址、git 实际走 ssh）同样会被识别——
+判断依据是 git 自己算出来的最终地址，不是输入的协议。只**追加**、绝不改写你已有的条目；
+`--dry-run` 一个字节都不写；不想要这个行为就设 `repo.trust_new_ssh_host_key: false`。
+
 "不覆盖"是刻意的：**没有** `--force` 这类"绕过护栏"的开关——要往那个目录克隆，先自己把它腾空。
 
 `<repo>` 支持任意常见写法，都会被归一化：

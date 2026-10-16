@@ -16,7 +16,9 @@ package giturl
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -177,6 +179,57 @@ func Parse(raw, defaultHost string) (Ref, error) {
 		return Ref{}, err
 	}
 	return ref, nil
+}
+
+// SSHTarget 是 git 走 SSH 传输时要连的主机与端口。
+type SSHTarget struct {
+	Host string // 不带方括号、不带端口
+	Port int    // 默认 22
+}
+
+// ParseSSHTarget 判断克隆地址是否走 SSH，并解析出主机与端口。
+//
+// 覆盖两种写法：scp-like（git@host:owner/repo.git，语法上不带端口）与
+// ssh://[user@]host[:port]/owner/repo.git。git:// 是原生 git 协议，
+// 没有主机公钥要信任，因此返回 false。
+//
+// 用途见 internal/gitrepo/hostkey.go：首次连接前按 SSH 约定把主机公钥写进
+// known_hosts，避免 ssh 在"是否信任该主机"的提问上一直等下去。
+func ParseSSHTarget(raw string) (SSHTarget, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return SSHTarget{}, false
+	}
+	if strings.Contains(s, "://") {
+		u, err := url.Parse(s)
+		if err != nil || !strings.EqualFold(u.Scheme, "ssh") {
+			return SSHTarget{}, false
+		}
+		host := strings.ToLower(u.Hostname())
+		if host == "" {
+			return SSHTarget{}, false
+		}
+		port := 22
+		if p := u.Port(); p != "" {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 1 || n > 65535 {
+				return SSHTarget{}, false
+			}
+			port = n
+		}
+		return SSHTarget{Host: host, Port: port}, true
+	}
+	if !scpLike(s) {
+		return SSHTarget{}, false
+	}
+	before, after, _ := strings.Cut(s, ":")
+	if at := strings.LastIndex(before, "@"); at >= 0 {
+		before = before[at+1:]
+	}
+	if before == "" || after == "" {
+		return SSHTarget{}, false
+	}
+	return SSHTarget{Host: strings.ToLower(before), Port: 22}, true
 }
 
 func scpLike(in string) bool {

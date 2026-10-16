@@ -104,6 +104,7 @@ timeouts: {...}
 | `layout` | 模板 | `{{.Host}}/{{.Owner}}/{{.Repo}}` | 可用字段：`.Host` `.Owner` `.Repo` `.Ref` `.SubPath`；必须含 `{{.Repo}}`，且不允许 `..` 越界 |
 | `default_host` | 字符串 | `github.com` | 输入 `owner/repo` 时补全的 host |
 | `hosts` | 字符串数组 | github/gitlab/gitee/codeberg/bitbucket | 已知 host 列表（用于识别输入形式） |
+| `trust_new_ssh_host_key` | 布尔 | `true` | 首次连接某台 SSH 主机时，按 SSH 约定把它的主机公钥（`ssh-keyscan`）**追加**进 `~/.ssh/known_hosts`，免得 ssh 的交互式确认把 `bs repo get`/`repo sync` 卡住；用户没有自定义 ssh 命令时还会给 git 加 `StrictHostKeyChecking=accept-new` 兜底。关掉就完全回到"由 ssh 自己提示"（ADR-0019） |
 | `clone.protocol` | `https\|ssh` | `https` | 克隆协议；输入本身是 `git@host:...` 时保留 ssh |
 | `clone.depth` | 整数 | `0` | `0` 表示完整克隆 |
 | `clone.extra_args` | 字符串数组 | `[]` | 追加到 `git clone` 的参数 |

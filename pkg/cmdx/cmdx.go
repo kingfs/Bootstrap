@@ -110,6 +110,12 @@ func New(log *slog.Logger) *Runner {
 	return &Runner{Log: log, DefaultTimeout: DefaultCommandTimeout}
 }
 
+// IsDryRun 报告当前是否处于干跑模式。
+//
+// dry-run 下 Run 的返回值里本来就带 DryRun，但有的准备动作（写 known_hosts、
+// 解析远端地址）要在发命令**之前**决定做不做，光看结果来不及。
+func (r *Runner) IsDryRun() bool { return r.DryRun }
+
 // Run 执行命令。
 //
 // 返回的 error 在"命令以非零状态退出"时是 *ExitError；dry-run 时永远返回 nil。

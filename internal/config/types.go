@@ -127,6 +127,10 @@ type RepoConfig struct {
 	Pull        PullConfig  `mapstructure:"pull" yaml:"pull"`
 	Sync        SyncConfig  `mapstructure:"sync" yaml:"sync"`
 	Scan        ScanConfig  `mapstructure:"scan" yaml:"scan"`
+	// TrustNewSSHHostKey 决定"第一次连某台 SSH 主机"时要不要自动把主机公钥
+	// 写进 ~/.ssh/known_hosts（TOFU）。默认开：干净机器上 ssh 的交互式确认
+	// 会让 `bs repo get` 看起来卡死（见 docs/design.md §9.3）。
+	TrustNewSSHHostKey bool `mapstructure:"trust_new_ssh_host_key" yaml:"trust_new_ssh_host_key"`
 }
 
 // ScanConfig 控制 `bs repo scan` / `bs repo sync` 怎么在仓库根目录下找仓库。
@@ -222,6 +226,9 @@ func Defaults() Config {
 			Clone:       CloneConfig{Protocol: "https", Depth: 0},
 			Pull:        PullConfig{Strategy: "ff-only", Prune: true},
 			Sync:        SyncConfig{Jobs: 4},
+			// 首次连接自动信任主机公钥（TOFU）：新机器上没它就会卡在 ssh 的
+			// "Are you sure you want to continue connecting?"（ADR-0019）。
+			TrustNewSSHHostKey: true,
 			// gitlab.com 是公开的多级子组站点；内网自建服务由用户在配置里自己加。
 			Scan: ScanConfig{Depth: 2, SubgroupHosts: []string{"gitlab.com"}, SubgroupDepth: 4},
 		},

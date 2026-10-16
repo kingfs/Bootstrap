@@ -34,6 +34,9 @@ func (f *fakeRunner) Run(_ context.Context, c cmdx.Command) (cmdx.Result, error)
 	return f.handler(c)
 }
 
+// IsDryRun：假 Runner 永远当真跑（干跑用真的 cmdx.Runner 覆盖）。
+func (f *fakeRunner) IsDryRun() bool { return false }
+
 func (f *fakeRunner) called(sub string) bool {
 	for _, c := range f.calls {
 		if c.String() == sub || (len(c.Args) > 0 && c.Args[len(c.Args)-1] == sub) {

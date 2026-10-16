@@ -37,6 +37,7 @@ type RepoGetResult struct {
 	Reason   string   `json:"reason,omitempty"`
 	Status   string   `json:"status,omitempty"`
 	Message  string   `json:"message,omitempty"`
+	Note     string   `json:"note,omitempty"`
 	Commands []string `json:"commands,omitempty"`
 }
 
@@ -48,7 +49,10 @@ type RepoStatusView struct {
 
 // RepoManager 返回编排器（Runner 已注入）。
 func (a *App) RepoManager() *gitrepo.Manager {
-	return gitrepo.NewManager(a.Cfg, a.Runner)
+	m := gitrepo.NewManager(a.Cfg, a.Runner)
+	// known_hosts 的查找/写入基准：ssh 自己看的也是 $HOME。
+	m.HomeDir = a.Platform.HomeDir
+	return m
 }
 
 // RepoRoot 返回仓库根目录及其来源。
@@ -105,7 +109,7 @@ func (a *App) RepoGet(ctx context.Context, inputs []string, opts RepoOptions) ([
 				continue
 			}
 			out, err := mgr.Apply(ctx, plan, opts.toManager())
-			res.Status, res.Message = out.Status, out.Message
+			res.Status, res.Message, res.Note = out.Status, out.Message, out.Note
 			if err != nil {
 				res.Status = "failed"
 				results = append(results, res)

@@ -156,3 +156,37 @@ func TestSlugAndString(t *testing.T) {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
+
+// TestParseSSHTarget：只有真正走 SSH 的地址才需要 known_hosts 层面的准备，
+// 所以判断必须精确——把 https 判成 ssh 会白白往用户 known_hosts 里写东西。
+func TestParseSSHTarget(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     string
+		want   SSHTarget
+		wantOK bool
+	}{
+		{name: "scp-like", in: "git@git.example.com:group/repo.git", want: SSHTarget{Host: "git.example.com", Port: 22}, wantOK: true},
+		{name: "scp-like 无用户名", in: "git.example.com:group/repo.git", want: SSHTarget{Host: "git.example.com", Port: 22}, wantOK: true},
+		{name: "scp-like 大写主机", in: "git@Git.Example.COM:group/repo.git", want: SSHTarget{Host: "git.example.com", Port: 22}, wantOK: true},
+		{name: "ssh scheme", in: "ssh://git@git.example.com/group/repo.git", want: SSHTarget{Host: "git.example.com", Port: 22}, wantOK: true},
+		{name: "ssh scheme 带端口", in: "ssh://git@git.example.com:2222/group/repo.git", want: SSHTarget{Host: "git.example.com", Port: 2222}, wantOK: true},
+		{name: "ssh scheme IPv6", in: "ssh://git@[2001:db8::1]:2222/group/repo.git", want: SSHTarget{Host: "2001:db8::1", Port: 2222}, wantOK: true},
+		{name: "https", in: "https://git.example.com/group/repo.git", wantOK: false},
+		{name: "git 协议", in: "git://git.example.com/group/repo.git", wantOK: false},
+		{name: "本地路径", in: "/data/src/git.example.com/group/repo", wantOK: false},
+		{name: "空", in: "  ", wantOK: false},
+		{name: "只有主机名", in: "git.example.com", wantOK: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := ParseSSHTarget(c.in)
+			if ok != c.wantOK {
+				t.Fatalf("ParseSSHTarget(%q) ok = %v, want %v", c.in, ok, c.wantOK)
+			}
+			if ok && got != c.want {
+				t.Errorf("ParseSSHTarget(%q) = %+v, want %+v", c.in, got, c.want)
+			}
+		})
+	}
+}

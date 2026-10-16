@@ -256,6 +256,23 @@ func TestLoadPartialNestedBlockKeepsDefaults(t *testing.T) {
 	if len(scan.SubgroupHosts) != 2 || scan.SubgroupHosts[1] != "git.in.chaitin.net" {
 		t.Errorf("subgroup_hosts 未被覆盖：%v", scan.SubgroupHosts)
 	}
+	// 布尔默认值必须活过 Unmarshal：老配置文件里没写这一项时不能悄悄变成 false
+	// （那等于对所有既有用户关掉"首次连接自动信任主机公钥"）。
+	if !res.Config.Repo.TrustNewSSHHostKey {
+		t.Error("未写的 trust_new_ssh_host_key 应保持默认 true")
+	}
+
+	// 显式写 false 要被尊重：这是自动信任唯一的关闭开关。
+	if err := os.WriteFile(paths.ConfigFile(), []byte("repo:\n  trust_new_ssh_host_key: false\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	res, err = Load(LoadOptions{Paths: paths, GOOS: "linux", Getenv: func(string) string { return "" }})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if res.Config.Repo.TrustNewSSHHostKey {
+		t.Error("显式 false 未被尊重")
+	}
 }
 
 func TestLoadInvalidConfig(t *testing.T) {

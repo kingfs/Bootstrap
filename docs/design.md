@@ -1278,6 +1278,31 @@ eval "$(bs shell init bash)"
   （`--force` 不属于"推迟"：它已经作为"从不生效的旗标"被删除。）
 - `--depth` 支持浅克隆，`--sparse` 后续增强。
 
+**首次连接 SSH 主机（2026-10-16：不再卡在"是否信任该主机"）**
+
+干净机器上第一次 clone 内网 GitLab 时，ssh 会问 `Are you sure you want to continue connecting?`
+并在 `/dev/tty` 上等回答；cmdx 把子进程的 stderr 收进缓冲区（只有 `-v` 才实时透传），
+于是 `bs repo get` 看起来就是"长时间没有响应"，用户只能先手工 `git clone` 一次。
+更绕的是内网常见的 `url.<base>.insteadOf`：用户粘的是 https 地址，git 实际走的是 ssh，
+所以"输入不是 ssh 就不用管主机公钥"是错的。
+
+clone 前（pull 前也做一次，覆盖"目录是拷贝/同步过来的"）按顺序做三件事：
+
+1. `git ls-remote --get-url <url>` 问 git 自己最终会用哪个地址（`insteadOf` 在这里生效，
+   `--get-url` 不接触远端）；解析出来不是 ssh 就直接收工，一个字节都不碰。
+2. 该 host:port 不在 `~/.ssh/known_hosts` 里时（含 `HashKnownHosts` 的哈希条目），
+   用 `ssh-keyscan -T 5 [-p PORT]` 扫回公钥，按 OpenSSH 写法**只追加**到文件尾部：
+   `~/.ssh` 0700、新文件 0600、ssh-keyscan 的版本注释行不写入。
+3. 兜底：用户没有自定义 ssh 调用方式（`GIT_SSH_COMMAND`/`GIT_SSH`/`core.sshCommand` 都为空）时，
+   给 git 注入 `-o StrictHostKeyChecking=accept-new`——ssh-keyscan 缺失、或用户把
+   `UserKnownHostsFile` 配到别处时仍然不会卡住；它只接受**新**主机，公钥变了照样报错。
+
+边界与开关：`repo.trust_new_ssh_host_key: false` 关掉整件事；`--dry-run` 连第 1 步都不做
+（否则会多出一条用户可见的 `dry-run cmd=...` 日志），更不会写文件；已有条目绝不改写
+（只追加，第二次执行 mtime 不变）；`fetch --all` 里 origin 之外的远端不在覆盖范围内
+（它们由 `repo.hosts` 白名单把关）。写入或"两个兜底都不可用"都会在结果里给一行提示
+（`bs repo get` 的缩进行、`bs repo sync` 的 MESSAGE），不静默动用户的文件。
+
 ### 9.4 批量能力
 
 ```
@@ -1724,6 +1749,11 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
    同理，`GITHUB_TOKEN`/`GH_TOKEN`（只为把 API 配额从匿名 60 次/小时提到 5000 次/小时）
    **只发给 GitHub 官方 API**：`ghrelease.TokenHost()` 在 API 前缀不是 `api.github.com` 时返回空串，
    令牌干脆不挂——凭据的默认行为必须是"不泄露"，由 `httpx.Client.TokenHosts` 白名单兜住。
+8. **首次连接的主机公钥是 TOFU，不是"跳过校验"**（ADR-0019）：`ssh-keyscan` 拿回来的公钥
+   没有任何带外验证，与手工第一次 `ssh` 回答 yes 完全同一级别；因此只在 `~/.ssh/known_hosts`
+   里**没有**该 host:port 时追加，绝不改写已有条目，也绝不因为"公钥变了"而自动放行
+   （`accept-new` 同样只接受新主机）。自动信任可以用 `repo.trust_new_ssh_host_key: false` 关掉，
+   回到"由 ssh 自己问"；`--dry-run` 不探测、不写入。
 
 ---
 
@@ -1804,6 +1834,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0016 | **补全的安装形态** | `bs completion install [shell]` 负责"打开 `shell.completion` + 幂等写入受管块"；补全片段由 `bs shell init` 现算，**不新增第二组受管块标记**；默认关（与 `auto_proxy` 同理，不擅自改变每个新 shell 的行为）；`bs completion bash\|zsh\|fish\|powershell` 保持"只打印脚本"的 cobra 契约 | 用户反馈"生成完不知道下一步该干什么"；沿用 ADR-0007 的单受管块可以一次卸载干净，代价是只想补全的人会连带装上代理包装/PATH 片段 |
 | ADR-0017 | **校验和的最后一个来源** | `via: release` 的前几个来源（`params.sha256` / `checksum_file` / 常见文件名 / `<asset>.sha256`）都拿不到时，回退到 **GitHub API 的 asset digest**（不可变 release 的 `digest: sha256:<hex>`）；清单无需声明，非不可变 release 行为不变；digest 仍是**真校验**，`params.checksum: none` 依然是唯一的放弃开关 | 起因：herdr 只发裸二进制、Releases 页没有任何校验和文件，于是清单里只剩 brew 一条路——"官方支持 Ubuntu 却没 brew 就装不了"。API 与产物同源，信任级别与 `checksums.txt` 相同（§16 第 7 条的镜像语义也一并适用）；代价是多打一次 API（匿名限流 60 次/小时），所以排在最后 |
 | ADR-0018 | **上游校验和不在 Release 文件里时怎么取** | 新增清单字段 `params.checksum_url`（支持模板渲染）：正文按校验和文件解析，或加 `#` + **RFC 6901 JSON Pointer** 从 JSON 里取值（值可为裸 hex 或 `sha256:<hex>`）；它排在 `checksum_file` 之后、常见文件名之前；取不到/指不到/正文不是这两种格式都算"这个来源没有"并继续往下走，只有 URL 非法或模板写错才是清单错误。同时给 `GITHUB_TOKEN`/`GH_TOKEN` 支持（只发给 GitHub 官方 API），并把"找不到校验和"的报错压缩成来源名 + 一句话结论 | 起因：ADR-0017 的 digest 兜底在共享出口 IP 上会被匿名配额掐死（用户实测 `herdr … HTTP 403 API rate limit exceeded for 13.250.170.47`），而 herdr 其实公开了哈希——只是放在 `https://herdr.dev/latest.json`，官方 `install.sh` 就是解析它。让清单把"哈希发布在哪"写出来，比"多打一次可能失败的 API"更可靠也更快；刻意**不**做结果缓存（缓存会把"上游删了旧 release"变成长期假象），也**不**在没有校验和时放行（AGENTS §8.3）。JSON Pointer 而不是自定义字段名，是因为 herdr 的哈希按平台键放在 `releases.<版本>.sha256` 下，路径必须能被清单描述出来；报错瘦身则是"一行错误里塞 5 个 URL + HTML"的直接反馈 |
+| ADR-0019 | **首次连接自动信任 SSH 主机公钥** | clone/pull 前先让 git 自己算出最终地址（`git ls-remote --get-url`，`insteadOf` 在此生效），确属 ssh 且 `~/.ssh/known_hosts` 里没有该 host:port 时用 `ssh-keyscan` 扫回公钥并**只追加**（TOFU）；用户没有自定义 ssh 命令时再注入 `StrictHostKeyChecking=accept-new` 兜底；`repo.trust_new_ssh_host_key: false` 可整体关闭；`--dry-run` 连探测都不做 | 起因：干净机器上第一次 `bs repo get` 内网 GitLab 卡死——ssh 在 `/dev/tty` 上等"是否信任该主机"，而 cmdx 把 stderr 收进了缓冲区，用户看不到问题也等不到结束，只能先手工 clone 一次。TOFU 就是 ssh 自己的默认语义（手工第一次回答 yes 完全同源），`accept-new` 只接受新主机、公钥变了仍报错；选择"追加 known_hosts"而不是"改写 ssh 调用方式"，是因为后者会连带覆盖用户配的 key/ProxyJump/wrapper |
 
 ### 18.2 已闭环
 
