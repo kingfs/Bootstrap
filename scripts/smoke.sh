@@ -272,6 +272,37 @@ assert_contains "脏工作区上 get 说明跳过原因" "未提交改动" "$out
 out="$("$BIN" repo cd getfx.test/team/dirty)"
 assert_contains "get 后无需 scan 即可 cd" "$DIRTYREPO" "$out"
 
+# 包装函数（受管块里与二进制同名的 bs 函数）必须真的能改当前 shell 的目录——
+# 子进程改不了父 shell 的 cwd，这是 `repo cd` / `repo get --cd` 唯一的实现方式。
+# 这里用真的 bash 加载 `bs shell init bash` 的输出，再在子 shell 里观察 pwd。
+BINDIR="$WORK/bin"
+mkdir -p "$BINDIR"
+ln -sf "$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" "$BINDIR/bs"
+SNIPPET="$("$BIN" shell init bash)"
+out="$(SNIPPET="$SNIPPET" PATH="$BINDIR:$PATH" bash -c '
+  eval "$SNIPPET"
+  cd /
+  bs repo cd scanfx.test/team/primary
+  pwd
+')"
+assert_contains "包装函数让 repo cd 真正切换目录" "$SCANROOT/primary" "$out"
+
+# get --cd：stdout 只留目标路径（被包装函数消费），表格必须走 stderr。
+CDERR="$WORK/repo-cd.err"
+out="$(SNIPPET="$SNIPPET" PATH="$GETBIN:$BINDIR:$PATH" CDERR="$CDERR" bash -c '
+  eval "$SNIPPET"
+  cd /
+  bs repo get getfx.test/team/dirty --cd 2>"$CDERR"
+  pwd
+')"
+assert_contains "包装函数让 get --cd 真正切换目录" "$DIRTYREPO" "$out"
+assert_contains "get --cd 的人读输出走 stderr" "未提交改动" "$(cat "$CDERR")"
+
+# 没装包装函数时（直接跑真二进制）不能假装切换成功，必须说清原因与下一步。
+code=0; out="$(PATH="$GETBIN:$PATH" "$BIN" repo get getfx.test/team/dirty --cd 2>&1)" || code=$?
+assert_eq "没装包装函数时 --cd 仍成功" "0" "$code"
+assert_contains "没装包装函数时 --cd 说明原因" "bs shell install" "$out"
+
 step "工具清单与安装计划"
 out="$("$BIN" tool manifest validate 2>&1)"
 assert_contains "内置清单通过校验" "清单校验通过" "$out"

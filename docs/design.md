@@ -1069,12 +1069,12 @@ argv 与退出码，实时）与文件日志 `<state>/logs/<时间>-<工具>.log
 
 | 路径 | 谁受益 | 机制 | 是否需要改 rc |
 |---|---|---|---|
-| **A. Shell 函数包装**（主用法） | 你自己在终端里敲 `bs proxy on` | `bs shell install` 往 rc 的**受管块**里注入一个与二进制同名的 `bs` shell 函数：拦截 `bs proxy on/off/use` → 先执行真二进制（持久化活跃 profile）→ 再 `eval "$(bs proxy env --apply)"` 注入**当前 shell** | 需要一次，且由 `bs` 自动写入 |
+| **A. Shell 函数包装**（主用法） | 你自己在终端里敲 `bs proxy on` / `bs repo cd` | `bs shell install` 往 rc 的**受管块**里注入一个与二进制同名的 `bs` shell 函数：拦截 `bs proxy on/off/use` → 先执行真二进制（持久化活跃 profile）→ 再 `eval "$(bs proxy env --apply)"` 注入**当前 shell**；也拦截 `bs repo cd` / `bs repo get --cd`，把真二进制给出的目录 `cd` 过去 | 需要一次，且由 `bs` 自动写入 |
 | **B. 显式 eval** | 已有自己的 rc 习惯、或用别的 shell | `eval "$(bs proxy env local)"` / `--shell fish` 等 | 需要 |
-| **C. 零 rc 改动** | 临时机器、CI、不想碰 rc | `bs proxy exec -- <cmd>`（一次性）；`bs shell [--profile P]`（开一个环境已装配的子 shell） | 不需要 |
+| **C. 零 rc 改动** | 临时机器、CI、不想碰 rc | `bs proxy exec -- <cmd>`（一次性）；`bs shell [--profile P]`（开一个环境已装配的子 shell）；`cd "$(bs repo cd <repo>)"` | 不需要 |
 | **D. 自动注入**（需求 5） | `bs` 自己发起的 clone / 下载 / 包管理器命令 | 执行前把活跃 profile 的 env 合并进 `ExecEnv.Env()`；`proxy.override_existing=false` 时**不覆盖**用户已有的 `HTTP_PROXY` | 不需要 |
 
-> **必须说清楚的技术事实**：任何子进程都**无法**修改父 shell 的环境变量（POSIX 硬约束）。所以"敲 `bs proxy on` 当前 shell 就生效"只有一种诚实实现——**rc 里有一个同名 shell 函数做中转**，这正是 `nvm`、`direnv`、`zoxide`、`conda` 的通行做法。区别在于：`bs` 的这一行由 `bs shell install` **自动写入且可自动升级**，你永远不会手写、也不会在换电脑时漏掉。
+> **必须说清楚的技术事实**：任何子进程都**无法**修改父 shell 的环境变量，也**无法**修改父 shell 的当前目录（POSIX 硬约束）。所以"敲 `bs proxy on` 当前 shell 就生效""敲 `bs repo cd` 就换目录"只有一种诚实实现——**rc 里有一个同名 shell 函数做中转**，这正是 `nvm`、`direnv`、`zoxide`、`conda` 的通行做法。区别在于：`bs` 的这一行由 `bs shell install` **自动写入且可自动升级**，你永远不会手写、也不会在换电脑时漏掉。
 
 **路径 A 的实际效果**（rc 里只有一行 `eval "$(bs shell init bash)"`，内容是动态渲染的）：
 
@@ -1087,6 +1087,18 @@ bs() {                                   # 与二进制同名的包装函数（�
       BS_SHELL_HOOK=1 command bs "$@" || return $?   # ① 真二进制：持久化活跃 profile
       eval "$(command bs proxy env --apply)"   # ② 注入当前 shell（off 时输出 unset）
       ;;
+    repo.cd)
+      # 只在 `bs repo cd <一个仓库>` 时接管；路径由真二进制输出。
+      if [ "$#" -eq 3 ] && [ "${3#-}" = "${3}" ]; then
+        _bs_repo_dir=$(BS_SHELL_HOOK=1 command bs repo cd "$3") || return $?
+        cd -- "$_bs_repo_dir"
+      else
+        command bs "$@"
+      fi
+      ;;
+    repo.get)  # 含 --cd 时才接管：stdout 是"标记+路径"，表格走 stderr
+      ...
+      ;;
     *) command bs "$@" ;;                 # 其余命令直通
   esac
 }
@@ -1095,6 +1107,9 @@ bs() {                                   # 与二进制同名的包装函数（�
 startproxy() { command bs proxy on "$@" ; eval "$(command bs proxy env --apply)"; }
 stopproxy()  { command bs proxy off      ; eval "$(command bs proxy env --apply)"; }
 ```
+
+`repo.get` 那一支的 `--cd` 扫描逻辑见 `tools/snippets/posix/10-proxy.sh`：三个家族都只认
+`--cd` / `--cd=true`，`--help` 与 `--cd=false` 原样直通。
 
 fish 用函数作用域的 `set -lx BS_SHELL_HOOK 1`，pwsh 在调用前后还原 `$env:BS_SHELL_HOOK`——
 三个家族都保证这个标记不会漏进用户的其它命令。
@@ -1246,7 +1261,9 @@ eval "$(bs shell init bash)"
 ```
 
 - `repo.root` 缺省探测顺序：配置值 → `<repo.root>` 存在则用 → Linux/macOS `~/src`；Windows `D:/src`（存在则用，否则 `%USERPROFILE%\src`）。
-- `bs repo root` 打印实际根目录与来源；（推迟）`bs repo get --print-path` 只打印目标路径，便于 `cd "$(bs repo get x/y --print-path)"`。
+- `bs repo root` 打印实际根目录与来源；`bs repo get --print-path` 仍推迟。
+  `bs repo get <repo> --cd` 已实现：完成后切到该仓库目录（默认不切），
+  机制与 `bs proxy on` 一样依赖 rc 里的同名包装函数（§9.5）。
 - 已存在同名目录但**不是** git 仓库 → 只 `skip` 并提示，**绝不覆盖**（AGENTS §8.1）。
   刻意不提供 `--force` 这类逃生舱：M1 曾留过一个同名旗标，但它从未接到任何分支上，
   等于给"能绕过护栏"的错觉——v0.1.0 之后已删除，要克隆请先自己腾空那个目录。
@@ -1307,6 +1324,7 @@ clone 前（pull 前也做一次，覆盖"目录是拷贝/同步过来的"）按
 
 ```
 bs repo get kingfs/Bootstrap other/repo https://github.com/x/y   # 一次给多个 URL 即批量
+bs repo get kingfs/Bootstrap --cd                              # 单个仓库：拉完直接切过去
 bs repo list [--json]                                          # 只读 SQLite 索引快照
 bs repo scan [--dry-run]                                       # 离线发现并重建索引
 bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull，汇总表格
@@ -1327,6 +1345,18 @@ bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull�
   漏写这一种就会出现"`get` 刚说成功，`cd` 却说未在索引中找到"。`cd` 归一化输入
   （URL / `git@host:owner/repo.git` / `owner/repo` / 网页地址 / slug / 目录名 / 本地路径），
   与 `repo get` 保持同一套写法，用户不必把刚拿到的那条 URL 换成另一种形式。
+- **`repo cd` 的"切换目录"与 `repo get --cd`**（2026-10-20）：子进程改不了父 shell 的
+  cwd，所以和 `bs proxy on` 一样，靠 rc 受管块里的同名 `bs` 包装函数接管。
+  包装函数只拦截 `bs repo cd <一个仓库>` 与 `bs repo get ... --cd`；前者把真二进制
+  打印的路径 `cd` 过去，后者执行完 get 再切（只认带标记的那一行）。
+  二进制与包装函数之间的协议刻意做窄：`--cd` 只在"真的该切换"时往 stdout 写**一行**
+  "标记 + 目标目录"（`__bs_cd__:`，失败/`--dry-run`/计划中都不写），并在置位
+  `BS_SHELL_HOOK` 时把用户该看的表格改走 stderr，避免被命令替换当成目录名；
+  包装函数只认带标记的那一行，万一它误判了 `--cd`，普通表格会原样还给用户而不是被当路径。
+  没装包装函数时 stdout 仍是正常表格，stderr 明确说明 `--cd` 为什么没生效。
+  `--cd` 只允许单个仓库、与 `--json` 互斥。
+  默认不切换（不给 `--cd` 时行为完全不变）；当前 shell 需要重新 `source` 一下 rc
+  才会拿到新版包装函数（`bs shell init` 是现算的，新开的 shell 自动就有）。
 - scan 不联网、不依赖 layout/hosts，改用"按站点层数枚举"（≈ 按 host 的 glob），
   不再遍历整棵树。起因（2026-10-15 实测）：仓库根目录 996 条记录里 403 条嵌套在别的
   仓库里、395 条深度 ≥5 且全是仓库内部的噪声（`vendor/`、`thirdparty/`、
@@ -1840,6 +1870,7 @@ userinfo 换成 `***`）。文件日志（`<state>/logs/<时间>-<工具>.log`�
 | ADR-0017 | **校验和的最后一个来源** | `via: release` 的前几个来源（`params.sha256` / `checksum_file` / 常见文件名 / `<asset>.sha256`）都拿不到时，回退到 **GitHub API 的 asset digest**（不可变 release 的 `digest: sha256:<hex>`）；清单无需声明，非不可变 release 行为不变；digest 仍是**真校验**，`params.checksum: none` 依然是唯一的放弃开关 | 起因：herdr 只发裸二进制、Releases 页没有任何校验和文件，于是清单里只剩 brew 一条路——"官方支持 Ubuntu 却没 brew 就装不了"。API 与产物同源，信任级别与 `checksums.txt` 相同（§16 第 7 条的镜像语义也一并适用）；代价是多打一次 API（匿名限流 60 次/小时），所以排在最后 |
 | ADR-0018 | **上游校验和不在 Release 文件里时怎么取** | 新增清单字段 `params.checksum_url`（支持模板渲染）：正文按校验和文件解析，或加 `#` + **RFC 6901 JSON Pointer** 从 JSON 里取值（值可为裸 hex 或 `sha256:<hex>`）；它排在 `checksum_file` 之后、常见文件名之前；取不到/指不到/正文不是这两种格式都算"这个来源没有"并继续往下走，只有 URL 非法或模板写错才是清单错误。同时给 `GITHUB_TOKEN`/`GH_TOKEN` 支持（只发给 GitHub 官方 API），并把"找不到校验和"的报错压缩成来源名 + 一句话结论 | 起因：ADR-0017 的 digest 兜底在共享出口 IP 上会被匿名配额掐死（用户实测 `herdr … HTTP 403 API rate limit exceeded for 13.250.170.47`），而 herdr 其实公开了哈希——只是放在 `https://herdr.dev/latest.json`，官方 `install.sh` 就是解析它。让清单把"哈希发布在哪"写出来，比"多打一次可能失败的 API"更可靠也更快；刻意**不**做结果缓存（缓存会把"上游删了旧 release"变成长期假象），也**不**在没有校验和时放行（AGENTS §8.3）。JSON Pointer 而不是自定义字段名，是因为 herdr 的哈希按平台键放在 `releases.<版本>.sha256` 下，路径必须能被清单描述出来；报错瘦身则是"一行错误里塞 5 个 URL + HTML"的直接反馈 |
 | ADR-0019 | **首次连接自动信任 SSH 主机公钥** | clone/pull 前先让 git 自己算出最终地址（`git ls-remote --get-url`，`insteadOf` 在此生效），确属 ssh 且 `~/.ssh/known_hosts` 里没有该 host:port 时用 `ssh-keyscan` 扫回公钥并**只追加**（TOFU）；用户没有自定义 ssh 命令时再注入 `StrictHostKeyChecking=accept-new` 兜底；`repo.trust_new_ssh_host_key: false` 可整体关闭；`--dry-run` 连探测都不做 | 起因：干净机器上第一次 `bs repo get` 内网 GitLab 卡死——ssh 在 `/dev/tty` 上等"是否信任该主机"，而 cmdx 把 stderr 收进了缓冲区，用户看不到问题也等不到结束，只能先手工 clone 一次。TOFU 就是 ssh 自己的默认语义（手工第一次回答 yes 完全同源），`accept-new` 只接受新主机、公钥变了仍报错；选择"追加 known_hosts"而不是"改写 ssh 调用方式"，是因为后者会连带覆盖用户配的 key/ProxyJump/wrapper |
+| ADR-0020 | **`repo cd` / `repo get --cd` 的目录切换** | 复用 ADR-0007 的同一个标签函数：包装函数拦截 `bs repo cd <repo>` 与 `bs repo get ... --cd`；`repo get --cd` 在 `BS_SHELL_HOOK` 置位时把表格写 stderr、stdout 只写"标记+目标路径"，没装包装函数时正常输出表格并在 stderr 说明 `--cd` 为什么没生效；`--cd` 默认关、只允许单个仓库、与 `--json` 互斥 | 用户实测反馈"执行了 `bs repo cd`，打印了路径却没换目录"——子进程改不了父 shell 的 cwd，这是唯一诚实的实现。新增状态/临时文件协议都会把"BS_SHELL_HOOK 只对被拦截的调用生效"这条边界弄脏；窄到"stdout 一行标记+路径"的协议既不需要 eval，也不怕路径里有空格 |
 
 ### 18.2 已闭环
 

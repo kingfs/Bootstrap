@@ -20,12 +20,24 @@ import (
 // HookEnv 是包装函数在调用真二进制时置位的环境变量名。
 //
 // 它只对"被拦截的那一次调用"生效（posix 用 `VAR=1 command bs …`，fish 用 `set -lx`，
-// pwsh 调用前后还原），因此不会漏进用户的其它命令。`bs proxy on/off/use` 用它判断
-// "紧接着会不会有人 eval 我们输出的环境变量"：会的话当前 shell 马上生效，不必再提示；
-// 不会才告诉用户怎么让当前 shell 生效（internal/cli/proxy.go）。
+// pwsh 调用前后还原），因此不会漏进用户的其它命令。它告诉真二进制"这次调用的 stdout
+// 会被 shell 函数消费"，据此决定输出该走哪条流：
+//
+//   - `bs proxy on/off/use`：紧接着会有人 eval 我们的环境变量，当前 shell 马上生效，
+//     不必再提示（internal/cli/proxy.go）；
+//   - `bs repo get --cd`：stdout 专门用来传"切到哪个目录"，用户该看的表格必须让位到
+//     stderr（internal/cli/repo.go）；
+//   - `bs repo cd`：路径本来就在 stdout，置位后不再提示"子进程切不了目录"。
 //
 // 名字同时硬编码在 tools/snippets/*/10-proxy.* 里，改名要一起改。
 const HookEnv = "BS_SHELL_HOOK"
+
+// RepoCDMarker 是 `bs repo get --cd` 在包装函数模式下写到 stdout 的路径前缀。
+//
+// 包装函数只认"单独一行、且以这个前缀开头"的输出；万一它误判了 --cd（例如
+// `repo get -- --cd`），真二进制的正常输出没有这个前缀，会被原样还给用户，
+// 而不会被当成目录名。名字同时硬编码在 tools/snippets/*/10-proxy.* 里。
+const RepoCDMarker = "__bs_cd__:"
 
 // Family 是 shell 家族，决定使用哪一套片段与语法。
 type Family string

@@ -118,11 +118,18 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 | --- | --- |
 | `bs repo get <repo>...` | 克隆或更新；已存在则 `git pull`。目标目录非空且**不是** git 仓库时只 `skip` 并提示，绝不覆盖你已有的内容 |
 | `bs repo get --root DIR` / `--protocol https\|ssh` / `--depth N` / `--ref R` / `--autostash` | 换仓库根目录 / 换克隆协议 / 浅克隆 / 显式指定分支或 tag / pull 前自动 stash |
+| `bs repo get <repo> --cd` | 克隆/更新完成后**直接切换**到该仓库目录（默认不切换；只能给一个仓库，需要 rc 里的受管块） |
 | `bs repo list` | 只读索引，列出仓库的分支、默认分支和来源 |
 | `bs repo scan` | 按站点层数扫描主检出，重建根目录下的 `.bootstrap/repos.db` SQLite 索引（不含 worktree/submodule） |
-| `bs repo cd <repo>` | 输出仓库目录，可用 `cd "$(bs repo cd <repo>)"` 快速切换 |
+| `bs repo cd <repo>` | 切换到仓库目录；装了 shell 受管块时直接生效，没装时只输出路径，可用 `cd "$(bs repo cd <repo>)"` |
 | `bs repo sync [-j N] [--root DIR] [--autostash]` | 并发更新 hosts 允许的仓库；脏工作区默认跳过 |
 | `bs repo root` | 打印仓库根目录及其来源 |
+
+`repo cd` 与 `repo get --cd` 能"改当前目录"，靠的是 rc 受管块里与二进制同名的包装函数：
+子进程改不了父 shell 的当前目录（和 `bs proxy on` 改不了父 shell 的环境变量是同一件事）。
+装了受管块后新开的 shell 自动具备这个能力；当前 shell 需要重新 `source` 一下 rc
+（或执行 `bs shell install` 后重开）。没装受管块时 `repo cd` 仍只打印路径并提示，
+`repo get --cd` 会把目标目录写在 stderr 上，克隆/更新本身照常完成。
 
 `repo get` 会把每次克隆/更新（**包括**因脏工作区、游离 HEAD、缺少 upstream 而跳过 pull
 的那些）立即写进索引，所以拉完就能 `repo list` / `repo cd`，不必先 `repo scan`。

@@ -15,8 +15,10 @@ import (
 
 // inShellHook 报告这次调用是不是来自 rc 里的包装函数（tools/snippets/*/10-proxy.*）。
 //
-// 是的话，紧接着就会 `eval "$(bs proxy env --apply)"`，代理在当前 shell 真的生效，
-// 不需要再教用户怎么做；不是的话必须提示一句，否则用户会以为改了 state 就等于生效。
+// 是的话，这次调用的 stdout 会被 shell 函数消费：`proxy on/off/use` 紧接着会
+// `eval "$(bs proxy env --apply)"`，代理在当前 shell 真的生效，不需要再教用户怎么做；
+// `repo get --cd` 则把 stdout 当成"要 cd 到哪"。不是的话必须提示一句，否则用户会以为
+// 改了 state / 加了 --cd 就等于当前 shell 生效。
 func inShellHook() bool { return os.Getenv(shellsnip.HookEnv) == "1" }
 
 // hintShellHook 只在"没人会 eval 我们的输出"时，提醒一次怎么让当前 shell 生效。

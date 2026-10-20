@@ -3,11 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
+	"github.com/kingfs/Bootstrap/internal/shellsnip"
 )
 
 func (rt *Runtime) repoCmd() *cobra.Command {
@@ -33,14 +35,38 @@ func (rt *Runtime) repoCmd() *cobra.Command {
 func (rt *Runtime) repoGetCmd() *cobra.Command {
 	opts := app.RepoOptions{}
 	var protocol string
+	var cd bool
 	cmd := &cobra.Command{
 		Use:   "get <repo>...",
 		Short: "克隆或更新一个/多个仓库",
+		Long:  `克隆或更新仓库。` + cdLongHelp,
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cd {
+				// 多个目标无法回答"切到哪一个"；干跑同样不切（没有任何东西真的发生）。
+				if len(args) != 1 {
+					return usageErrf("--cd 只能用于单个仓库（收到 %d 个）", len(args))
+				}
+				if rt.Opts.JSON {
+					return usageErrf("--cd 与 --json 不能同时使用")
+				}
+			}
 			opts.Protocol = protocol
 			results, err := rt.app().RepoGet(cmd.Context(), args, opts)
-			renderRepoResults(rt, results)
+
+			// 装了包装函数时 stdout 会被 shell 命令替换吃掉，专门用来传"切到哪"；
+			// 用户该看到的表格必须改走 stderr，否则会被当成目录名。
+			hooked := cd && inShellHook()
+			w := rt.out()
+			if hooked {
+				w = rt.errOut()
+			}
+			renderRepoResults(rt, results, w)
+
+			if cd {
+				rt.emitRepoCDTarget(results, hooked)
+			}
+
 			if err != nil {
 				// "部分成功"才有退出码 3；全军覆没是普通失败（1）。
 				// 否则脚本会把"一个都没拉下来"当成"拉下来一部分"。
@@ -56,8 +82,17 @@ func (rt *Runtime) repoGetCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.Depth, "depth", 0, "浅克隆深度（0 表示完整克隆）")
 	cmd.Flags().StringVar(&opts.Ref, "ref", "", "显式指定分支/标签（覆盖从 URL 推断的结果）")
 	cmd.Flags().BoolVar(&opts.Autostash, "autostash", false, "pull 前自动 stash 未提交改动")
+	cmd.Flags().BoolVar(&cd, "cd", false, "完成后切换到仓库目录（需要 shell 受管块，默认不切换）")
 	return cmd
 }
+
+// cdLongHelp 是 `repo get --cd` 的补充说明，单独抽出来避免把 Long 写成一大段字符串。
+const cdLongHelp = `
+
+--cd 在完成后切换到该仓库目录。子进程改不了父 shell 的当前目录，所以它只在
+装了 shell 受管块（bs shell install）的终端里生效；只允许指定一个仓库。
+没装受管块时仍会正常克隆/更新，并在 stderr 提示目标目录。
+`
 
 func (rt *Runtime) repoListCmd() *cobra.Command {
 	return &cobra.Command{
@@ -110,8 +145,14 @@ func (rt *Runtime) repoScanCmd() *cobra.Command {
 func (rt *Runtime) repoCDCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cd <repo>",
-		Short: "输出仓库目录（用于 shell 快速切换）",
-		Long: `按索引输出仓库的本地路径，用法：cd "$(bs repo cd <repo>)"。
+		Short: "切换到仓库目录（装了 shell 受管块时直接切换）",
+		Long: `按索引找到仓库的本地路径并切换过去。
+
+装了 shell 受管块（bs shell install）后，rc 里与二进制同名的包装函数会接管这条命令，
+在当前 shell 真正 cd 过去——子进程改不了父 shell 的目录，这是唯一诚实的实现方式。
+没装受管块时它只把路径打印到 stdout，等价于：
+
+  cd "$(bs repo cd <repo>)"
 
 <repo> 与 bs repo get 接受同样的写法：URL、git@host:owner/repo.git、owner/repo、
 带 /tree/<branch> 的网页地址；此外也接受索引里的 slug、目录名与本地路径。
@@ -130,6 +171,12 @@ func (rt *Runtime) repoCDCmd() *cobra.Command {
 				return failf("%v", err)
 			}
 			fmt.Fprintln(rt.out(), path)
+			// 只在人眼前（stdout 是终端）且没人会消费路径时提醒：这是用户
+			// "执行了 cd 却没换目录"最容易踩的一脚，但脚本里的 cd "$(...)" 不该被噪音打扰。
+			if !inShellHook() && app.IsTerminalWriter(rt.Opts.Out) {
+				fmt.Fprintln(rt.errOut(), "提示：子进程无法切换父 shell 的目录，这里只输出路径。")
+				fmt.Fprintln(rt.errOut(), "      立即切换：cd \"$(bs repo cd <repo>)\"；装了受管块后重新 source 一下 rc（或新开 shell），`bs repo cd <repo>` 就会直接切换。")
+			}
 			return nil
 		},
 	}
@@ -194,33 +241,62 @@ func (rt *Runtime) repoRootCmd() *cobra.Command {
 	}
 }
 
-func renderRepoResults(rt *Runtime, results []app.RepoGetResult) {
+// emitRepoCDTarget 决定 --cd 的落点，并把它交给 shell 包装函数。
+//
+// stdout 是一份很窄的协议：**只有在真的该切换时**才输出一行"标记 + 目标目录"，
+// 其余情况（失败、干跑、计划中）什么都不输出。标记（shellsnip.RepoCDMarker）让
+// 包装函数能确认这确实是路径；它万一误判了 --cd，普通表格没有标记，会原样还给用户。
+// 装了包装函数时表格已经改走 stderr，所以 stdout 里只有这一行。
+//
+// 没装包装函数时没人消费 stdout，改成在 stderr 说清为什么切不了、怎么才能切。
+func (rt *Runtime) emitRepoCDTarget(results []app.RepoGetResult, hooked bool) {
+	if rt.Opts.DryRun {
+		fmt.Fprintln(rt.errOut(), "提示：--dry-run 不切换目录")
+		return
+	}
+	if len(results) != 1 {
+		return
+	}
+	r := results[0]
+	if r.Status == "failed" || r.Status == "planned" || r.Path == "" {
+		return
+	}
+	if hooked {
+		// 带前缀是有意的：包装函数只认这一种行，误判 --cd 时不会把普通表格当路径。
+		fmt.Fprintf(rt.out(), "%s%s\n", shellsnip.RepoCDMarker, r.Path)
+		return
+	}
+	fmt.Fprintf(rt.errOut(), "提示：当前 shell 未装包装函数，--cd 不会切换目录；目标目录是 %s。\n", r.Path)
+	fmt.Fprintln(rt.errOut(), "      先执行 `bs shell install`（或 source 一下 rc），之后 `bs repo get <repo> --cd` 即可直接切换。")
+}
+
+func renderRepoResults(rt *Runtime, results []app.RepoGetResult, w io.Writer) {
 	if rt.Opts.JSON {
 		_ = rt.emit(results)
 		return
 	}
-	w := rt.newTable()
+	tw := newTableWriter(w)
 	for _, r := range results {
 		status := r.Status
 		if status == "" {
 			status = r.Action
 		}
-		fmt.Fprintf(w, "%-8s %s\n", status, r.Path)
+		fmt.Fprintf(tw, "%-8s %s\n", status, r.Path)
 		if rt.Opts.Verbose > 0 || status == "failed" || status == "skipped" || status == "planned" {
-			fmt.Fprintf(w, "\t%s\n", r.Message)
+			fmt.Fprintf(tw, "\t%s\n", r.Message)
 			// 跳过的计划不会执行，打印命令只会让人误以为它跑过了。
 			if status != "skipped" {
 				for _, c := range r.Commands {
-					fmt.Fprintf(w, "\t$ %s\n", c)
+					fmt.Fprintf(tw, "\t$ %s\n", c)
 				}
 			}
 		}
 		// 自动信任某台 SSH 主机是要让用户知道的副作用，与 -v 无关。
 		if r.Note != "" {
-			fmt.Fprintf(w, "\t%s\n", r.Note)
+			fmt.Fprintf(tw, "\t%s\n", r.Note)
 		}
 	}
-	_ = w.Flush()
+	_ = tw.Flush()
 }
 
 func renderRepoStatuses(rt *Runtime, views []app.RepoStatusView) {

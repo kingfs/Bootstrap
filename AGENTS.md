@@ -144,8 +144,11 @@ make release-check # 发布流程彩排：打包后用 install.sh 从本地站�
 
 ## 7. 代理与 shell 集成的既有决策（不要推翻）
 
-- 子进程**不能**修改父 shell 的环境变量。所以"当前 shell 立即生效"用**同名 shell 函数包装**
-  实现（`tools/snippets/*/10-proxy.*`）：只拦截 `bs proxy on|off|use`，其余子命令直通。
+- 子进程**不能**修改父 shell 的环境变量，也**不能**修改父 shell 的当前目录。所以
+  "当前 shell 立即生效"用**同名 shell 函数包装**实现（`tools/snippets/*/10-proxy.*`）：
+  只拦截 `bs proxy on|off|use`、`bs repo cd`、`bs repo get --cd`，其余子命令直通。
+  `repo get --cd` 的约定：只在真的该切换时往 stdout 写一行"标记+目标目录"，且 `BS_SHELL_HOOK`
+  置位时把表格改走 stderr；默认不切换，只允许单个仓库，与 `--json` 互斥。
 - rc 里只允许出现一个受管块，标记固定为：
   ```
   # >>> bootstrap (managed by 'bs shell install') >>>

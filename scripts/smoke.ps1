@@ -116,6 +116,25 @@ $out = & $Bin repo get kingfs/Bootstrap --dry-run 2>&1 | Out-String
 Assert-Contains 'dry-run 显示 clone' 'git clone' $out
 Assert-Missing 'dry-run 不创建目录' (Join-Path $homeDir 'src')
 
+Write-Host "`n== shell 包装函数（repo cd）" -ForegroundColor Cyan
+# 包装函数里的 Get-Command bs 依赖 PATH：把真二进制所在目录放进去。
+$binDir = Split-Path -Parent (Resolve-Path $Bin)
+$env:PATH = "$binDir;$env:PATH"
+$wrapRepo = Join-Path $homeDir 'src/wrap.test/team/project'
+New-Item -ItemType Directory -Force -Path (Join-Path $wrapRepo '.git') | Out-Null
+& $Bin repo scan | Out-Null
+$snippet = & $Bin shell init pwsh | Out-String
+Invoke-Expression $snippet
+$oldLocation = Get-Location
+try {
+    Set-Location $Work
+    bs repo cd wrap.test/team/project
+    Assert-Equal '包装函数让 repo cd 真正切换目录' 'project' (Split-Path -Leaf (Get-Location).Path)
+}
+finally {
+    Set-Location $oldLocation
+}
+
 Write-Host "`n== init --no-tools（只做准备）" -ForegroundColor Cyan
 $out = & $Bin init --no-tools --yes --no-shell --dry-run 2>&1 | Out-String
 Assert-Contains 'init --no-tools 说明跳过了工具安装' '已跳过工具安装' $out

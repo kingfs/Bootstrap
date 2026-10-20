@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kingfs/Bootstrap/internal/config"
+	"github.com/kingfs/Bootstrap/internal/shellsnip"
 	"github.com/kingfs/Bootstrap/pkg/hostinfo"
 	"github.com/kingfs/Bootstrap/pkg/proxyenv"
 )
@@ -234,6 +235,33 @@ func TestShellInitUsesBuiltinAndUserSnippets(t *testing.T) {
 	}
 	if !strings.Contains(init.Content, "startproxy()") {
 		t.Error("startproxy helper missing")
+	}
+	// repo cd / repo get --cd 也靠同一个包装函数改当前 shell 的目录；
+	// 丢了这个分支，`bs repo cd` 就只会打印路径（用户实测以为它坏了）。
+	if !strings.Contains(init.Content, "repo.cd") || !strings.Contains(init.Content, "repo.get") {
+		t.Errorf("builtin wrapper should also handle repo cd/get --cd:\n%s", init.Content)
+	}
+	for _, tc := range []struct{ shell, want string }{
+		{"fish", "case repo"},
+		{"pwsh", "$args[0] -eq 'repo'"},
+	} {
+		other, err := a.ShellInit(tc.shell)
+		if err != nil {
+			t.Fatalf("ShellInit(%s): %v", tc.shell, err)
+		}
+		if !strings.Contains(other.Content, tc.want) {
+			t.Errorf("%s 的包装函数也要处理 repo cd/get --cd（缺少 %q）", tc.shell, tc.want)
+		}
+	}
+	// 三个家族的标记必须与常量一致，否则 --cd 的路径永远对不上。
+	for _, shell := range []string{"bash", "fish", "pwsh"} {
+		content, err := a.ShellInit(shell)
+		if err != nil {
+			t.Fatalf("ShellInit(%s): %v", shell, err)
+		}
+		if !strings.Contains(content.Content, shellsnip.RepoCDMarker) {
+			t.Errorf("%s 片段缺少 RepoCDMarker（%q），--cd 会被当成普通输出", shell, shellsnip.RepoCDMarker)
+		}
 	}
 	if len(init.Snippets) < 3 {
 		t.Errorf("expected >= 3 builtin snippets, got %v", init.Snippets)

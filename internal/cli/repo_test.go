@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
+	"github.com/kingfs/Bootstrap/internal/shellsnip"
 )
 
 func TestRepoListMissingAndEmptyIndex(t *testing.T) {
@@ -112,5 +113,91 @@ func TestRepoGetSkipsNonEmptyNonGitDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, ".git")); err == nil {
 		t.Error("不该在非空目录里建 .git")
+	}
+}
+
+// TestRepoGetCDRequiresOneRepoAndNoJSON：--cd 的落点必须唯一，也不能和 --json 抢 stdout。
+// 这两条在真正开始 clone 之前就该拒绝，免得白跑一趟网络。
+func TestRepoGetCDRequiresOneRepoAndNoJSON(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+
+	code, _, stderr := run(t, rt, "repo", "get", "a/b", "c/d", "--cd")
+	if code != ExitUsage || !strings.Contains(stderr, "--cd") {
+		t.Fatalf("多个仓库应拒绝 --cd：code=%d stderr=%q", code, stderr)
+	}
+	code, _, stderr = run(t, rt, "repo", "get", "a/b", "--cd", "--json")
+	if code != ExitUsage || !strings.Contains(stderr, "--json") {
+		t.Fatalf("--cd 与 --json 应互斥：code=%d stderr=%q", code, stderr)
+	}
+}
+
+// TestRepoGetCDHandsPathToShellHook：装了包装函数时，stdout 是"标记 + 要 cd 到哪"的
+// 窄协议，用户该看到的表格必须走 stderr。用"非空且不是 git 仓库"的目录触发 skip，
+// 全程不发网络请求，同时验证 skip 的场景也能给出落点（目录确实存在）。
+func TestRepoGetCDHandsPathToShellHook(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	target := filepath.Join(root, "home", "src", "github.com", "kingfs", "Bootstrap")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "keep.txt"), []byte("别动我\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	t.Setenv("BS_SHELL_HOOK", "1")
+	code, stdout, stderr := run(t, rt, "repo", "get", "kingfs/Bootstrap", "--cd")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if strings.TrimSpace(stdout) != shellsnip.RepoCDMarker+target {
+		t.Fatalf("stdout 应当是 %q + 目标路径，得到 %q", shellsnip.RepoCDMarker, stdout)
+	}
+	if !strings.Contains(stderr, "不是 git 仓库") {
+		t.Errorf("表格应当改走 stderr：%q", stderr)
+	}
+}
+
+// TestRepoGetCDWithoutHookExplainsWhy：没装受管块（真二进制直接跑）时，--cd 不可能
+// 切换父 shell 的目录。克隆/更新照常做，但必须在 stderr 说清原因与下一步，
+// 而不是让用户以为"加了 --cd 却没反应"是 bug。
+func TestRepoGetCDWithoutHookExplainsWhy(t *testing.T) {
+	rt, _, _, root := sandbox(t)
+	target := filepath.Join(root, "home", "src", "github.com", "kingfs", "Bootstrap")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// 非空且不是 git 仓库 → Plan 判定 skip，不会真的去网络上 clone。
+	if err := os.WriteFile(filepath.Join(target, "keep.txt"), []byte("别动我\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	t.Setenv("BS_SHELL_HOOK", "")
+	code, stdout, stderr := run(t, rt, "repo", "get", "kingfs/Bootstrap", "--cd")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	// stdout 仍是给人看的表格（不能只剩路径，否则直接运行时输出反而变差了）。
+	if !strings.Contains(stdout, "skipped") || !strings.Contains(stdout, target) {
+		t.Errorf("stdout 应当是正常表格：%q", stdout)
+	}
+	if !strings.Contains(stderr, "bs shell install") || !strings.Contains(stderr, target) {
+		t.Errorf("stderr 应当解释为什么没切换并给出目标目录：%q", stderr)
+	}
+}
+
+// TestRepoGetCDDryRunDoesNotEmitTarget：干跑什么都没发生，绝对不能把路径交给包装函数
+// 去 cd（否则 --dry-run 会变成"只切目录、不拉代码"）。
+func TestRepoGetCDDryRunDoesNotEmitTarget(t *testing.T) {
+	rt, _, _, _ := sandbox(t)
+	t.Setenv("BS_SHELL_HOOK", "1")
+	code, stdout, stderr := run(t, rt, "repo", "get", "kingfs/Bootstrap", "--cd", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d\nstderr=%s", code, stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("干跑不该输出 cd 目标，得到 %q", stdout)
+	}
+	if !strings.Contains(stderr, "--dry-run") {
+		t.Errorf("应当说明干跑不切换目录：%q", stderr)
 	}
 }
