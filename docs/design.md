@@ -1328,6 +1328,7 @@ bs repo get kingfs/Bootstrap --cd                              # 单个仓库：
 bs repo list [--json]                                          # 只读 SQLite 索引快照
 bs repo scan [--dry-run]                                       # 离线发现并重建索引
 bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull，汇总表格
+bs repo merge --to <主根> --from <副根>... [--depth N] [--dry-run]  # 多根目录合并（§9.6）
 ```
 
 > 从文件读取 URL 列表（`-f repos.txt`）、`repo list --dirty`、`sync --only-dirty` 都**还没实现**；
@@ -1386,6 +1387,41 @@ bs repo sync [--jobs N] [--root <path>] [--autostash]            # 批量 pull�
 - 计数不能再拿 `find <root> -name .git -prune -print` 对索引行数：那个口径会把
   worktree/submodule 与仓库内部的嵌套检出都算进来。要与索引对齐，就按同一套规则
   （站点层数 + 只认 `.git` 目录）；`bs doctor` 的仓库计数已经复用同一个 Discover。
+
+### 9.6 多根目录合并（`bs repo merge`，2026-11-27）
+
+动机：历史上仓库散落在 `~/repos/github.com` 与 `~/go/src/github.com` 等多个根目录，
+需要在不丢仓库的前提下收敛到一个主根目录。
+
+- 命令：`bs repo merge --to <主根> --from <副根>... [--depth N] [--force] [--keep-backup] [--prune-empty]`。
+  `--depth` 是仓库相对根目录的层级数（默认 2：`<group>/<repo>`；根目录为 `~/src` 时用 3）。
+- 发现：复用 `dirsAtLevel` 的规则，只认 `.git` **目录**（worktree/submodule 的 gitdir 文件不算），
+  中间层遇到检出不再深入，不跟随目录符号链接；`--depth` 必须 >= 1。`--to` 本身是检出时直接拒绝
+  （目标会落进一个仓库内部，几乎一定是传错了）。
+- 计划：对每个副根目录下的仓库计算相对路径与目标路径。目标不存在 → `move`；目标是空目录 →
+  `move`；目标是非空非仓库目录/文件/符号链接 → `skip`（绝不覆盖）。
+- 冲突：两边都是主检出时比较 HEAD 提交时间（`git log -1 --format=%ct HEAD`）；相同则比较
+  所有 ref 的最新提交时间（`git log --all -1 --format=%ct`）；再相同保留主路径。
+  保留较新的一侧，删除较旧的一侧。
+- 安全闸门：删除较旧一侧之前检查
+  1. `git status --porcelain --untracked-files=all` 与 `git stash list`（未提交改动/stash）；
+  2. 较旧一侧的本地引用（`refs/heads`/`refs/tags`/`refs/notes`）是否都能在较新一侧找到
+     （`git rev-parse <hash>^{commit}` + `git for-each-ref --contains`）；
+  3. 两边是否有 linked worktree（`.git/worktrees` 存在时 `git worktree list --porcelain`）。
+  任何一项不满足都只报告 `conflict`，不删除；`--force` 只覆盖 1/2，worktree 必须人工处理。
+  第 2 条是"不丢失仓库"的最后一道保险：即使旧仓库 HEAD 更旧，它也可能有一个从未推送的本地分支。
+- 执行：`move` 用 `os.Rename`（原子）；`replace` 先把主路径旧仓库 rename 到
+  `<主根>/.bootstrap/merge-backup/<stamp>/<rel>`，再把副路径仓库 rename 到目标，失败则回滚；
+  `delete` 先把副路径旧仓库 rename 到 `<副根>/.bootstrap/merge-trash/<stamp>/<rel>`，再删除
+  （`--keep-backup` 时保留）。跨文件系统 rename 失败时明确报错，不做 copy+delete。
+  执行前应退出正在使用仓库的 shell/IDE：POSIX 上 rename 会成功，但已打开的 cwd 会指向旧路径；
+  Windows 上文件被占用时可能直接失败。
+- 索引：执行成功后更新主根目录与副根目录下**已存在**的 `.bootstrap/repos.db`；主索引不存在时
+  若有迁移结果则创建。索引更新失败只警告，不回滚已完成的文件移动。
+- dry-run：只读地计算计划（`git log`/`status`/`stash`/`worktree`/`for-each-ref` 都带
+  `--no-optional-locks`，不写 `.git/index`），不移动、不删除、不写索引。
+- 确认：真正执行前走 `confirmDestructive`；非交互环境没有 `--yes` 以退出码 5 结束。
+  部分成功/有冲突用退出码 3，全失败才是 1。
 
 ---
 
@@ -1450,6 +1486,7 @@ proxy  add                 新增 profile（默认只打印 YAML 片段，不写
 repo   get <url...> [--root DIR] [--ref R] [--depth N] [--protocol https|ssh] [--autostash]
 repo   list | root
 repo   sync [--root DIR] [-j/--jobs N] [--autostash]
+repo   merge --to DIR --from DIR... [--depth N] [--force] [--keep-backup] [--prune-empty]
 
 tool   list  [--stack S] [--kind K] [--profile P] [--tag T]... [--installed|--missing|--outdated] [--all]
              [--refresh] [--no-probe]

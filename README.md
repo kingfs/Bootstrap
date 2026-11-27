@@ -123,6 +123,7 @@ bs self-update                  # 把 bs 自己更新到最新发布版（sha256
 | `bs repo scan` | 按站点层数扫描主检出，重建根目录下的 `.bootstrap/repos.db` SQLite 索引（不含 worktree/submodule） |
 | `bs repo cd <repo>` | 切换到仓库目录；装了 shell 受管块时直接生效，没装时只输出路径，可用 `cd "$(bs repo cd <repo>)"` |
 | `bs repo sync [-j N] [--root DIR] [--autostash]` | 并发更新 hosts 允许的仓库；脏工作区默认跳过 |
+| `bs repo merge --to DIR --from DIR... [--depth N] [--force] [--keep-backup] [--prune-empty]` | 把副根目录下的仓库迁移到主根目录；同一相对路径冲突时保留 HEAD 提交更新的一侧，删除较旧的一侧 |
 | `bs repo root` | 打印仓库根目录及其来源 |
 
 `repo cd` 与 `repo get --cd` 能"改当前目录"，靠的是 rc 受管块里与二进制同名的包装函数：
@@ -159,6 +160,22 @@ GitLab 的 `group/subgroup/project` 会按原层级落盘，网页地址使用 `
 `DEFAULT` 列来自本地 `origin/HEAD`（可能过期或缺失），可用 `git remote set-head origin -a` 刷新；
 需要更新本地主分支时先切换到该分支。`repo sync` 用同一套发现逻辑，因此只更新主检出，
 worktree 目录不会被 fetch/pull（它们的对象都在主仓库里）。
+
+`repo merge` 用于把历史上散落在多个根目录下的仓库收敛到一个主根目录。`--to` 是主根目录，
+`--from` 可重复；`--depth` 是仓库相对根目录的层级数（默认 2，即 `<root>/<group>/<repo>`；
+如果根目录是 `~/src` 这种包含 `<host>` 的父目录，用 `--depth 3`）。它按相对路径对比两边：
+目标不存在就迁移；两边都有仓库时比较 HEAD 提交时间（相同则比较所有 ref 的最新提交时间，
+再相同保留主路径），保留更新的一侧、删除较旧的一侧。删除前会检查较旧一侧是否有未提交改动、
+stash、linked worktree，以及是否有较新一侧没有的本地分支/标签；任何一项存在都只报告冲突，
+不删除（`--force` 可覆盖未提交改动与唯一提交，但 linked worktree 必须先用
+`git worktree remove` 处理）。`--dry-run` 只读地计算计划（会运行 `git log`/`git status`
+等只读命令），不移动、不删除、不写索引；真正执行前会要求确认（非交互环境需要 `--yes`）。
+迁移后更新主/副根目录下的 `.bootstrap/repos.db` 索引（主索引不存在时，只要本次有迁移结果
+就会创建）；索引写失败只警告，可用 `bs --repo-root <主根目录> repo scan` 重建。
+`--prune-empty` 只清理副根目录下的空子目录，**不会删除副根目录本身**。
+迁移前请先退出正在使用这些仓库的 shell/IDE（POSIX 上 `rename` 会成功，但已打开的
+cwd 会指向旧路径；Windows 上文件被占用时可能直接失败）。
+跨文件系统（`rename` 返回 `EXDEV`）不支持自动迁移，会明确报错。
 
 **首次连接一台没见过的 SSH 主机不会再卡住**：clone/更新前会按 SSH 约定把该主机的主机公钥
 （`ssh-keyscan`）追加进 `~/.ssh/known_hosts`，于是 ssh 不会停在

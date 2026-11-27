@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kingfs/Bootstrap/internal/app"
 	"github.com/kingfs/Bootstrap/internal/gitrepo"
 	"github.com/kingfs/Bootstrap/internal/shellsnip"
+	"github.com/kingfs/Bootstrap/internal/ui"
 )
 
 func (rt *Runtime) repoCmd() *cobra.Command {
@@ -28,7 +30,7 @@ func (rt *Runtime) repoCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	cmd.AddCommand(rt.repoGetCmd(), rt.repoListCmd(), rt.repoScanCmd(), rt.repoCDCmd(), rt.repoSyncCmd(), rt.repoRootCmd())
+	cmd.AddCommand(rt.repoGetCmd(), rt.repoListCmd(), rt.repoScanCmd(), rt.repoCDCmd(), rt.repoSyncCmd(), rt.repoMergeCmd(), rt.repoRootCmd())
 	return cmd
 }
 
@@ -223,6 +225,132 @@ func (rt *Runtime) repoSyncCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.Root, "root", "", "仓库根目录")
 	cmd.Flags().BoolVar(&opts.Autostash, "autostash", false, "pull 前自动 stash 未提交改动")
 	return cmd
+}
+
+func (rt *Runtime) repoMergeCmd() *cobra.Command {
+	opts := app.RepoMergeOptions{}
+	var from []string
+	cmd := &cobra.Command{
+		Use:   "merge",
+		Short: "把多个仓库根目录合并到一个主根目录（冲突时保留最新提交）",
+		Long: `把 --from 根目录下的仓库迁移到 --to 主根目录，保持相对布局不变。
+
+布局由 --depth 决定：默认 2，表示 <root>/<group>/<repo>（例如
+/Users/kingfs/repos/github.com/<group>/<repo>）。如果根目录是 ~/src 这种包含
+<host> 的父目录，用 --depth 3。
+
+冲突（两边同一相对路径都有仓库）时比较 HEAD 提交时间，保留更新的一侧，
+删除较旧的一侧。删除前会检查较旧一侧是否有未提交改动、stash、linked worktree，
+以及是否有较新一侧没有的本地分支/标签；任何一项存在都只报告冲突，不删除
+（--force 可覆盖未提交改动与唯一提交，但 linked worktree 必须先用
+git worktree remove 处理）。
+
+--dry-run 只读地计算计划（会运行 git log/status 等只读命令），不移动、不删除、
+不写索引。真正执行前会要求确认（非交互环境需要 --yes）。`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(opts.ToRoot) == "" {
+				return usageErrf("--to 必填")
+			}
+			if len(from) == 0 {
+				return usageErrf("至少需要一个 --from")
+			}
+			if opts.Depth < 1 {
+				return usageErrf("--depth 必须 >= 1")
+			}
+			opts.FromRoots = from
+			plan, err := rt.app().RepoMergePlan(cmd.Context(), opts)
+			if err != nil {
+				return preconditionErrf("%v", err)
+			}
+			if rt.Opts.DryRun {
+				return renderMergeReport(rt, plan)
+			}
+			if plan.DestructiveCount() == 0 {
+				if rerr := renderMergeReport(rt, plan); rerr != nil {
+					return rerr
+				}
+				if plan.UnresolvedCount() > 0 {
+					return coded(ExitPartial, fmt.Errorf("有 %d 个仓库需要人工处理", plan.UnresolvedCount()))
+				}
+				return nil
+			}
+			if err := rt.confirmDestructive(fmt.Sprintf(
+				"即将迁移 %d 个仓库、删除 %d 个较旧仓库，继续？",
+				plan.MoveCount(), plan.DeleteCount())); err != nil {
+				if errors.Is(err, ui.ErrCancelled) {
+					return nil
+				}
+				return err
+			}
+			report, applyErr := rt.app().RepoMergeApply(cmd.Context(), plan, opts)
+			if rerr := renderMergeReport(rt, report); rerr != nil {
+				return rerr
+			}
+			if applyErr != nil {
+				// 部分成功用退出码 3，全失败才是 1；否则脚本会把"搬了一半"
+				// 当成"什么都没做"。
+				if report.AppliedCount() > 0 {
+					return coded(ExitPartial, applyErr)
+				}
+				return coded(ExitFail, applyErr)
+			}
+			if report.UnresolvedCount() > 0 {
+				return coded(ExitPartial, fmt.Errorf("有 %d 个仓库需要人工处理", report.UnresolvedCount()))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&opts.ToRoot, "to", "", "主仓库根目录（必填）")
+	cmd.Flags().StringArrayVar(&from, "from", nil, "副仓库根目录（可重复）")
+	cmd.Flags().IntVar(&opts.Depth, "depth", 2, "仓库相对根目录的层级数（默认 2：<group>/<repo>）")
+	cmd.Flags().BoolVar(&opts.Force, "force", false, "允许删除有未提交改动/唯一提交的较旧仓库")
+	cmd.Flags().BoolVar(&opts.KeepBackup, "keep-backup", false, "不删除较旧仓库，移到所在根目录的 .bootstrap/merge-backup 下")
+	cmd.Flags().BoolVar(&opts.PruneEmpty, "prune-empty", false, "迁移后清理副根目录下的空目录")
+	return cmd
+}
+
+// renderMergeReport 渲染合并计划/结果。
+//
+// 计划里显示的是动作（move/replace/delete），执行后显示状态（moved/replaced/
+// deleted/failed）；skip/conflict 两种状态在计划和执行后含义相同。
+func renderMergeReport(rt *Runtime, report gitrepo.MergeReport) error {
+	if rt.Opts.JSON {
+		return rt.emit(report)
+	}
+	if len(report.Entries) == 0 {
+		fmt.Fprintln(rt.out(), "没有发现需要合并的仓库")
+		return nil
+	}
+	w := rt.newTable()
+	fmt.Fprintln(w, "ACTION\tFROM\tTO\tREASON")
+	for _, e := range report.Entries {
+		action := string(e.Plan.Action)
+		if e.Status != "" && e.Status != "planned" {
+			action = e.Status
+		}
+		reason := e.Message
+		if reason == "" {
+			reason = e.Plan.Reason
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", action, e.Plan.RepoPath, e.Plan.TargetPath, reason)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	move, replace, del, skip, conflict, failed := report.Counts()
+	fmt.Fprintf(rt.out(), "\n汇总：迁移 %d，替换 %d，删除 %d，跳过 %d，冲突 %d，失败 %d\n",
+		move, replace, del, skip, conflict, failed)
+	if report.DryRun {
+		fmt.Fprintln(rt.out(), "dry-run：未移动、未删除、未写索引。")
+	}
+	if report.Pruned > 0 {
+		fmt.Fprintf(rt.out(), "已清理 %d 个空目录。\n", report.Pruned)
+	}
+	for _, warning := range report.IndexWarnings {
+		fmt.Fprintf(rt.errOut(), "警告：%s\n", warning)
+	}
+	return nil
 }
 
 func (rt *Runtime) repoRootCmd() *cobra.Command {
