@@ -12,11 +12,26 @@ import (
 	"github.com/kingfs/Bootstrap/pkg/cmdx"
 )
 
+// resolvePath 把临时目录解析成真实路径：macOS 的 /var、Windows 的 RUNNER~1
+// 都是符号链接/短路径，而 RepoMergePlan 出于安全会 EvalSymlinks。
+func resolvePath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", path, err)
+	}
+	return resolved
+}
+
 func TestRepoMergePlanDryRunDoesNotTouchFilesystem(t *testing.T) {
 	a, _ := newTestApp(t)
 	base := t.TempDir()
 	toRoot := filepath.Join(base, "primary")
 	fromRoot := filepath.Join(base, "secondary")
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fromRoot = resolvePath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	if err := os.MkdirAll(filepath.Join(source, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -48,6 +63,14 @@ func TestRepoMergeApplyMovesAndUpdatesIndexes(t *testing.T) {
 	base := t.TempDir()
 	toRoot := filepath.Join(base, "primary")
 	fromRoot := filepath.Join(base, "secondary")
+	if err := os.MkdirAll(toRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toRoot = resolvePath(t, toRoot)
+	fromRoot = resolvePath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	if err := os.MkdirAll(filepath.Join(source, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -200,14 +223,16 @@ func TestRepoMergeRealGitKeepsNewer(t *testing.T) {
 
 	toRoot := filepath.Join(base, "primary")
 	fromRoot := filepath.Join(base, "secondary")
+	if err := os.MkdirAll(toRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toRoot = resolvePath(t, toRoot)
+	fromRoot = resolvePath(t, fromRoot)
 	primary := filepath.Join(toRoot, "github.com", "team", "repo")
 	secondary := filepath.Join(fromRoot, "github.com", "team", "repo")
-	if err := os.MkdirAll(filepath.Dir(primary), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(secondary), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	git("", "clone", origin, primary)
 	git("@200 +0000", "-C", origin, "commit", "--allow-empty", "-m", "new")
 	git("", "clone", origin, secondary)

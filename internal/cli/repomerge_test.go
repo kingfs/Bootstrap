@@ -18,6 +18,17 @@ func makeCLIMergeRepo(t *testing.T, path, content string) {
 	}
 }
 
+// resolveCLIPath 把临时目录解析成真实路径：macOS 的 /var、Windows 的 RUNNER~1
+// 都是符号链接/短路径，而 repo merge 出于安全会 EvalSymlinks。
+func resolveCLIPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", path, err)
+	}
+	return resolved
+}
+
 func TestRepoMergeRequiresFlags(t *testing.T) {
 	rt, _, _, _ := sandbox(t)
 	for _, tc := range []struct {
@@ -45,6 +56,10 @@ func TestRepoMergeDryRunDoesNotMove(t *testing.T) {
 	rt, out, _, root := sandbox(t)
 	toRoot := filepath.Join(root, "primary")
 	fromRoot := filepath.Join(root, "secondary")
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fromRoot = resolveCLIPath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	makeCLIMergeRepo(t, source, "from")
 
@@ -75,6 +90,10 @@ func TestRepoMergeNeedsYesInNonInteractive(t *testing.T) {
 	rt.Opts.NonInteractive = true
 	toRoot := filepath.Join(root, "primary")
 	fromRoot := filepath.Join(root, "secondary")
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fromRoot = resolveCLIPath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	makeCLIMergeRepo(t, source, "from")
 
@@ -95,6 +114,10 @@ func TestRepoMergeYesMoves(t *testing.T) {
 	rt, _, _, root := sandbox(t)
 	toRoot := filepath.Join(root, "primary")
 	fromRoot := filepath.Join(root, "secondary")
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fromRoot = resolveCLIPath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	makeCLIMergeRepo(t, source, "from")
 
@@ -106,6 +129,7 @@ func TestRepoMergeYesMoves(t *testing.T) {
 	if !strings.Contains(stdout, "moved") {
 		t.Fatalf("stdout should report moved:\n%s", stdout)
 	}
+	toRoot = resolveCLIPath(t, toRoot)
 	target := filepath.Join(toRoot, "github.com", "team", "repo")
 	if data, err := os.ReadFile(filepath.Join(target, "README.md")); err != nil || string(data) != "from" {
 		t.Fatalf("target content = %q, %v", data, err)
@@ -119,6 +143,10 @@ func TestRepoMergeJSON(t *testing.T) {
 	rt, _, _, root := sandbox(t)
 	toRoot := filepath.Join(root, "primary")
 	fromRoot := filepath.Join(root, "secondary")
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fromRoot = resolveCLIPath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	makeCLIMergeRepo(t, source, "from")
 
@@ -158,6 +186,14 @@ func TestRepoMergeUnsafeTargetExitsPartial(t *testing.T) {
 	rt, _, _, root := sandbox(t)
 	toRoot := filepath.Join(root, "primary")
 	fromRoot := filepath.Join(root, "secondary")
+	if err := os.MkdirAll(toRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fromRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toRoot = resolveCLIPath(t, toRoot)
+	fromRoot = resolveCLIPath(t, fromRoot)
 	source := filepath.Join(fromRoot, "github.com", "team", "repo")
 	makeCLIMergeRepo(t, source, "from")
 	target := filepath.Join(toRoot, "github.com", "team", "repo")
